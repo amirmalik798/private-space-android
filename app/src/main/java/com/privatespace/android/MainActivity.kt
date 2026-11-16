@@ -27,6 +27,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -48,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -1385,11 +1387,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         floatingActionButton = {
             if (topics.isNotEmpty()) {
                 ExtendedFloatingActionButton(
-                    onClick = { showCreateTopic = true },
+                    onClick = { if (!busy) showCreateTopic = true },
                     icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
                     text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
-                    containerColor = Blue,
-                    contentColor = Color.White,
+                    containerColor = if (busy) Blue.copy(alpha = 0.55f) else Blue,
+                    contentColor = if (busy) Color.White.copy(alpha = 0.7f) else Color.White,
                     shape = RoundedCornerShape(18.dp)
                 )
             }
@@ -1473,7 +1475,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             summary = summary,
                             onOpen = { activeTopicId = topic.id },
                             onExport = { launchTopicExport(topic.id) },
-                            onDelete = { topicToDelete = topic }
+                            onDelete = { topicToDelete = topic },
+                            busy = busy
                         )
                     }
                 }
@@ -1671,7 +1674,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     if (showCreateTopic) {
         AlertDialog(
-            onDismissRequest = { showCreateTopic = false },
+            onDismissRequest = { if (!busy) showCreateTopic = false },
             title = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Create a topic", fontWeight = FontWeight.Bold)
@@ -1714,11 +1717,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     }
                     Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
-                    Text("Create topic")
+                    Text(if (busy) "Creating…" else "Create topic")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateTopic = false }) {
+                TextButton(
+                    enabled = !busy,
+                    onClick = { showCreateTopic = false }
+                ) {
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("Cancel")
@@ -1917,7 +1923,11 @@ private fun FilePickerChoiceDialog(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (selected) Blue.copy(alpha = 0.16f) else Panel2)
-                                .clickable { selectedIndex = index }
+                                .selectable(
+                                    selected = selected,
+                                    role = Role.RadioButton,
+                                    onClick = { selectedIndex = index }
+                                )
                                 .padding(horizontal = 12.dp, vertical = 11.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1951,12 +1961,12 @@ private fun FilePickerChoiceDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onChoice(targets[selectedIndex], true) },
+                onClick = { onChoice(targets[selectedIndex], false) },
                 colors = ButtonDefaults.buttonColors(containerColor = Blue)
             ) {
-                Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(17.dp))
+                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Always", color = White)
+                Text("Use once", color = White)
             }
         },
         dismissButton = {
@@ -1966,10 +1976,10 @@ private fun FilePickerChoiceDialog(
                     Spacer(Modifier.width(4.dp))
                     Text("Cancel", color = Muted)
                 }
-                TextButton(onClick = { onChoice(targets[selectedIndex], false) }) {
-                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                TextButton(onClick = { onChoice(targets[selectedIndex], true) }) {
+                    Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Just once", color = Cyan)
+                    Text("Remember", color = Cyan)
                 }
             }
         },
@@ -2400,7 +2410,8 @@ private fun TopicCard(
     summary: TopicSummary,
     onOpen: () -> Unit,
     onExport: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    busy: Boolean
 ) {
     var menuExpanded by remember(summary.topic.id) { mutableStateOf(false) }
 
@@ -2462,12 +2473,14 @@ private fun TopicCard(
                         onClick = { menuExpanded = false; onOpen() }
                     )
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Export topic") },
                         leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
                         onClick = { menuExpanded = false; onExport() }
                     )
                     HorizontalDivider(color = Line)
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Delete topic", color = Red) },
                         leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Red) },
                         onClick = { menuExpanded = false; onDelete() }
@@ -2604,24 +2617,51 @@ private fun TopicScreen(
                 shape = RoundedCornerShape(18.dp),
                 border = BorderStroke(1.dp, Line)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                        Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Box(Modifier.width(1.dp).height(34.dp).background(Line))
-                    Column(modifier = Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
-                        Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    }
-                    Box(Modifier.width(1.dp).height(34.dp).background(Line))
-                    Column(modifier = Modifier.weight(1.15f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                        Text(formatDate(topic.updatedAt), color = White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (maxWidth < 340.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                                    Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Column(modifier = Modifier.weight(1.2f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
+                                    Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+                            HorizontalDivider(color = Line.copy(alpha = 0.7f))
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                                Text(formatDate(topic.updatedAt), color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                                Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Box(Modifier.width(1.dp).height(34.dp).background(Line))
+                            Column(modifier = Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
+                                Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                            Box(Modifier.width(1.dp).height(34.dp).background(Line))
+                            Column(modifier = Modifier.weight(1.15f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                                Text(formatDate(topic.updatedAt), color = White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
                     }
                 }
             }
@@ -2771,6 +2811,7 @@ private fun TopicScreen(
                             onShare = { onShare(file) },
                             onExport = { onExport(file) },
                             onDelete = { onDelete(file) },
+                            busy = busy,
                             selectionMode = selectionMode,
                             selected = file.id in selectedFileIds,
                             onToggleSelection = {
@@ -2787,6 +2828,11 @@ private fun TopicScreen(
         }
     }
 }
+
+private data class ViewerImageLoadState(
+    val loading: Boolean = true,
+    val bitmap: Bitmap? = null
+)
 
 @Composable
 private fun VaultMediaViewer(
@@ -2870,37 +2916,60 @@ private fun VaultMediaViewer(
                     }
                 }
                 isPhoto -> {
-                    val imageBitmap by produceState<Bitmap?>(
-                        initialValue = null,
+                    val imageState by produceState(
+                        initialValue = ViewerImageLoadState(),
                         privateMediaFile.absolutePath,
                         targetSizePx
                     ) {
-                        value = withContext(Dispatchers.IO) {
-                            try {
+                        value = try {
+                            val decoded = withContext(Dispatchers.IO) {
                                 decodeViewerImage(privateMediaFile, targetSizePx)
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (_: Exception) {
-                                null
                             }
+                            ViewerImageLoadState(loading = false, bitmap = decoded)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            ViewerImageLoadState(loading = false)
                         }
                     }
-                    DisposableEffect(imageBitmap) {
-                        val bitmap = imageBitmap
+                    DisposableEffect(imageState.bitmap) {
+                        val bitmap = imageState.bitmap
                         onDispose {
                             if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
                         }
                     }
-                    val displayedBitmap = imageBitmap
-                    if (displayedBitmap == null) {
-                        CircularProgressIndicator(color = Cyan)
-                    } else {
-                        Image(
-                            bitmap = displayedBitmap.asImageBitmap(),
-                            contentDescription = file.displayName,
-                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
-                            contentScale = ContentScale.Fit
-                        )
+                    when {
+                        imageState.loading -> CircularProgressIndicator(color = Cyan)
+                        imageState.bitmap == null -> {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.BrokenImage,
+                                    contentDescription = null,
+                                    tint = Muted,
+                                    modifier = Modifier.size(38.dp)
+                                )
+                                Text(
+                                    "This photo format could not be displayed on this device.",
+                                    color = Muted,
+                                    fontSize = 13.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                                TextButton(onClick = onBack) {
+                                    Text("Back to topic")
+                                }
+                            }
+                        }
+                        else -> {
+                            Image(
+                                bitmap = imageState.bitmap!!.asImageBitmap(),
+                                contentDescription = file.displayName,
+                                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                        }
                     }
                 }
                 isVideo -> {
@@ -3073,6 +3142,7 @@ private fun VaultFileRow(
     onShare: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
+    busy: Boolean = false,
     selectionMode: Boolean = false,
     selected: Boolean = false,
     onToggleSelection: () -> Unit = {}
@@ -3153,17 +3223,20 @@ private fun VaultFileRow(
                         onClick = { menuExpanded = false; onOpen() }
                     )
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Share") },
                         leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                         onClick = { menuExpanded = false; onShare() }
                     )
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Export") },
                         leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
                         onClick = { menuExpanded = false; onExport() }
                     )
                     HorizontalDivider(color = Line)
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Delete", color = Red) },
                         leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Red) },
                         onClick = { menuExpanded = false; onDelete() }
@@ -3185,7 +3258,7 @@ private fun TrashDialog(
     onDeletePermanently: (VaultTrashEntry) -> Unit
 ) {
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -3214,7 +3287,7 @@ private fun TrashDialog(
                             fontSize = 12.sp
                         )
                     }
-                    IconButton(onClick = onDismiss) {
+                    IconButton(onClick = onDismiss, enabled = !busy) {
                         Icon(Icons.Default.Close, contentDescription = "Close Recycle Bin", tint = Muted)
                     }
                 }
