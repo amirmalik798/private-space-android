@@ -602,9 +602,14 @@ class VaultRepository(context: Context) {
                     readFile(fileArray.getJSONObject(index), requireActiveTopic = true)
                 }
 
-                // Version 2 indexes created before Trash existed have no "trash"
-                // property. Treat that as an empty Recycle Bin during upgrade.
-                val trashArray = json.optJSONArray("trash") ?: JSONArray()
+                // Legacy v2 indexes may predate Trash. Current v3 indexes
+                // must contain the array; a missing field is malformed metadata
+                // and must not be mistaken for an empty Recycle Bin.
+                val trashArray = if (VaultIndexSchema.requiresTrashArray(schemaVersion)) {
+                    json.getJSONArray("trash")
+                } else {
+                    json.optJSONArray("trash") ?: JSONArray()
+                }
                 val trash = (0 until trashArray.length()).map { index ->
                     val item = trashArray.getJSONObject(index)
                     val deletedAt = item.getLong("deleted")
