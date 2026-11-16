@@ -20,11 +20,6 @@ import java.io.InputStream
 import java.util.Locale
 import java.util.UUID
 
-data class VaultSnapshot(
-    val topics: List<VaultTopic>,
-    val files: List<VaultFile>
-)
-
 data class PreparedVaultFile(
     val file: File,
     val mimeType: String
