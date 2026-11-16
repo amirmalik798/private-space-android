@@ -1283,8 +1283,20 @@ class VaultRepository(context: Context) {
         }
         val incomingFiles = mutableMapOf<String, File>()
         var completedBytes = 0L
+        var lastProgressAtNanos = 0L
         var restoreFailure: Throwable? = null
-        onProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
+        fun reportProgress(progress: VaultRestoreProgress) {
+            val now = System.nanoTime()
+            if (
+                progress.completedBytes == 0L ||
+                progress.completedFiles >= progress.totalFiles ||
+                now - lastProgressAtNanos >= 500_000_000L
+            ) {
+                lastProgressAtNanos = now
+                onProgress(progress)
+            }
+        }
+        reportProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
         try {
             records.forEachIndexed { recordIndex, record ->
                 val incoming = File(root, "${record.id}.restore.tmp")
@@ -1310,7 +1322,7 @@ class VaultRepository(context: Context) {
                                         completedFiles = recordIndex,
                                         totalFiles = records.size,
                                         fileName = record.displayName,
-                                        onProgress = onProgress
+                                        onProgress = ::reportProgress
                                     )
                                     store.decryptPayload(record.id, progressOutput, fileAad(record.id))
                                     progressOutput.finish()
@@ -1329,7 +1341,7 @@ class VaultRepository(context: Context) {
                     })
                     incomingFiles[record.id] = incoming
                     completedBytes = Math.addExact(completedBytes, record.sizeBytes)
-                    onProgress(
+                    reportProgress(
                         VaultRestoreProgress(
                             completedBytes = completedBytes,
                             totalBytes = totalBytes,
@@ -1344,7 +1356,7 @@ class VaultRepository(context: Context) {
                     throw failure
                 }
             }
-            onProgress(VaultRestoreProgress(totalBytes, totalBytes, records.size, records.size, "Finalizing restored vault"))
+            reportProgress(VaultRestoreProgress(totalBytes, totalBytes, records.size, records.size, "Finalizing restored vault"))
             incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
             saveIndex(index)
         } catch (failure: Throwable) {
