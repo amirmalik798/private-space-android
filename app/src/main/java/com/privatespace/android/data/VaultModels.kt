@@ -45,6 +45,21 @@ data class VaultStorageUsage(
     val trashBytes: Long = 0L
 )
 
+data class VaultRestoreProgress(
+    val completedBytes: Long,
+    val totalBytes: Long,
+    val completedFiles: Int,
+    val totalFiles: Int,
+    val currentFileName: String
+) {
+    val fraction: Float
+        get() = if (totalBytes <= 0L) {
+            if (completedFiles >= totalFiles) 1f else 0f
+        } else {
+            (completedBytes.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f)
+        }
+}
+
 data class VaultSnapshot(
     val topics: List<VaultTopic>,
     val files: List<VaultFile>,
