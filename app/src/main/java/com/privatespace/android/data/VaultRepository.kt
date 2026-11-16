@@ -209,6 +209,11 @@ class VaultRepository(context: Context) {
                 }
             }
 
+            // The provider's reported size is only a hint until the stream has
+            // been consumed. Reject mismatches before the temp payload is made
+            // visible as a finalized vault record.
+            VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
+
             atomicRename(temporary, target)
             finalized = true
             val now = System.currentTimeMillis()
