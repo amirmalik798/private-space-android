@@ -865,9 +865,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             return
         }
         if (isVideo) {
-            // Video playback is delegated to Samsung Gallery/Video Player on
-            // Samsung devices, so obtain consent before creating a decrypted copy.
-            pendingOpenFile = file
+            // Opening a video directly hands a temporary decrypted copy to the
+            // device video player. The user requested playback, so no extra
+            // confirmation dialog is needed here.
+            openExternalVaultFile(file, preferSamsungVideoPlayer = true)
             return
         }
 
