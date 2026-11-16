@@ -49,6 +49,7 @@ import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.data.*
 import com.privatespace.android.security.PasswordManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -71,6 +72,10 @@ private val Gold = Color(0xFFF3C16D)
 class MainActivity : ComponentActivity() {
     var suppressAutoLockForPicker: Boolean = false
     var onVaultShouldLock: (() -> Unit)? = null
+    var isResumedForVault: Boolean = false
+        private set
+    var foregroundGeneration: Long = 0L
+        private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,7 +106,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        isResumedForVault = true
+    }
+
     override fun onPause() {
+        isResumedForVault = false
+        foregroundGeneration = Math.addExact(foregroundGeneration, 1L)
         super.onPause()
         if (getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true) {
             onVaultShouldLock?.invoke()
@@ -109,6 +121,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        isResumedForVault = false
         super.onStop()
         if (!isChangingConfigurations && !suppressAutoLockForPicker) {
             onVaultShouldLock?.invoke()
@@ -129,7 +142,7 @@ private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_compone
 private fun PrivateSpaceRoot() {
     val context = LocalContext.current
     val activity = remember(context) { context.findMainActivity() }
-    val repository = remember { VaultRepository(context.applicationContext) }
+    val repository = remember { VaultRepository.getInstance(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
     var unlocked by remember { mutableStateOf(false) }
@@ -195,30 +208,47 @@ private fun PrivateSpaceRoot() {
         onDispose { activity?.onVaultShouldLock = null }
     }
 
-    suspend fun refreshVault() {
-        val snapshot = withContext(Dispatchers.IO) { repository.snapshot() }
+    fun applySnapshot(snapshot: VaultSnapshot) {
+        if (!unlocked) return
         topics = snapshot.topics
         vaultFiles = snapshot.files
         trashEntries = snapshot.trash
         storageUsage = snapshot.storageUsage
     }
 
+    fun failClosed(failure: Throwable) {
+        val message = failure.message ?: "The vault could not be accessed safely."
+        lockVault()
+        authError = message
+        toast(message)
+    }
+
+    suspend fun refreshVault(): Boolean {
+        if (!unlocked) return false
+        return try {
+            val snapshot = withContext(Dispatchers.IO) { repository.snapshot() }
+            applySnapshot(snapshot)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (unlocked) failClosed(failure)
+            false
+        }
+    }
+
     LaunchedEffect(unlocked) {
         if (unlocked) {
-            runCatching {
-                withContext(Dispatchers.IO) {
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
                     repository.cleanupExpiredOutgoing()
                     repository.snapshot()
                 }
-            }.onSuccess { snapshot ->
-                topics = snapshot.topics
-                vaultFiles = snapshot.files
-                trashEntries = snapshot.trash
-                storageUsage = snapshot.storageUsage
-            }.onFailure {
-                authError = it.message ?: "The vault could not be opened safely."
-                toast(authError)
-                lockVault()
+                applySnapshot(snapshot)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (unlocked) failClosed(failure)
             }
         }
     }
@@ -242,7 +272,7 @@ private fun PrivateSpaceRoot() {
                 val results = withContext(Dispatchers.IO) {
                     selectedUris.map { uri -> runCatching { repository.addFile(topicId, uri) } }
                 }
-                runCatching { refreshVault() }
+                refreshVault()
                 busy = false
                 val succeeded = results.count { it.isSuccess }
                 val failed = results.size - succeeded
@@ -483,6 +513,14 @@ private fun PrivateSpaceRoot() {
             }
             busy = false
             result.onSuccess { prepared ->
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) {
+                    runCatching { prepared.file.parentFile?.deleteRecursively() }
+                    return@onSuccess
+                }
                 try {
                     val uri = FileProvider.getUriForFile(
                         context, "com.privatespace.android.fileprovider", prepared.file
@@ -510,6 +548,14 @@ private fun PrivateSpaceRoot() {
             }
             busy = false
             result.onSuccess { prepared ->
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) {
+                    runCatching { prepared.file.parentFile?.deleteRecursively() }
+                    return@onSuccess
+                }
                 try {
                     val uri = FileProvider.getUriForFile(
                         context, "com.privatespace.android.fileprovider", prepared.file
@@ -538,6 +584,14 @@ private fun PrivateSpaceRoot() {
             }
             busy = false
             result.onSuccess { preparedFiles ->
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) {
+                    runCatching { preparedFiles.firstOrNull()?.file?.parentFile?.deleteRecursively() }
+                    return@onSuccess
+                }
                 try {
                     val uris = preparedFiles.map { prepared ->
                         FileProvider.getUriForFile(
@@ -584,10 +638,12 @@ private fun PrivateSpaceRoot() {
             authError = ""
             val entered = password
             val confirm = confirmation
+            val wasSetup = setup
+            val authGeneration = activity?.foregroundGeneration
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        if (setup) {
+                        if (wasSetup) {
                             require(entered.length in PasswordManager.MIN_PASSWORD_LENGTH..PasswordManager.MAX_PASSWORD_LENGTH) {
                                 "Use at least ${PasswordManager.MIN_PASSWORD_LENGTH} characters."
                             }
@@ -600,7 +656,7 @@ private fun PrivateSpaceRoot() {
                             }
                             val valid = PasswordManager.verify(context, entered.toCharArray())
                             if (valid) PasswordManager.clearFailures(context)
-                            else lockUntil = PasswordManager.recordFailure(context)
+                            else PasswordManager.recordFailure(context)
                             valid
                         }
                     }
@@ -610,16 +666,27 @@ private fun PrivateSpaceRoot() {
                     onSuccess = { valid ->
                         if (valid) {
                             setup = false
-                            unlocked = true
                             password = ""
                             confirmation = ""
-                            authError = ""
+                            if (VaultSessionPolicy.mayCompleteUnlock(
+                                    authGeneration,
+                                    activity?.foregroundGeneration,
+                                    activity?.isResumedForVault == true
+                                )
+                            ) {
+                                unlocked = true
+                                authError = ""
+                            } else {
+                                authError = "Private Space was interrupted. Enter your password again to unlock it."
+                            }
                         } else {
+                            lockUntil = PasswordManager.lockedUntil(context)
                             password = ""
                             authError = "Incorrect password."
                         }
                     },
                     onFailure = {
+                        lockUntil = PasswordManager.lockedUntil(context)
                         authError = it.message ?: "Authentication failed."
                         password = ""
                         confirmation = ""
@@ -971,7 +1038,7 @@ private fun PrivateSpaceRoot() {
                         }
                         val valid = PasswordManager.verify(context, oldPassword.toCharArray())
                         if (!valid) {
-                            lockUntil = PasswordManager.recordFailure(context)
+                            PasswordManager.recordFailure(context)
                             error("Current password is incorrect.")
                         }
                         PasswordManager.clearFailures(context)
@@ -982,8 +1049,9 @@ private fun PrivateSpaceRoot() {
                     showChangePassword = false
                     toast("Password changed.")
                 }.onFailure {
+                    lockUntil = PasswordManager.lockedUntil(context)
                     toast(it.message ?: "Password could not be changed.")
-                    if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) lockVault()
+                    if (lockUntil > System.currentTimeMillis()) lockVault()
                 }
             }
         }
