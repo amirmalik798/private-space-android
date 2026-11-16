@@ -269,8 +269,7 @@ class VaultRepository(context: Context) {
         val topic = index.topics.firstOrNull { it.id == topicId } ?: error("Topic not found.")
         val records = index.files.filter { it.topicId == topicId }
         val folderName = VaultExportLayout.topicFolder(topic).folderName
-        val folder = destination.createDirectory(folderName)
-            ?: error("A folder named '$folderName' already exists here. Choose another location or rename it.")
+        val folder = createExactDirectory(destination, folderName)
         try {
             exportRecords(records, folder)
         } catch (failure: Throwable) {
@@ -289,15 +288,10 @@ class VaultRepository(context: Context) {
     fun exportAllToFolder(destination: DocumentFile) {
         val index = synchronized(this) { loadIndex() }
         val rootFolderName = VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
-        val rootFolder = destination.createDirectory(rootFolderName)
-            ?: error(
-                "A folder named '$rootFolderName' already exists here. " +
-                    "Choose another location or rename the existing folder."
-            )
+        val rootFolder = createExactDirectory(destination, rootFolderName)
         try {
             VaultExportLayout.allTopicFolders(index.topics).forEach { topicFolder ->
-                val folder = rootFolder.createDirectory(topicFolder.folderName)
-                    ?: error("Could not create the export folder for '${topicFolder.folderName}'.")
+                val folder = createExactDirectory(rootFolder, topicFolder.folderName)
                 exportRecords(
                     index.files.filter { it.topicId == topicFolder.topicId },
                     folder
@@ -313,6 +307,19 @@ class VaultRepository(context: Context) {
     fun cleanupExpiredOutgoing(now: Long = System.currentTimeMillis()) {
         deleteExpiredChildren(outgoing, now)
         deleteExpiredChildren(staging, now)
+    }
+
+    private fun createExactDirectory(parent: DocumentFile, folderName: String): DocumentFile {
+        require(parent.listFiles().none { it.name?.equals(folderName, ignoreCase = true) == true }) {
+            "A file or folder named '$folderName' already exists here. Choose another location or rename it."
+        }
+        val created = parent.createDirectory(folderName)
+            ?: error("Could not create the folder '$folderName'. Check the selected location.")
+        if (created.name != folderName) {
+            created.delete()
+            error("The selected storage provider could not create the folder '$folderName' with its exact name.")
+        }
+        return created
     }
 
     private fun deleteDocumentTree(directory: DocumentFile) {
