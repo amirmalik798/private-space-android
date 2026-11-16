@@ -3213,13 +3213,14 @@ private fun decodeViewerImage(source: File, targetMaxDimension: Int): Bitmap? =
 @Composable
 private fun rememberVaultMediaPreview(
     file: VaultFile,
-    repository: VaultRepository
+    repository: VaultRepository,
+    enabled: Boolean = true
 ): VaultMediaPreview? {
     val targetSizePx = with(LocalDensity.current) { 128.dp.roundToPx().coerceAtLeast(64) }
     val isPreviewable =
         VaultFormatSupport.kindForFile(file.displayName, file.mimeType) != VaultFormatSupport.FileKind.DOCUMENT
-    val preview by produceState<VaultMediaPreview?>(null, file.id, file.mimeType, targetSizePx) {
-        value = if (isPreviewable) {
+    val preview by produceState<VaultMediaPreview?>(null, file.id, file.mimeType, targetSizePx, enabled) {
+        value = if (enabled && isPreviewable) {
             try {
                 withContext(Dispatchers.IO) {
                     repository.loadMediaPreview(file.id, targetSizePx)
@@ -3313,7 +3314,7 @@ private fun VaultFileRow(
     val fileKind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
     val isPhoto = fileKind == VaultFormatSupport.FileKind.PHOTO
     val isVideo = fileKind == VaultFormatSupport.FileKind.VIDEO
-    val mediaPreview = rememberVaultMediaPreview(file, repository)
+    val mediaPreview = rememberVaultMediaPreview(file, repository, enabled = !busy)
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     val fileIcon = when {
         isPhoto -> Icons.Default.Image
@@ -3504,7 +3505,7 @@ private fun TrashFileRow(
     val file = entry.file
     val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
     val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
-    val mediaPreview = rememberVaultMediaPreview(file, repository)
+    val mediaPreview = rememberVaultMediaPreview(file, repository, enabled = enabled)
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     Card(
         modifier = Modifier.fillMaxWidth(),
