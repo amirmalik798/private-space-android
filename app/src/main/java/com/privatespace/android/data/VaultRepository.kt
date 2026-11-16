@@ -41,6 +41,7 @@ class VaultRepository(context: Context) {
     private var initializationFailure: Throwable? = null
 
     companion object {
+        const val ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME = "private-space-data"
         private const val MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
@@ -278,18 +279,31 @@ class VaultRepository(context: Context) {
         }
     }
 
+    /**
+     * Exports the complete vault beneath a single, predictable root folder:
+     * private-space-data/<topic name>/<original files>.
+     *
+     * The destination itself is never used as the export root, so the user
+     * always gets one self-contained folder they can move or back up.
+     */
     fun exportAllToFolder(destination: DocumentFile) {
         val index = synchronized(this) { loadIndex() }
+        val rootFolder = destination.createDirectory(ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME)
+            ?: error(
+                "A folder named '$ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME' already exists here. " +
+                    "Choose another location or rename the existing folder."
+            )
         val createdFolders = mutableListOf<DocumentFile>()
         try {
             index.topics.forEach { topic ->
-                val folder = destination.createDirectory(topic.name)
-                    ?: error("Could not create the export folder for '${topic.name}'. Check whether it already exists.")
+                val folder = rootFolder.createDirectory(topic.name)
+                    ?: error("Could not create the export folder for '${topic.name}'.")
                 createdFolders += folder
                 exportRecords(index.files.filter { it.topicId == topic.id }, folder)
             }
         } catch (failure: Throwable) {
             createdFolders.asReversed().forEach { it.delete() }
+            rootFolder.delete()
             throw failure
         }
     }
