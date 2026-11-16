@@ -172,9 +172,14 @@ internal object ChunkedAesGcm {
             val encrypted = ByteArray(length + TAG_BYTES)
             try {
                 readExactly(input, encrypted)
+                val frameTotal = if (length == 0) totalBytes else try {
+                    Math.addExact(totalBytes, length.toLong())
+                } catch (failure: ArithmeticException) {
+                    throw IOException("Vault payload is too large.", failure)
+                }
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-                updateFrameAad(cipher, aad, magic, frameIndex, length, totalBytes)
+                updateFrameAad(cipher, aad, magic, frameIndex, length, frameTotal)
                 val clear = try {
                     cipher.doFinal(encrypted)
                 } catch (failure: Exception) {
@@ -189,11 +194,7 @@ internal object ChunkedAesGcm {
                     }
                     if (clear.size != length) throw IOException("Encrypted vault frame length does not match.")
                     output.write(clear)
-                    totalBytes = try {
-                        Math.addExact(totalBytes, clear.size.toLong())
-                    } catch (failure: ArithmeticException) {
-                        throw IOException("Vault payload is too large.", failure)
-                    }
+                    totalBytes = frameTotal
                     frameIndex = Math.addExact(frameIndex, 1L)
                 } finally {
                     clear.fill(0)
