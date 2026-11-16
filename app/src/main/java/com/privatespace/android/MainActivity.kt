@@ -12,6 +12,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -279,6 +281,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     val context = LocalContext.current
     val activity = remember(context) { context.findMainActivity() }
     val scope = rememberCoroutineScope()
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     var unlocked by remember { mutableStateOf(false) }
     var setup by remember { mutableStateOf(!PasswordManager.configured(context)) }
@@ -286,6 +289,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var confirmation by remember { mutableStateOf("") }
     var authError by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var restoreProgress by remember { mutableStateOf<VaultRestoreProgress?>(null) }
     var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
     var choosingExistingRecovery by remember { mutableStateOf(false) }
     var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
@@ -341,6 +345,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun lockVault() {
         repository.lockPersistentStorage()
+        restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
         pendingRecoveryPassword = null
         recoveryTreeUri = null
@@ -1140,6 +1145,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             lockUntil = lockUntil,
             now = clockNow,
             recoveryFolderSelected = recoveryTreeUri != null,
+            restoreProgress = restoreProgress,
             recoveryAvailable = setup || recoveryTreeUri != null,
             onPassword = { password = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
             onConfirmation = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
@@ -1148,6 +1154,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 pendingRecoveryPassword = null
                 showRecoverySetup = false
                 recoverySetupError = ""
+                restoreProgress = null
                 choosingExistingRecovery = true
                 runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
                     choosingExistingRecovery = false
@@ -1157,6 +1164,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         ) {
             if (busy || lockUntil > System.currentTimeMillis()) return@AuthScreen
             busy = true
+            restoreProgress = null
             authError = ""
             val entered = password
             val confirm = confirmation
@@ -1172,7 +1180,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                     error("Too many attempts. Wait for the lockout to end.")
                                 }
                                 try {
-                                    repository.restorePersistentVault(restoreUri, entered.toCharArray())
+                                    repository.restorePersistentVault(restoreUri, entered.toCharArray()) { progress ->
+                                        mainHandler.post { restoreProgress = progress }
+                                    }
                                 } catch (failure: Throwable) {
                                     PasswordManager.recordFailure(context)
                                     throw failure
@@ -1209,7 +1219,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                         true to entered.toCharArray()
                                     } else {
                                         try {
-                                            repository.openPersistentStorage(savedTree, entered.toCharArray())
+                                            repository.openPersistentStorage(savedTree, entered.toCharArray()) { progress ->
+                                                mainHandler.post { restoreProgress = progress }
+                                            }
                                             true to null
                                         } catch (_: Exception) {
                                             // Local encrypted records remain intact. Let the
@@ -1279,6 +1291,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         confirmation = ""
                     }
                 )
+                mainHandler.post { restoreProgress = null }
             }
         }
         return
@@ -2031,6 +2044,7 @@ private fun AuthScreen(
     lockUntil: Long,
     now: Long,
     recoveryFolderSelected: Boolean,
+    restoreProgress: VaultRestoreProgress?,
     recoveryAvailable: Boolean,
     onPassword: (String) -> Unit,
     onConfirmation: (String) -> Unit,
@@ -2184,6 +2198,61 @@ private fun AuthScreen(
                                 },
                                 fontWeight = FontWeight.SemiBold
                             )
+                        }
+                    }
+                    if (restoreProgress != null) {
+                        val progress = restoreProgress
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Blue.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                        ) {
+                            Column(
+                                Modifier.fillMaxWidth().padding(13.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(17.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Cyan
+                                    )
+                                    Spacer(Modifier.width(9.dp))
+                                    Text("Restoring encrypted vault", color = White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                }
+                                if (progress.totalBytes > 0L) {
+                                    LinearProgressIndicator(
+                                        progress = progress.fraction,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = Cyan,
+                                        trackColor = Line
+                                    )
+                                    Text(
+                                        "${(progress.fraction * 100f).toInt()}%  ·  ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}",
+                                        color = Muted,
+                                        fontSize = 11.sp
+                                    )
+                                } else {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = Cyan,
+                                        trackColor = Line
+                                    )
+                                }
+                                Text(
+                                    "Files: ${progress.completedFiles} / ${progress.totalFiles}",
+                                    color = Muted,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    progress.currentFileName,
+                                    color = Muted,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                     if (recoveryAvailable) {
