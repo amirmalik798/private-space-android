@@ -38,6 +38,11 @@ object PersistentVaultCrypto {
 
     fun newDataKey(): ByteArray = ByteArray(KEY_BYTES).also(SecureRandom()::nextBytes)
 
+    fun encryptedContainerLength(plainBytes: Long): Long = ChunkedAesGcm.encryptedLength(plainBytes)
+
+    fun maximumEncryptedContainerLength(plainBytes: Int): Int =
+        Math.toIntExact(encryptedContainerLength(plainBytes.toLong()))
+
     /**
      * Returns a portable envelope, not the raw key. The supplied password
      * array is always wiped before this method returns or throws.
