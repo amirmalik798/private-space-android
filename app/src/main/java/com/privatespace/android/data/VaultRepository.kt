@@ -41,7 +41,6 @@ class VaultRepository(context: Context) {
     private var initializationFailure: Throwable? = null
 
     companion object {
-        const val ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME = "private-space-data"
         private const val MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
@@ -269,12 +268,13 @@ class VaultRepository(context: Context) {
         val index = synchronized(this) { loadIndex() }
         val topic = index.topics.firstOrNull { it.id == topicId } ?: error("Topic not found.")
         val records = index.files.filter { it.topicId == topicId }
-        val folder = destination.createDirectory(topic.name)
-            ?: error("Could not create the topic export folder. Check whether it already exists.")
+        val folderName = VaultExportLayout.topicFolder(topic).folderName
+        val folder = destination.createDirectory(folderName)
+            ?: error("A folder named '$folderName' already exists here. Choose another location or rename it.")
         try {
             exportRecords(records, folder)
         } catch (failure: Throwable) {
-            folder.delete()
+            deleteDocumentTree(folder)
             throw failure
         }
     }
@@ -288,22 +288,23 @@ class VaultRepository(context: Context) {
      */
     fun exportAllToFolder(destination: DocumentFile) {
         val index = synchronized(this) { loadIndex() }
-        val rootFolder = destination.createDirectory(ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME)
+        val rootFolderName = VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
+        val rootFolder = destination.createDirectory(rootFolderName)
             ?: error(
-                "A folder named '$ALL_TOPICS_EXPORT_ROOT_FOLDER_NAME' already exists here. " +
+                "A folder named '$rootFolderName' already exists here. " +
                     "Choose another location or rename the existing folder."
             )
-        val createdFolders = mutableListOf<DocumentFile>()
         try {
-            index.topics.forEach { topic ->
-                val folder = rootFolder.createDirectory(topic.name)
-                    ?: error("Could not create the export folder for '${topic.name}'.")
-                createdFolders += folder
-                exportRecords(index.files.filter { it.topicId == topic.id }, folder)
+            VaultExportLayout.allTopicFolders(index.topics).forEach { topicFolder ->
+                val folder = rootFolder.createDirectory(topicFolder.folderName)
+                    ?: error("Could not create the export folder for '${topicFolder.folderName}'.")
+                exportRecords(
+                    index.files.filter { it.topicId == topicFolder.topicId },
+                    folder
+                )
             }
         } catch (failure: Throwable) {
-            createdFolders.asReversed().forEach { it.delete() }
-            rootFolder.delete()
+            deleteDocumentTree(rootFolder)
             throw failure
         }
     }
@@ -312,6 +313,13 @@ class VaultRepository(context: Context) {
     fun cleanupExpiredOutgoing(now: Long = System.currentTimeMillis()) {
         deleteExpiredChildren(outgoing, now)
         deleteExpiredChildren(staging, now)
+    }
+
+    private fun deleteDocumentTree(directory: DocumentFile) {
+        directory.listFiles().forEach { child ->
+            if (child.isDirectory) deleteDocumentTree(child) else child.delete()
+        }
+        directory.delete()
     }
 
     private fun exportRecords(records: List<VaultFile>, folder: DocumentFile) {
