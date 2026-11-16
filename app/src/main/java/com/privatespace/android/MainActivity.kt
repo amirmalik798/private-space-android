@@ -626,33 +626,40 @@ private fun PrivateSpaceRoot() {
         containerColor = Ink,
         topBar = {
             Surface(color = Ink, tonalElevation = 0.dp) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        modifier = Modifier.size(44.dp),
-                        shape = RoundedCornerShape(15.dp),
-                        color = Blue.copy(alpha = 0.16f)
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(23.dp))
+                        Surface(
+                            modifier = Modifier.size(46.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = Blue.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(25.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("Private Space", fontWeight = FontWeight.Bold, color = White, fontSize = 19.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(12.dp))
+                                Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        IconButton(onClick = { showSecurityInfo = true }) {
+                            Icon(Icons.Default.Info, contentDescription = "Security", tint = Muted)
+                        }
+                        IconButton(onClick = { showChangePassword = true }) {
+                            Icon(Icons.Default.Key, contentDescription = "Change password", tint = Muted)
+                        }
+                        IconButton(onClick = { lockVault() }) {
+                            Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
                         }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Private Space", fontWeight = FontWeight.Bold, color = White, fontSize = 19.sp)
-                        Text("YOUR PERSONAL VAULT", fontSize = 10.sp, color = Muted, letterSpacing = 1.1.sp)
-                    }
-                    IconButton(onClick = { showSecurityInfo = true }) {
-                        Icon(Icons.Default.Info, contentDescription = "Vault security information", tint = Muted)
-                    }
-                    IconButton(onClick = { showChangePassword = true }) {
-                        Icon(Icons.Default.Key, contentDescription = "Change password", tint = Muted)
-                    }
-                    IconButton(onClick = { lockVault() }) {
-                        Icon(Icons.Default.Lock, contentDescription = "Lock vault now", tint = Cyan)
-                    }
+                    HorizontalDivider(color = Line.copy(alpha = 0.55f), thickness = 0.7.dp)
                 }
             }
         },
@@ -670,9 +677,11 @@ private fun PrivateSpaceRoot() {
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 12.dp, end = 18.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            Modifier.fillMaxSize()
+                .background(Brush.verticalGradient(listOf(Color(0xFF0E1728), Ink, Color(0xFF070B13))))
+                .padding(padding),
+            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 104.dp),
+            verticalArrangement = Arrangement.spacedBy(17.dp)
         ) {
             item {
                 VaultOverviewCard(
@@ -688,7 +697,7 @@ private fun PrivateSpaceRoot() {
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("Topics", color = White, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (topics.isNotEmpty()) {
                         Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
                             Text(
@@ -710,7 +719,7 @@ private fun PrivateSpaceRoot() {
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
-                        placeholder = { Text("Search your topics", color = Muted) },
+                        placeholder = { Text("Search topics", color = Muted) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
                         trailingIcon = {
                             if (topicQuery.isNotEmpty()) {
@@ -793,12 +802,8 @@ private fun PrivateSpaceRoot() {
                         onValueChange = { topicName = it.take(64) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Topic name") },
-                        placeholder = { Text("e.g. Personal documents") },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        supportingText = {
-                            Text(topicName.length.toString() + " / 64", color = Muted)
-                        }
+                        shape = RoundedCornerShape(14.dp)
                     )
                 }
             },
@@ -1073,7 +1078,6 @@ private fun AuthScreen(
             }
             Spacer(Modifier.height(18.dp))
             Text("Private Space", color = White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text("Your documents. Your private place.", color = Muted, fontSize = 14.sp)
             Spacer(Modifier.height(28.dp))
 
             Card(
@@ -1092,12 +1096,6 @@ private fun AuthScreen(
                             color = White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 21.sp
-                        )
-                        Text(
-                            if (setup) "Set a password to protect this vault on this device."
-                            else "Enter your password to unlock your private files.",
-                            color = Muted,
-                            fontSize = 13.sp
                         )
                     }
                     OutlinedTextField(
@@ -1193,19 +1191,6 @@ private fun AuthScreen(
                 }
             }
             Spacer(Modifier.height(20.dp))
-            Row(
-                Modifier.widthIn(max = 420.dp).padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(Icons.Default.Shield, contentDescription = null, tint = Green, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Your files and vault index are encrypted on this device.",
-                    color = Muted,
-                    fontSize = 12.sp
-                )
-            }
         }
     }
 }
@@ -1328,16 +1313,10 @@ private fun EmptyTopicsState(onCreate: () -> Unit) {
                 }
             }
             Text("Start with a topic", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
-            Text(
-                "Create a topic to add documents and photos.",
-                color = Muted,
-                fontSize = 13.sp,
-                lineHeight = 19.sp
-            )
             Button(onClick = onCreate, shape = RoundedCornerShape(14.dp)) {
-                Icon(Icons.Default.Add, contentDescription = null)
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("Create your first topic")
+                Text("Create topic")
             }
         }
     }
@@ -1352,8 +1331,11 @@ private fun EmptySearchState(query: String, onClear: () -> Unit) {
     ) {
         Icon(Icons.Default.SearchOff, contentDescription = null, tint = Muted, modifier = Modifier.size(36.dp))
         Text("No matching topics", color = White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-        Text("Nothing matches \"" + query + "\".", color = Muted, fontSize = 13.sp)
-        TextButton(onClick = onClear) { Text("Clear search") }
+        TextButton(onClick = onClear) {
+            Icon(Icons.Default.Backspace, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Clear search")
+        }
     }
 }
 
