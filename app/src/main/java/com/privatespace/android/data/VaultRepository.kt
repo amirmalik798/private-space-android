@@ -28,7 +28,8 @@ data class PreparedVaultFile(
 private data class VaultIndex(
     val topics: List<VaultTopic> = emptyList(),
     val files: List<VaultFile> = emptyList(),
-    val trash: List<VaultTrashEntry> = emptyList()
+    val trash: List<VaultTrashEntry> = emptyList(),
+    val schemaVersion: Int = VaultIndexSchema.CURRENT_VERSION
 )
 
 private class BoundedWipingByteArrayOutputStream(
@@ -111,6 +112,12 @@ class VaultRepository(context: Context) {
             // Authenticate the committed index before recovering file operations.
             val hasCommittedIndex = metadata.baseFile.exists() || File(metadata.baseFile.path + ".bak").exists()
             val index = loadIndex()
+            if (hasCommittedIndex && VaultIndexSchema.needsUpgrade(index.schemaVersion)) {
+                // Upgrade v2 (including early 0.9.0 indexes with Trash) before
+                // the app can be downgraded to a build that would ignore Trash.
+                // AtomicFile preserves the authenticated v2 index if this write fails.
+                saveIndex(index)
+            }
             recoverInterruptedFileOperations(index, hasCommittedIndex)
 
             // Remove abandoned plaintext staging by age, not eagerly: a recreated
@@ -543,7 +550,10 @@ class VaultRepository(context: Context) {
             val clear = output.toByteArray()
             try {
                 val json = JSONObject(String(clear, Charsets.UTF_8))
-                require(VaultIndexSchema.isSupported(json.optInt("version"))) { "Unsupported vault index version. Preserve app data and use a compatible app version." }
+                val schemaVersion = json.optInt("version")
+                require(VaultIndexSchema.isSupported(schemaVersion)) {
+                    "Unsupported vault index version. Preserve app data and use a compatible app version."
+                }
 
                 val topicArray = json.getJSONArray("topics")
                 val topics = (0 until topicArray.length()).map { index ->
@@ -614,7 +624,7 @@ class VaultRepository(context: Context) {
                 require(allFileIds.distinct().size == allFileIds.size) {
                     "Vault index contains duplicate active or trashed file identifiers."
                 }
-                return VaultIndex(topics, files, trash)
+                return VaultIndex(topics, files, trash, schemaVersion)
             } finally {
                 clear.fill(0)
             }
