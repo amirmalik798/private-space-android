@@ -20,6 +20,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.Locale
+import java.security.MessageDigest
 import java.util.UUID
 import android.system.Os
 import android.system.OsConstants
@@ -168,6 +169,8 @@ class VaultRepository(context: Context) {
         private const val PRIVATE_DIRECTORY_MODE = 0x1C0 // 0700
         private const val PRIVATE_FILE_MODE = 0x180 // 0600
         private const val FILE_DELETE_SUFFIX = ".psv.delete"
+        private const val RESTORE_TRANSACTION_FILE = "vault-restore.transaction"
+        private const val MAX_RESTORE_TRANSACTION_BYTES = 32 * 1024 * 1024
     }
 
     init {
@@ -1370,10 +1373,20 @@ class VaultRepository(context: Context) {
                 }
             }
             reportProgress(VaultRestoreProgress(totalBytes, totalBytes, records.size, records.size, "Finalizing restored vault"))
+            // Persist a small rollback journal before the first live payload is
+            // replaced. It lets the next process distinguish a committed restore
+            // from a process death halfway through promotion.
+            writeRestoreTransaction(index, records)
             incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
+            // The encrypted AtomicFile index is the commit point. Recovery compares
+            // its authenticated contents with the journal before keeping or rolling
+            // back any promoted payloads.
             saveIndex(index)
+            recoverInterruptedRestoreFiles()
         } catch (failure: Throwable) {
             restoreFailure = failure
+            runCatching { recoverInterruptedRestoreFiles() }
+                .onFailure(failure::addSuppressed)
             throw failure
         } finally {
             records.forEach { record ->
@@ -1401,11 +1414,9 @@ class VaultRepository(context: Context) {
         if (destination.exists()) Os.rename(destination.absolutePath, backup.absolutePath)
         try {
             Os.rename(incoming.absolutePath, destination.absolutePath)
+            // Keep the old payload until the new encrypted index is committed.
+            // The transaction journal removes these backups only after commit.
             syncDirectory(root)
-            if (backup.exists()) {
-                check(backup.delete()) { "Could not finalize a restored vault record." }
-                syncDirectory(root)
-            }
         } catch (failure: Throwable) {
             runCatching {
                 if (destination.exists()) destination.delete()
@@ -1417,18 +1428,160 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun recoverInterruptedRestoreFiles() {
-        root.listFiles()?.filter { it.name.endsWith(".restore.bak") }?.forEach { backup ->
-            val id = backup.name.removeSuffix(".restore.bak")
-            if (runCatching { UUID.fromString(id) }.isFailure) {
-                // This is not one of our transaction names. Leave it untouched
-                // rather than letting malformed local metadata crash startup.
-                return@forEach
-            }
-            val destination = encryptedFile(id)
-            if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
-            else runCatching { backup.delete() }
+    private data class RestoreJournalRecord(
+        val id: String,
+        val hadOriginal: Boolean
+    )
+
+    private fun writeRestoreTransaction(index: VaultIndex, records: List<VaultFile>) {
+        val serializedIndex = serializeIndex(index)
+        val targetDigest = try {
+            MessageDigest.getInstance("SHA-256").digest(serializedIndex)
+                .joinToString("") { "%02x".format(it) }
+        } finally {
+            serializedIndex.fill(0)
         }
+        val journalRecords = JSONArray()
+        records.forEach { record ->
+            journalRecords.put(
+                JSONObject()
+                    .put("id", record.id)
+                    .put("hadOriginal", encryptedFile(record.id).isFile)
+            )
+        }
+        val journalBytes = JSONObject()
+            .put("version", 1)
+            .put("targetIndexSha256", targetDigest)
+            .put("records", journalRecords)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        require(journalBytes.size <= MAX_RESTORE_TRANSACTION_BYTES) {
+            "Recovery transaction metadata exceeds its supported size."
+        }
+
+        val journal = File(root, RESTORE_TRANSACTION_FILE)
+        val temporary = File(root, "$RESTORE_TRANSACTION_FILE.tmp")
+        check(!journal.exists() && !temporary.exists()) {
+            "An earlier recovery transaction needs to be reconciled before restoring."
+        }
+        try {
+            FileOutputStream(temporary).use { output ->
+                restrictFilePermissions(temporary)
+                output.write(journalBytes)
+                output.fd.sync()
+            }
+            Os.rename(temporary.absolutePath, journal.absolutePath)
+            syncDirectory(root)
+        } catch (failure: Throwable) {
+            runCatching { temporary.delete() }.onFailure(failure::addSuppressed)
+            throw failure
+        } finally {
+            journalBytes.fill(0)
+        }
+    }
+
+    private fun recoverInterruptedRestoreFiles() {
+        val journal = File(root, RESTORE_TRANSACTION_FILE)
+        if (journal.isFile) {
+            val journalBytes = try {
+                check(journal.length() in 1L..MAX_RESTORE_TRANSACTION_BYTES.toLong()) {
+                    "The interrupted restore journal is invalid. Preserve app data and the recovery folder."
+                }
+                journal.readBytes()
+            } catch (failure: Throwable) {
+                throw IOException(
+                    "The interrupted restore journal could not be read safely. Preserve app data and the recovery folder.",
+                    failure
+                )
+            }
+
+            val records = try {
+                val json = JSONObject(String(journalBytes, Charsets.UTF_8))
+                require(json.getInt("version") == 1) { "Unsupported restore journal version." }
+                val digest = json.getString("targetIndexSha256")
+                require(digest.matches(Regex("[0-9a-f]{64}"))) { "Invalid restore journal digest." }
+                val array = json.getJSONArray("records")
+                val parsed = (0 until array.length()).map { index ->
+                    val item = array.getJSONObject(index)
+                    val id = item.getString("id")
+                    UUID.fromString(id)
+                    RestoreJournalRecord(id, item.getBoolean("hadOriginal"))
+                }
+                require(parsed.map { it.id }.distinct().size == parsed.size) {
+                    "The restore journal contains duplicate file identifiers."
+                }
+                digest to parsed
+            } catch (failure: Throwable) {
+                journalBytes.fill(0)
+                throw IOException(
+                    "The interrupted restore journal is invalid. Preserve app data and the recovery folder.",
+                    failure
+                )
+            }
+            journalBytes.fill(0)
+
+            val (targetDigest, journalRecords) = records
+            val currentDigest = runCatching {
+                val currentIndex = serializeIndex(loadIndex())
+                try {
+                    MessageDigest.getInstance("SHA-256").digest(currentIndex)
+                        .joinToString("") { "%02x".format(it) }
+                } finally {
+                    currentIndex.fill(0)
+                }
+            }.getOrNull()
+            val committed = currentDigest == targetDigest
+
+            if (committed) {
+                // The new authenticated index is durable: keep the new payloads
+                // and finish deleting rollback copies left by process death.
+                journalRecords.forEach { record ->
+                    val backup = File(root, "${record.id}.restore.bak")
+                    if (backup.exists()) {
+                        check(backup.delete()) { "Could not finalize a restored vault record." }
+                    }
+                }
+            } else {
+                // The old index is still authoritative. Restore every original
+                // payload and remove only records that did not exist before this
+                // transaction, including files promoted just before interruption.
+                journalRecords.asReversed().forEach { record ->
+                    val destination = encryptedFile(record.id)
+                    val backup = File(root, "${record.id}.restore.bak")
+                    if (backup.exists()) {
+                        if (destination.exists()) {
+                            check(destination.delete()) { "Could not roll back a restored vault record." }
+                        }
+                        Os.rename(backup.absolutePath, destination.absolutePath)
+                    } else if (!record.hadOriginal && destination.exists()) {
+                        check(destination.delete()) { "Could not remove an uncommitted restored vault record." }
+                    } else if (record.hadOriginal) {
+                        check(destination.isFile) {
+                            "An original vault record is missing during restore rollback. Preserve app data and the recovery folder."
+                        }
+                    }
+                }
+            }
+
+            journalRecords.forEach { record ->
+                val temporary = File(root, "${record.id}.restore.tmp")
+                if (temporary.exists()) deleteTemporaryEntry(temporary)
+            }
+            check(journal.delete()) { "Could not finalize the interrupted restore journal." }
+            syncDirectory(root)
+        } else {
+            // Backward compatibility with restores started by older app builds,
+            // which did not yet write a transaction journal.
+            root.listFiles()?.filter { it.name.endsWith(".restore.bak") }?.forEach { backup ->
+                val id = backup.name.removeSuffix(".restore.bak")
+                if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
+                val destination = encryptedFile(id)
+                if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
+                else runCatching { backup.delete() }
+            }
+        }
+        val journalTemporary = File(root, "$RESTORE_TRANSACTION_FILE.tmp")
+        if (journalTemporary.exists()) deleteTemporaryEntry(journalTemporary)
         root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach(::deleteTemporaryEntry)
         syncDirectory(root)
     }
