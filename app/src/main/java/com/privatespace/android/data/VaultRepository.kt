@@ -1624,8 +1624,13 @@ class VaultRepository(context: Context) {
                 val id = backup.name.removeSuffix(".restore.bak")
                 if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
                 val destination = encryptedFile(id)
-                if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
-                else runCatching { backup.delete() }
+                // Before journaled restores existed, a leftover backup meant the
+                // process died before the old restore path finished this record.
+                // The old encrypted payload is therefore the safe version to keep.
+                if (destination.exists()) {
+                    check(destination.delete()) { "Could not roll back an interrupted vault restore." }
+                }
+                Os.rename(backup.absolutePath, destination.absolutePath)
             }
         }
         val journalTemporary = File(root, "$RESTORE_TRANSACTION_FILE.tmp")
