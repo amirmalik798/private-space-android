@@ -667,7 +667,7 @@ private fun PrivateSpaceRoot() {
             if (topics.isNotEmpty()) {
                 ExtendedFloatingActionButton(
                     onClick = { showCreateTopic = true },
-                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
                     text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
                     containerColor = Blue,
                     contentColor = Color.White,
