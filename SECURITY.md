@@ -8,6 +8,10 @@
 - Password-based app access with PBKDF2-HMAC-SHA256, persisted failed-attempt lockout, and in-memory password-array clearing after verification/derivation.
 - App lock on foreground exit, screenshot/recent-task protection, backup exclusion, and narrow FileProvider cache exposure.
 
+## File fidelity
+
+Vault import, encryption, decryption, opening, sharing, and export use byte-stream copies rather than image or document conversion. The expected property is byte-for-byte equality: the decrypted/exported file has the same length and SHA-256 content digest as the selected source bytes. The encrypted container adds 36 bytes of framing/authentication overhead. Automated JVM tests exercise the shared AES-GCM stream implementation across file sizes and binary-format samples.
+
 ## Explicit limitations
 
 - Opening, sharing, or exporting requires plaintext to exist temporarily or at the destination.

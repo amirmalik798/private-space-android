@@ -2,6 +2,12 @@
 
 Private Space is a local-only Android vault for organizing documents and photos into topics. The project uses Kotlin, Jetpack Compose, Android Keystore, Gradle 8.13, a Windows PowerShell APK script, and GitHub Actions.
 
+## File integrity and fidelity (0.3.0)
+
+Private Space treats imported documents and photos as opaque byte streams. It does not decode, resize, recompress, rotate, strip metadata from, or convert an imported image/document. AES-GCM encryption and decryption operate on the original bytes. After successful decryption, opening/sharing/export passes those recovered bytes through unchanged. The versioned encrypted container adds exactly 36 bytes (8-byte format marker, 12-byte random nonce, and 16-byte authentication tag); this is storage overhead, not a change to the original file. The exported/decrypted file length and SHA-256 digest should match the imported source bytes.
+
+The automated byte-preservation tests cover empty and buffer-boundary payloads, synthetic PDF/JPEG/PNG binary signatures, an 8 MiB payload, nonce uniqueness, rejection of modified ciphertext/wrong record identity, and compatibility with the first release's encrypted container format.
+
 ## Security changes in 0.2.0
 
 - File contents use AES-256-GCM encryption with a random nonce. New encrypted records authenticate their record ID and purpose as additional authenticated data, preventing unnoticed file swapping.

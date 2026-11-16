@@ -16,16 +16,25 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Versioned AES-256-GCM file format.
+ * Byte-preserving, versioned AES-256-GCM container.
  *
- * New records authenticate their purpose/record ID as AAD. Legacy records from
- * the first Private Space build (12-byte IV followed by ciphertext) remain
- * readable, but all newly written records use the versioned format.
+ * The clear file payload is never decoded as an image/document, resized,
+ * recompressed, normalized, or transcoded. AES-GCM encrypts the exact input
+ * bytes and restores those exact bytes during decryption.
+ *
+ * Container layout for new records:
+ *   8-byte magic | 12-byte random nonce | original bytes as ciphertext | 16-byte GCM tag
+ *
+ * Therefore encrypted storage uses exactly 36 bytes of container overhead.
+ * Legacy records (12-byte nonce followed by ciphertext/tag) remain readable.
  */
 object VaultCrypto {
     private const val ALIAS = "private_space_aes_v1"
     private const val IV_BYTES = 12
+    private const val TAG_BYTES = 16
     private const val BUFFER_SIZE = 64 * 1024
+    const val VERSIONED_CONTAINER_OVERHEAD_BYTES = 8 + IV_BYTES + TAG_BYTES
+
     private val MAGIC = byteArrayOf(0x50, 0x53, 0x56, 0x4c, 0x54, 0x30, 0x32, 0x0a)
 
     private fun existingKey(): SecretKey {
@@ -52,7 +61,6 @@ object VaultCrypto {
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setRandomizedEncryptionRequired(true)
 
-        // The key cannot be used while the Android device itself is locked.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             builder.setUnlockedDeviceRequired(true)
         }
@@ -70,48 +78,96 @@ object VaultCrypto {
 
     @Throws(IOException::class, GeneralSecurityException::class)
     fun encrypt(input: InputStream, output: OutputStream, aad: ByteArray) {
+        encryptWithKey(input, output, aad, encryptionKey())
+    }
+
+    @Throws(IOException::class, GeneralSecurityException::class)
+    fun decrypt(input: InputStream, output: OutputStream, aad: ByteArray) {
+        decryptWithKey(input, output, aad, existingKey())
+    }
+
+    /**
+     * Shared cryptographic path used by JVM tests with an ephemeral test key.
+     * It is internal and does not alter the production Android Keystore path.
+     */
+    @Throws(IOException::class, GeneralSecurityException::class)
+    internal fun encryptForTest(
+        input: InputStream,
+        output: OutputStream,
+        aad: ByteArray,
+        testKey: SecretKey
+    ) {
+        encryptWithKey(input, output, aad, testKey)
+    }
+
+    @Throws(IOException::class, GeneralSecurityException::class)
+    internal fun decryptForTest(
+        input: InputStream,
+        output: OutputStream,
+        aad: ByteArray,
+        testKey: SecretKey
+    ) {
+        decryptWithKey(input, output, aad, testKey)
+    }
+
+    private fun encryptWithKey(
+        input: InputStream,
+        output: OutputStream,
+        aad: ByteArray,
+        key: SecretKey
+    ) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
+        cipher.init(Cipher.ENCRYPT_MODE, key)
         cipher.updateAAD(aad)
 
-        val iv = cipher.iv
-        require(iv.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
+        val nonce = cipher.iv
+        require(nonce.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
+
         output.write(MAGIC)
-        output.write(iv)
+        output.write(nonce)
 
         val buffer = ByteArray(BUFFER_SIZE)
         while (true) {
             val count = input.read(buffer)
             if (count < 0) break
             if (count == 0) continue
-            cipher.update(buffer, 0, count)?.let(output::write)
+            cipher.update(buffer, 0, count)?.let { encrypted ->
+                output.write(encrypted)
+            }
         }
+
+        // GCM appends its authentication tag here. It does not pad, compress,
+        // or otherwise change the length of the original payload.
         output.write(cipher.doFinal())
         output.flush()
     }
 
     /**
-     * Authentication is completed by doFinal(). Callers must write to a
-     * private temporary file and only expose it after this method succeeds.
-     * That prevents unauthenticated partial plaintext from being opened/shared.
+     * The GCM authentication tag is checked by doFinal(). Callers must write
+     * into a private temporary file and only expose that file after this method
+     * succeeds, so unauthenticated partial plaintext can never be opened/shared.
      */
-    @Throws(IOException::class, GeneralSecurityException::class)
-    fun decrypt(input: InputStream, output: OutputStream, aad: ByteArray) {
+    private fun decryptWithKey(
+        input: InputStream,
+        output: OutputStream,
+        aad: ByteArray,
+        key: SecretKey
+    ) {
         val prefix = ByteArray(MAGIC.size)
         readExactly(input, prefix, 0, prefix.size)
 
         val versioned = prefix.contentEquals(MAGIC)
-        val iv = ByteArray(IV_BYTES)
+        val nonce = ByteArray(IV_BYTES)
         if (versioned) {
-            readExactly(input, iv, 0, iv.size)
+            readExactly(input, nonce, 0, nonce.size)
         } else {
-            // Backward compatibility with the original IV || ciphertext format.
-            prefix.copyInto(iv, destinationOffset = 0)
-            readExactly(input, iv, MAGIC.size, IV_BYTES - MAGIC.size)
+            // Backward compatibility with the original nonce || ciphertext format.
+            prefix.copyInto(nonce, destinationOffset = 0)
+            readExactly(input, nonce, MAGIC.size, IV_BYTES - MAGIC.size)
         }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, existingKey(), GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BYTES * 8, nonce))
         if (versioned) cipher.updateAAD(aad)
 
         val buffer = ByteArray(BUFFER_SIZE)
@@ -119,14 +175,19 @@ object VaultCrypto {
             val count = input.read(buffer)
             if (count < 0) break
             if (count == 0) continue
-            cipher.update(buffer, 0, count)?.let(output::write)
+            cipher.update(buffer, 0, count)?.let { clear ->
+                output.write(clear)
+            }
         }
 
         try {
             output.write(cipher.doFinal())
             output.flush()
         } catch (badTag: AEADBadTagException) {
-            throw IOException("Vault integrity check failed. The encrypted data may be damaged or modified.", badTag)
+            throw IOException(
+                "Vault integrity check failed. The encrypted data may be damaged or modified.",
+                badTag
+            )
         }
     }
 
