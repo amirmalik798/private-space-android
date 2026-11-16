@@ -12,6 +12,12 @@ class VaultIndexSchemaTest {
     }
 
     @Test
+    fun legacySchemaIsUpgradedOnStartupButCurrentSchemaIsNotRewritten() {
+        assertTrue(VaultIndexSchema.needsUpgrade(VaultIndexSchema.LEGACY_VERSION))
+        assertFalse(VaultIndexSchema.needsUpgrade(VaultIndexSchema.CURRENT_VERSION))
+    }
+
+    @Test
     fun currentReaderRejectsUnknownVersionsInsteadOfRewritingThem() {
         assertFalse(VaultIndexSchema.isSupported(1))
         assertFalse(VaultIndexSchema.isSupported(4))
