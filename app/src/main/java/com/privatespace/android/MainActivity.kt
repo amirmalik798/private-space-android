@@ -14,9 +14,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import android.view.WindowManager
-import android.widget.MediaController
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -59,7 +57,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -184,6 +181,9 @@ private data class FilePickerTarget(
 
 private const val FILE_PICKER_PREFERENCES = "private_space_ui"
 private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_component"
+private const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
+private const val SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.samsung.android.video"
+private const val LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.sec.android.app.videoplayer"
 
 private enum class VaultReleaseAction { SHARE, EXPORT }
 
@@ -782,7 +782,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun openExternalVaultFile(file: VaultFile) {
+    fun openExternalVaultFile(file: VaultFile, preferSamsungVideoPlayer: Boolean = false) {
         scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) {
@@ -802,11 +802,30 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     val uri = FileProvider.getUriForFile(
                         context, "com.privatespace.android.fileprovider", prepared.file
                     )
-                    val viewIntent = Intent(Intent.ACTION_VIEW)
-                        .setDataAndType(uri, prepared.mimeType)
+                    val videoMimeType = prepared.mimeType.takeIf { it.startsWith("video/") } ?: "video/*"
+                    val requestedMimeType = if (preferSamsungVideoPlayer) videoMimeType else prepared.mimeType
+                    val baseIntent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, requestedMimeType)
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    viewIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                    context.startActivity(viewIntent)
+                    baseIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
+
+                    val samsungPackages = if (
+                        preferSamsungVideoPlayer &&
+                        Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+                    ) {
+                        listOf(
+                            SAMSUNG_GALLERY_PACKAGE,
+                            SAMSUNG_VIDEO_PLAYER_PACKAGE,
+                            LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE
+                        )
+                    } else {
+                        emptyList()
+                    }
+                    val samsungIntent = samsungPackages
+                        .asSequence()
+                        .map { packageName -> Intent(baseIntent).setPackage(packageName) }
+                        .firstOrNull { it.resolveActivity(context.packageManager) != null }
+                    context.startActivity(samsungIntent ?: baseIntent)
                 } catch (failure: Exception) {
                     runCatching { prepared.file.parentFile?.deleteRecursively() }
                     toast("No compatible app could open this file.")
@@ -819,9 +838,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
 
     fun openVaultFile(file: VaultFile) {
-        val isMedia = VaultFormatSupport.isImageMimeType(file.mimeType) ||
-            VaultFormatSupport.isVideoMimeType(file.mimeType)
-        if (!isMedia) {
+        val isImage = VaultFormatSupport.isImageMimeType(file.mimeType)
+        val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+        if (!isImage && !isVideo) {
             // Documents need a separate, explicit consent step before plaintext
             // is handed to another app through FileProvider.
             pendingOpenFile = file
@@ -830,6 +849,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
         if (activeTopicId != file.topicId || vaultFiles.none { it.id == file.id }) {
             toast("This media item is no longer available in the open topic.")
+            return
+        }
+        if (isVideo) {
+            // Video playback is delegated to Samsung Gallery/Video Player on
+            // Samsung devices, so obtain consent before creating a decrypted copy.
+            pendingOpenFile = file
             return
         }
 
@@ -1259,11 +1284,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     val activeTopicFiles = activeTopic?.let { topic ->
         vaultFiles.filter { it.topicId == topic.id }
     } ?: emptyList()
-    val topicMediaFiles = activeTopic?.let { topic ->
+    val topicImageFiles = activeTopic?.let { topic ->
         VaultMediaNavigation.mediaFilesInTopic(vaultFiles, topic.id)
+            .filter { VaultFormatSupport.isImageMimeType(it.mimeType) }
     } ?: emptyList()
     val activeMedia = activeMediaId?.let { mediaId ->
-        topicMediaFiles.firstOrNull { it.id == mediaId }
+        topicImageFiles.firstOrNull { it.id == mediaId }
     }
 
     LaunchedEffect(activeTopicId, topics) {
@@ -1286,23 +1312,22 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 closeMediaViewer()
             }
         } else {
-            val mediaPosition = topicMediaFiles.indexOfFirst { it.id == activeMedia.id }
+            val mediaPosition = topicImageFiles.indexOfFirst { it.id == activeMedia.id }
             VaultMediaViewer(
                 file = activeMedia,
                 preparedFile = activeMediaFile,
                 loading = mediaViewerLoading,
                 position = mediaPosition + 1,
-                total = topicMediaFiles.size,
+                total = topicImageFiles.size,
                 canGoPrevious = mediaPosition > 0,
                 canGoNext = mediaPosition >= 0 && mediaPosition < topicMediaFiles.lastIndex,
                 onBack = ::closeMediaViewer,
                 onPrevious = {
-                    VaultMediaNavigation.adjacent(topicMediaFiles, activeMedia.id, -1)?.let(::openVaultFile)
+                    VaultMediaNavigation.adjacent(topicImageFiles, activeMedia.id, -1)?.let(::openVaultFile)
                 },
                 onNext = {
-                    VaultMediaNavigation.adjacent(topicMediaFiles, activeMedia.id, 1)?.let(::openVaultFile)
+                    VaultMediaNavigation.adjacent(topicImageFiles, activeMedia.id, 1)?.let(::openVaultFile)
                 },
-                onPlaybackError = { toast("This video format or codec is not supported by this device.") }
             )
         }
     } else if (activeTopic != null) {
@@ -1546,14 +1571,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
 
     pendingOpenFile?.let { requestedFile ->
+        val isVideoRequest = VaultFormatSupport.isVideoMimeType(requestedFile.mimeType)
         AlertDialog(
             onDismissRequest = { pendingOpenFile = null },
             title = {
-                Text("Open document outside Private Space?", color = White, fontWeight = FontWeight.Bold)
+                Text(
+                    if (isVideoRequest) "Open video outside Private Space?" else "Open document outside Private Space?",
+                    color = White,
+                    fontWeight = FontWeight.Bold
+                )
             },
             text = {
                 Text(
-                    "Private Space does not render this document internally. To open it, the app must create a temporary decrypted copy and grant the app you choose access to that copy. That app may retain or copy the document. Continue only when you trust the receiving app.",
+                    if (isVideoRequest) {
+                        "To play this video, Private Space must create a temporary decrypted copy and grant Samsung Gallery or a compatible video player access to it. The receiving app may retain or copy the video. Continue only if you trust the player."
+                    } else {
+                        "Private Space does not render this document internally. To open it, the app must create a temporary decrypted copy and grant the app you choose access to that copy. That app may retain or copy the document. Continue only when you trust the receiving app."
+                    },
                     color = Muted
                 )
             },
@@ -1565,12 +1599,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         if (currentFile == null || !unlocked) {
                             toast("This document is no longer available in the vault.")
                         } else {
-                            openExternalVaultFile(currentFile)
+                            openExternalVaultFile(currentFile, preferSamsungVideoPlayer = isVideoRequest)
                         }
                     },
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Continue to document app")
+                    Text(if (isVideoRequest) "Open video player" else "Continue to document app")
                 }
             },
             dismissButton = {
@@ -2873,11 +2907,9 @@ private fun VaultMediaViewer(
     canGoNext: Boolean,
     onBack: () -> Unit,
     onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    onPlaybackError: () -> Unit
+    onNext: () -> Unit
 ) {
     val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
-    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
     val privateMediaFile = preparedFile?.file?.takeIf { it.isFile }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -3000,30 +3032,6 @@ private fun VaultMediaViewer(
                         }
                     }
                 }
-                isVideo -> {
-                    key(file.id) {
-                        AndroidView(
-                            factory = { playerContext ->
-                                val player = VideoView(playerContext)
-                                val controls = MediaController(playerContext)
-                                controls.setAnchorView(player)
-                                player.setMediaController(controls)
-                                player.setVideoPath(privateMediaFile.absolutePath)
-                                player.setOnPreparedListener { mediaPlayer ->
-                                    mediaPlayer.isLooping = false
-                                    player.start()
-                                }
-                                player.setOnErrorListener { _, _, _ ->
-                                    onPlaybackError()
-                                    true
-                                }
-                                player
-                            },
-                            modifier = Modifier.fillMaxSize(),
-                            onRelease = { player -> player.stopPlayback() }
-                        )
-                    }
-                }
                 else -> Text("Unsupported media type.", color = Muted)
             }
         }
@@ -3038,7 +3046,7 @@ private fun VaultMediaViewer(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(if (isPhoto) "Photo" else "Video", color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Photo", color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Text(formatBytes(file.sizeBytes), color = Muted, fontSize = 11.sp)
                 }
                 Text(

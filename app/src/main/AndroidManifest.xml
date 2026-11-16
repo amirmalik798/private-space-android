@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <queries>
         <package android:name="com.sec.android.app.myfiles" />
+        <package android:name="com.sec.android.gallery3d" />
+        <package android:name="com.samsung.android.video" />
+        <package android:name="com.sec.android.app.videoplayer" />
         <intent>
             <action android:name="android.intent.action.OPEN_DOCUMENT" />
             <category android:name="android.intent.category.OPENABLE" />
