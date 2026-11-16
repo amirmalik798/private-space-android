@@ -1,6 +1,6 @@
 # Private Space
 
-## Topic and file actions (0.7.0)
+## Topic and file actions (0.8.0)
 
 - Create named topics and permanently delete a topic together with every encrypted file inside it.
 - Add multiple photos and documents to a topic using the selected Android file manager; remove an individual file from its topic.
@@ -8,6 +8,17 @@
 - Export one topic into a newly created folder with the same name as the topic.
 - Export the complete vault into `private-space-data/<topic name>/<files>`. Every topic gets its own subfolder, including empty topics. If the selected destination already contains a `private-space-data` folder, the app stops and asks you to choose another location rather than overwrite existing content.
 - File-name collisions inside an export are resolved by adding a numbered suffix so no exported file silently replaces another.
+
+## Security, crash recovery and file sizes (0.8.0)
+
+- Vault files, topics and metadata stay under app-private internal storage. The vault, plaintext staging area and temporary outgoing-share folders are restricted to the app's Linux UID with owner-only directory/file permissions.
+- The Android FileProvider is not exported and exposes only the temporary `cache/outgoing/` directory. It does not expose the encrypted vault directory or plaintext export-staging directory. Read-only URI grants are created only after the user chooses an explicit Open, Share, or Share topic action.
+- Opening a file hands a temporary decrypted copy to the external viewer selected by the user. Sharing and export likewise create plaintext outside the encrypted vault only after the corresponding user action. Receiving apps and export destinations can retain those copies.
+- Android app backup and device transfer remain disabled. The app requests no network permission and has no cloud upload/sync pathway.
+- Imports stream AES-256-GCM into a temporary encrypted file, sync it, atomically rename it, and then commit the encrypted index. Interrupted imports are reconciled on next startup.
+- Delete operations stage encrypted payloads under recoverable tombstone names, commit the encrypted index, and then remove the payload. Startup recovery restores a tombstone when the index still references it and completes deletion when it does not.
+- Metadata decryption is bounded to the index-size limit. Temporary clear metadata and cipher buffers are wiped after use where the runtime permits.
+- **No application-level file-size ceiling is imposed.** Imports use bounded-memory streaming and a 64-bit byte counter. Practical limits still depend on available storage, the filesystem, Android's document provider and cryptographic provider. Photos/documents are never resized, recompressed, converted or stripped of metadata; new encrypted records add 36 bytes of container overhead.
 
 ## Modern user interface and usability (0.7.0)
 

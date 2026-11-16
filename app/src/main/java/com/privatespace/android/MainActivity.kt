@@ -475,17 +475,17 @@ private fun PrivateSpaceRoot() {
             }
             busy = false
             result.onSuccess { prepared ->
-                val uri = FileProvider.getUriForFile(
-                    context, "com.privatespace.android.fileprovider", prepared.file
-                )
-                val viewIntent = Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(uri, prepared.mimeType)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                viewIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                runCatching {
+                try {
+                    val uri = FileProvider.getUriForFile(
+                        context, "com.privatespace.android.fileprovider", prepared.file
+                    )
+                    val viewIntent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, prepared.mimeType)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    viewIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
                     context.startActivity(Intent.createChooser(viewIntent, "Open with"))
-                }.onFailure {
-                    prepared.file.parentFile?.deleteRecursively()
+                } catch (failure: Exception) {
+                    runCatching { prepared.file.parentFile?.deleteRecursively() }
                     toast("No compatible app could open this file.")
                 }
             }.onFailure {
@@ -502,18 +502,18 @@ private fun PrivateSpaceRoot() {
             }
             busy = false
             result.onSuccess { prepared ->
-                val uri = FileProvider.getUriForFile(
-                    context, "com.privatespace.android.fileprovider", prepared.file
-                )
-                val sendIntent = Intent(Intent.ACTION_SEND)
-                    .setType(prepared.mimeType)
-                    .putExtra(Intent.EXTRA_STREAM, uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                runCatching {
+                try {
+                    val uri = FileProvider.getUriForFile(
+                        context, "com.privatespace.android.fileprovider", prepared.file
+                    )
+                    val sendIntent = Intent(Intent.ACTION_SEND)
+                        .setType(prepared.mimeType)
+                        .putExtra(Intent.EXTRA_STREAM, uri)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
                     context.startActivity(Intent.createChooser(sendIntent, "Share file"))
-                }.onFailure {
-                    prepared.file.parentFile?.deleteRecursively()
+                } catch (failure: Exception) {
+                    runCatching { prepared.file.parentFile?.deleteRecursively() }
                     toast("Could not open the Android share sheet.")
                 }
             }.onFailure {
