@@ -396,7 +396,7 @@ class VaultRepository(context: Context) {
         // reported payload cannot fit in current private storage.
         if (reportedSize != null) {
             val available = root.usableSpace
-            val overhead = VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES.toLong()
+            val overhead = VaultCrypto.MINIMUM_CHUNKED_CONTAINER_OVERHEAD_BYTES.toLong()
             require(reportedSize <= available && available - reportedSize >= overhead) {
                 "There is not enough free storage for this file."
             }
