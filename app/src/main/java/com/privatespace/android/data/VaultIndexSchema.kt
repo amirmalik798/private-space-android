@@ -16,4 +16,7 @@ object VaultIndexSchema {
 
     fun needsUpgrade(version: Int): Boolean =
         version == LEGACY_VERSION
+
+    fun requiresTrashArray(version: Int): Boolean =
+        version == CURRENT_VERSION
 }
