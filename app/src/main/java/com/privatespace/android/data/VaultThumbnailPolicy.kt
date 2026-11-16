@@ -10,6 +10,12 @@ import java.io.File
 internal object VaultThumbnailPolicy {
     private const val MAX_DECODE_DIMENSION_PX = 2048
     private const val DEFAULT_MAX_DECODED_PIXELS = 4_194_304L
+    // Avoid decrypting very large media files solely to draw a tiny list thumbnail.
+    // Large files remain fully supported and can still be opened/exported normally.
+    const val MAX_PREVIEW_SOURCE_BYTES = 16L * 1024L * 1024L
+
+    fun shouldGeneratePreview(sourceBytes: Long): Boolean =
+        sourceBytes in 1L..MAX_PREVIEW_SOURCE_BYTES
     fun calculateSampleSize(width: Int, height: Int, targetSizePx: Int): Int {
         if (width <= 0 || height <= 0 || targetSizePx <= 0) return 1
 
