@@ -34,7 +34,7 @@ class VaultCryptoBytePreservationTest {
             assertEquals("Decrypted length changed at size $size", original.size, restored.size)
             assertEquals(
                 "Unexpected encrypted container overhead at size $size",
-                original.size + VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES,
+                VaultCrypto.encryptedContainerLength(original.size.toLong()).toInt(),
                 encrypted.size
             )
         }
@@ -75,7 +75,7 @@ class VaultCryptoBytePreservationTest {
         assertEquals(original.size, restored.size)
         assertArrayEquals(original, restored)
         assertEquals(
-            original.size + VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES,
+            VaultCrypto.encryptedContainerLength(original.size.toLong()).toInt(),
             encrypted.size
         )
     }
@@ -194,7 +194,7 @@ class VaultCryptoBytePreservationTest {
 
         assertArrayEquals(original, restored.toByteArray())
         assertEquals(
-            original.size + VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES,
+            VaultCrypto.encryptedContainerLength(original.size.toLong()).toInt(),
             encryptedOutput.size()
         )
     }
