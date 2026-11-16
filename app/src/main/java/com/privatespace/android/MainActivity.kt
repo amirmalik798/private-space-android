@@ -688,15 +688,7 @@ private fun PrivateSpaceRoot() {
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (topics.isEmpty()) "Your files will be organized here"
-                            else topics.size.toString() + if (topics.size == 1) " private collection" else " private collections",
-                            color = Muted,
-                            fontSize = 12.sp
-                        )
-                    }
+                    Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (topics.isNotEmpty()) {
                         Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
                             Text(
@@ -781,7 +773,8 @@ private fun PrivateSpaceRoot() {
             onShare = ::shareVaultFile,
             onExport = ::launchSingleFileExport,
             onDelete = { fileToDelete = it },
-            onShareTopic = { shareWholeTopic(activeTopic.id) }
+            onShareTopic = { shareWholeTopic(activeTopic.id) },
+            onExportTopic = { launchTopicExport(activeTopic.id) }
         )
     }
 
@@ -791,7 +784,6 @@ private fun PrivateSpaceRoot() {
             title = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Create a topic", fontWeight = FontWeight.Bold)
-                    Text("Give this collection a name you will recognize.", color = Muted, fontSize = 12.sp)
                 }
             },
             text = {
@@ -1249,7 +1241,6 @@ private fun VaultOverviewCard(
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("Your private library", color = White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
-                    Text("Everything you store here stays inside your encrypted vault.", color = Muted, fontSize = 13.sp)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OverviewMetric(
@@ -1281,7 +1272,7 @@ private fun VaultOverviewCard(
                     ) {
                         Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Export all")
+                        Text("Export all topics")
                     }
                 }
             }
@@ -1338,7 +1329,7 @@ private fun EmptyTopicsState(onCreate: () -> Unit) {
             }
             Text("Start with a topic", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
             Text(
-                "Create a collection for your documents or photos. You can add files, open them, share them, or export them later.",
+                "Create a topic to add documents and photos.",
                 color = Muted,
                 fontSize = 13.sp,
                 lineHeight = 19.sp
@@ -1420,6 +1411,8 @@ private fun TopicCard(
     onExport: () -> Unit,
     onDelete: () -> Unit
 ) {
+    var menuExpanded by remember(summary.topic.id) { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
         colors = CardDefaults.cardColors(containerColor = Panel),
@@ -1458,12 +1451,31 @@ private fun TopicCard(
                 )
                 Text("Updated " + formatDate(summary.topic.updatedAt), color = Muted, fontSize = 11.sp)
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = onExport) {
-                    Icon(Icons.Default.FileDownload, contentDescription = "Export " + summary.topic.name, tint = Muted)
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "Actions for " + summary.topic.name, tint = Muted)
                 }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete " + summary.topic.name, tint = Red)
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    containerColor = Panel
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Open topic") },
+                        leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
+                        onClick = { menuExpanded = false; onOpen() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Export topic") },
+                        leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
+                        onClick = { menuExpanded = false; onExport() }
+                    )
+                    HorizontalDivider(color = Line)
+                    DropdownMenuItem(
+                        text = { Text("Delete topic", color = Red) },
+                        leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Red) },
+                        onClick = { menuExpanded = false; onDelete() }
+                    )
                 }
             }
         }
@@ -1481,7 +1493,8 @@ private fun TopicDialog(
     onShare: (VaultFile) -> Unit,
     onExport: (VaultFile) -> Unit,
     onDelete: (VaultFile) -> Unit,
-    onShareTopic: () -> Unit
+    onShareTopic: () -> Unit,
+    onExportTopic: () -> Unit
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -1537,18 +1550,19 @@ private fun TopicDialog(
                     }
                 }
                 Spacer(Modifier.height(13.dp))
+                Button(
+                    onClick = onAdd,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Add files")
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    Button(
-                        onClick = onAdd,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(13.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Add files")
-                    }
                     OutlinedButton(
                         onClick = onShareTopic,
+                        enabled = files.isNotEmpty(),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(13.dp)
                     ) {
@@ -1556,14 +1570,16 @@ private fun TopicDialog(
                         Spacer(Modifier.width(6.dp))
                         Text("Share topic")
                     }
+                    OutlinedButton(
+                        onClick = onExportTopic,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(13.dp)
+                    ) {
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Export topic")
+                    }
                 }
-                Text(
-                    "Files stay encrypted while stored here. Opening or sharing prepares a temporary copy.",
-                    color = Muted,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    modifier = Modifier.padding(top = 9.dp, bottom = 5.dp)
-                )
                 HorizontalDivider(color = Line)
                 if (files.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1572,8 +1588,7 @@ private fun TopicDialog(
                             verticalArrangement = Arrangement.spacedBy(9.dp)
                         ) {
                             Icon(Icons.Default.Description, contentDescription = null, tint = Muted, modifier = Modifier.size(38.dp))
-                            Text("No files in this topic yet", color = White, fontWeight = FontWeight.SemiBold)
-                            Text("Add documents or photos to see them here.", color = Muted, fontSize = 12.sp)
+                            Text("No files yet", color = White, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 } else {
