@@ -95,3 +95,13 @@ object VaultStorageCalculator {
         )
     }
 }
+
+
+/** Stable, timestamp-based ordering for files displayed inside a topic. */
+object VaultFileOrdering {
+    fun newestFirst(files: List<VaultFile>): List<VaultFile> =
+        files.sortedWith(compareByDescending<VaultFile> { it.addedAt }.thenBy { it.id })
+
+    fun oldestFirst(files: List<VaultFile>): List<VaultFile> =
+        files.sortedWith(compareBy<VaultFile> { it.addedAt }.thenBy { it.id })
+}

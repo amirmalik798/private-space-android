@@ -303,6 +303,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var trashEntries by remember { mutableStateOf<List<VaultTrashEntry>>(emptyList()) }
     var storageUsage by remember { mutableStateOf(VaultStorageUsage()) }
     var activeTopicId by remember { mutableStateOf<String?>(null) }
+    var topicFilesNewestFirst by remember { mutableStateOf(true) }
     var activeMediaId by remember { mutableStateOf<String?>(null) }
     var activeMediaFile by remember { mutableStateOf<PreparedVaultFile?>(null) }
     var mediaViewerLoading by remember { mutableStateOf(false) }
@@ -1300,7 +1301,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     val activeTopic = topics.firstOrNull { it.id == activeTopicId }
     val activeTopicFiles = activeTopic?.let { topic ->
-        vaultFiles.filter { it.topicId == topic.id }
+        val topicFiles = vaultFiles.filter { it.topicId == topic.id }
+        if (topicFilesNewestFirst) VaultFileOrdering.newestFirst(topicFiles)
+        else VaultFileOrdering.oldestFirst(topicFiles)
     } ?: emptyList()
     val topicImageFiles = activeTopic?.let { topic ->
         VaultMediaNavigation.mediaFilesInTopic(vaultFiles, topic.id)
@@ -1352,6 +1355,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         TopicScreen(
             topic = activeTopic,
             files = activeTopicFiles,
+            newestFirst = topicFilesNewestFirst,
+            onNewestFirstChange = { topicFilesNewestFirst = it },
             repository = repository,
             storageBytes = storageUsage.topicBytes[activeTopic.id] ?: 0L,
             busy = busy,
@@ -2581,6 +2586,8 @@ private fun TopicCard(
 private fun TopicScreen(
     topic: VaultTopic,
     files: List<VaultFile>,
+    newestFirst: Boolean,
+    onNewestFirstChange: (Boolean) -> Unit,
     repository: VaultRepository,
     storageBytes: Long,
     busy: Boolean,
@@ -2601,6 +2608,7 @@ private fun TopicScreen(
     var selectedFilter by remember(topic.id) { mutableStateOf(VaultFormatSupport.TopicFilter.ALL) }
     var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     var showTopicDetails by remember(topic.id) { mutableStateOf(false) }
+    var sortMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     val selectedFiles = files.filter { it.id in selectedFileIds }
     val filteredFiles = files.filter(selectedFilter::matches)
     val visibleFileIds = filteredFiles.map { it.id }.toSet()
@@ -2786,6 +2794,39 @@ private fun TopicScreen(
                                 softWrap = false
                             )
                         }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box {
+                    TextButton(onClick = { sortMenuExpanded = true }) {
+                        Icon(Icons.Default.Sort, contentDescription = null, tint = Cyan, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (newestFirst) "Newest first" else "Oldest first", color = Cyan, fontSize = 12.sp)
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Muted)
+                    }
+                    DropdownMenu(
+                        expanded = sortMenuExpanded,
+                        onDismissRequest = { sortMenuExpanded = false },
+                        containerColor = Panel
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Newest first", color = White) },
+                            leadingIcon = { Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = Cyan) },
+                            trailingIcon = { if (newestFirst) Icon(Icons.Default.Check, contentDescription = "Selected", tint = Cyan) },
+                            onClick = { onNewestFirstChange(true); sortMenuExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Oldest first", color = White) },
+                            leadingIcon = { Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = Cyan) },
+                            trailingIcon = { if (!newestFirst) Icon(Icons.Default.Check, contentDescription = "Selected", tint = Cyan) },
+                            onClick = { onNewestFirstChange(false); sortMenuExpanded = false }
+                        )
                     }
                 }
             }
