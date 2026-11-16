@@ -535,14 +535,22 @@ class VaultRepository(context: Context) {
 
     private fun fileAad(id: String) = "private-space:file:v2:$id".toByteArray(Charsets.UTF_8)
 
-    @Synchronized
-    private fun loadIndex(): VaultIndex {
+    /**
+     * Reports a failed constructor-time recovery attempt without touching disk.
+     * UI startup calls this on a worker thread before presenting the password screen.
+     */
+    fun ensureInitialized() {
         initializationFailure?.let {
             throw IllegalStateException(
                 it.message ?: "Vault initialization failed. Preserve app data and do not clear storage.",
                 it
             )
         }
+    }
+
+    @Synchronized
+    private fun loadIndex(): VaultIndex {
+        ensureInitialized()
         val hasBase = metadata.baseFile.exists()
         val hasBackup = File(metadata.baseFile.path + ".bak").exists()
         if (!hasBase && !hasBackup) return VaultIndex()
