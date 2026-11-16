@@ -192,7 +192,7 @@ internal class PersistentVaultStore private constructor(
 
             val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
                 operation = "the encrypted recovery index",
-                read = { readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD) },
+                read = { readDocumentBytes(document, PersistentVaultCrypto.maximumEncryptedContainerLength(MAX_INDEX_BYTES)) },
                 verify = { candidate ->
                     if (PersistentVaultCrypto.sha256(candidate) != expectedEncryptedDigest) {
                         throw IOException("The storage provider changed the encrypted recovery index after writing.")
@@ -462,7 +462,6 @@ internal class PersistentVaultStore private constructor(
         private const val READY_CONTENT = "PRIVATE_SPACE_RECOVERY_V1\n"
         private const val MAX_INDEX_BYTES = 16 * 1024 * 1024
         private const val MAX_ENVELOPE_BYTES = 4 * 1024
-        private const val CONTAINER_OVERHEAD = 8 + 12 + 16
         private const val DATA_KEY_BYTES = 32
         private const val INDEX_PREFIX = "vault-index-"
         private const val INDEX_SUFFIX = ".psv"
