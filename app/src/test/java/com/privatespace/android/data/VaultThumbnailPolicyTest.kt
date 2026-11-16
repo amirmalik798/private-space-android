@@ -32,6 +32,24 @@ class VaultThumbnailPolicyTest {
     }
 
     @Test
+    fun largeMediaSkipsExpensiveFullFileThumbnailDecryption() {
+        assertTrue(VaultThumbnailPolicy.shouldGeneratePreview(1L))
+        assertTrue(
+            VaultThumbnailPolicy.shouldGeneratePreview(
+                VaultThumbnailPolicy.MAX_PREVIEW_SOURCE_BYTES
+            )
+        )
+        assertTrue(
+            !VaultThumbnailPolicy.shouldGeneratePreview(
+                VaultThumbnailPolicy.MAX_PREVIEW_SOURCE_BYTES + 1L
+            )
+        )
+        assertTrue(!VaultThumbnailPolicy.shouldGeneratePreview(300L * 1024L * 1024L))
+        assertTrue(!VaultThumbnailPolicy.shouldGeneratePreview(0L))
+        assertTrue(!VaultThumbnailPolicy.shouldGeneratePreview(-1L))
+    }
+
+    @Test
     fun invalidDimensionsUseTheSafeNoSubsamplingValue() {
         assertEquals(1, VaultThumbnailPolicy.calculateSampleSize(0, 100, 80))
         assertEquals(1, VaultThumbnailPolicy.calculateSampleSize(100, -1, 80))
