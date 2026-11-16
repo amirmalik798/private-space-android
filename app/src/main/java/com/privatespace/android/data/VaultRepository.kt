@@ -167,31 +167,40 @@ class VaultRepository(context: Context) {
      */
     @Synchronized
     fun enablePersistentStorage(treeUri: Uri, password: CharArray) {
-        check(persistentStore == null) { "Persistent recovery storage is already active." }
-        val index = loadIndex()
-        val store = PersistentVaultStore.create(appContext, treeUri, password)
         try {
-            (index.files + index.trash.map { it.file }).forEach { record ->
-                val localFile = encryptedFile(record.id)
-                check(localFile.isFile) {
-                    "A vault file is missing and cannot be protected for reinstall recovery."
+            check(persistentStore == null) { "Persistent recovery storage is already active." }
+            val index = loadIndex()
+            val store = PersistentVaultStore.create(appContext, treeUri, password)
+            try {
+                (index.files + index.trash.map { it.file }).forEach { record ->
+                    val localFile = encryptedFile(record.id)
+                    check(localFile.isFile) {
+                        "A vault file is missing and cannot be protected for reinstall recovery."
+                    }
+                    persistLocalEncryptedPayload(store, record.id, localFile, record.sizeBytes)
                 }
-                persistLocalEncryptedPayload(store, record.id, localFile, record.sizeBytes)
+                val clearIndex = serializeIndex(index)
+                val saved = try {
+                    store.saveIndex(clearIndex, METADATA_AAD.toByteArray(Charsets.UTF_8))
+                } finally {
+                    clearIndex.fill(0)
+                }
+                store.markReady()
+                saveRecoveryPreferences(treeUri, saved.encryptedDigest)
+                persistentStore = store
+                persistentTreeUri = treeUri
+            } catch (failure: Throwable) {
+                try {
+                    store.deleteRecoveryFolder()
+                } catch (cleanupFailure: Throwable) {
+                    failure.addSuppressed(cleanupFailure)
+                } finally {
+                    store.clearKey()
+                }
+                throw failure
             }
-            val clearIndex = serializeIndex(index)
-            val saved = try {
-                store.saveIndex(clearIndex, METADATA_AAD.toByteArray(Charsets.UTF_8))
-            } finally {
-                clearIndex.fill(0)
-            }
-            store.markReady()
-            saveRecoveryPreferences(treeUri, saved.encryptedDigest)
-            persistentStore = store
-            persistentTreeUri = treeUri
-        } catch (failure: Throwable) {
-            store.deleteRecoveryFolder()
-            store.clearKey()
-            throw failure
+        } finally {
+            password.fill('\u0000')
         }
     }
 
@@ -513,9 +522,45 @@ class VaultRepository(context: Context) {
             decryptInto(record, destination)
             return PreparedVaultFile(destination, record.mimeType)
         } catch (failure: Throwable) {
-            session.deleteRecursively()
+            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
             throw failure
         }
+    }
+
+    /**
+     * Decrypts a photo or video into the private staging cache rather than the
+     * FileProvider-exposed outgoing directory. It must be discarded on close.
+     */
+    @Synchronized
+    fun prepareMediaForViewing(id: String): PreparedVaultFile {
+        val record = findFile(id)
+        require(
+            VaultFormatSupport.isImageMimeType(record.mimeType) ||
+                VaultFormatSupport.isVideoMimeType(record.mimeType)
+        ) { "Only photos and videos can be opened in the private media viewer." }
+
+        val session = createPrivateDirectory(staging, "viewer-${UUID.randomUUID()}")
+        val destination = File(session, VaultInputValidation.displayName(record.displayName))
+        try {
+            decryptInto(record, destination)
+            return PreparedVaultFile(destination, record.mimeType)
+        } catch (failure: Throwable) {
+            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            throw failure
+        }
+    }
+
+    /** Deletes only a viewer session created inside the private staging cache. */
+    @Synchronized
+    fun discardMediaForViewing(prepared: PreparedVaultFile) {
+        val canonicalRoot = staging.canonicalFile
+        val session = prepared.file.canonicalFile.parentFile
+            ?: throw IOException("The temporary media location is invalid.")
+        require(
+            session.parentFile?.canonicalFile == canonicalRoot &&
+                session.name.startsWith("viewer-")
+        ) { "Refusing to delete a file outside the private media viewer cache." }
+        deleteTemporaryEntry(session)
     }
 
     /**
@@ -545,7 +590,7 @@ class VaultRepository(context: Context) {
                 decodeVideoPreview(target, maxDimensionPx)
             }
         } finally {
-            target.delete()
+            deleteTemporaryEntry(target)
         }
     }
 
@@ -647,7 +692,7 @@ class VaultRepository(context: Context) {
                 PreparedVaultFile(stagedFile, record.mimeType)
             }
         } catch (failure: Throwable) {
-            session.deleteRecursively()
+            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
             throw failure
         }
     }
@@ -666,7 +711,7 @@ class VaultRepository(context: Context) {
             runCatching { DocumentFile.fromSingleUri(appContext, destination)?.delete() }
             throw failure
         } finally {
-            temporary.delete()
+            deleteTemporaryEntry(temporary)
         }
     }
 
@@ -684,7 +729,7 @@ class VaultRepository(context: Context) {
             destination.delete()
             throw failure
         } finally {
-            temporary.delete()
+            deleteTemporaryEntry(temporary)
         }
     }
 
@@ -807,7 +852,7 @@ class VaultRepository(context: Context) {
             decryptInto(record, target)
             return target
         } catch (failure: Throwable) {
-            target.delete()
+            runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
             throw failure
         }
     }
@@ -1098,46 +1143,74 @@ class VaultRepository(context: Context) {
         validateIndexForSave(index)
         recoverInterruptedRestoreFiles()
         val records = index.files + index.trash.map { it.file }
-        val stage = createPrivateDirectory(staging, "restore-${UUID.randomUUID()}")
+        val incomingFiles = mutableMapOf<String, File>()
+        var restoreFailure: Throwable? = null
         try {
-            val stagedFiles = mutableMapOf<String, File>()
             records.forEach { record ->
-                val clearTemp = File(stage, "${record.id}.clear")
-                val encryptedTemp = File(stage, "${record.id}.enc")
-                FileOutputStream(clearTemp).use { clear ->
-                    restrictFilePermissions(clearTemp)
-                    store.decryptPayload(record.id, clear, fileAad(record.id))
-                    clear.fd.sync()
+                val incoming = File(root, "${record.id}.restore.tmp")
+                check(!incoming.exists()) { "An interrupted vault restore needs recovery." }
+                try {
+                    VaultRecoveryReadback.verifyWithRetry(verify = {
+                        try {
+                            FileOutputStream(incoming).use { encrypted ->
+                                restrictFilePermissions(incoming)
+                                val localEncryptor = VaultCrypto.encryptingOutputStream(
+                                    encrypted,
+                                    fileAad(record.id)
+                                )
+                                try {
+                                    // The recovery GCM tag must authenticate before the
+                                    // local ciphertext tag is finalized. No clear restore
+                                    // copy is ever written to disk.
+                                    store.decryptPayload(record.id, localEncryptor, fileAad(record.id))
+                                    localEncryptor.finish()
+                                    encrypted.fd.sync()
+                                } catch (failure: Throwable) {
+                                    localEncryptor.abort()
+                                    throw failure
+                                }
+                            }
+                        } catch (failure: Throwable) {
+                            runCatching { deleteTemporaryEntry(incoming) }
+                                .onFailure(failure::addSuppressed)
+                            throw failure
+                        }
+                    })
+                    incomingFiles[record.id] = incoming
+                } catch (failure: Throwable) {
+                    runCatching { deleteTemporaryEntry(incoming) }
+                        .onFailure(failure::addSuppressed)
+                    throw failure
                 }
-                FileInputStream(clearTemp).use { clear ->
-                    FileOutputStream(encryptedTemp).use { encrypted ->
-                        restrictFilePermissions(encryptedTemp)
-                        VaultCrypto.encrypt(clear, encrypted, fileAad(record.id))
-                        encrypted.fd.sync()
+            }
+            incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
+            saveIndex(index)
+        } catch (failure: Throwable) {
+            restoreFailure = failure
+            throw failure
+        } finally {
+            records.forEach { record ->
+                try {
+                    deleteTemporaryEntry(File(root, "${record.id}.restore.tmp"))
+                } catch (cleanupFailure: Throwable) {
+                    if (restoreFailure != null) {
+                        restoreFailure.addSuppressed(cleanupFailure)
+                    } else {
+                        throw cleanupFailure
                     }
                 }
-                clearTemp.delete()
-                stagedFiles[record.id] = encryptedTemp
             }
-            stagedFiles.forEach { (id, staged) -> replaceRestoredPayload(id, staged) }
-            saveIndex(index)
-        } finally {
-            stage.deleteRecursively()
         }
     }
 
-    private fun replaceRestoredPayload(id: String, staged: File) {
+    private fun replaceRestoredPayload(id: String, incoming: File) {
         val destination = encryptedFile(id)
-        val incoming = File(root, "$id.restore.tmp")
+        val expectedIncoming = File(root, "$id.restore.tmp")
+        check(incoming.canonicalFile == expectedIncoming.canonicalFile && incoming.isFile) {
+            "The restored encrypted record is missing or outside private storage."
+        }
         val backup = File(root, "$id.restore.bak")
         check(!backup.exists()) { "An interrupted vault restore needs recovery." }
-        FileInputStream(staged).use { input ->
-            FileOutputStream(incoming).use { output ->
-                restrictFilePermissions(incoming)
-                input.copyTo(output, 64 * 1024)
-                output.fd.sync()
-            }
-        }
         if (destination.exists()) Os.rename(destination.absolutePath, backup.absolutePath)
         try {
             Os.rename(incoming.absolutePath, destination.absolutePath)
@@ -1164,7 +1237,7 @@ class VaultRepository(context: Context) {
             if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
             else backup.delete()
         }
-        root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach { it.delete() }
+        root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach(::deleteTemporaryEntry)
         syncDirectory(root)
     }
 
@@ -1379,6 +1452,12 @@ class VaultRepository(context: Context) {
         Os.chmod(file.absolutePath, PRIVATE_FILE_MODE)
     }
 
+    private fun deleteTemporaryEntry(entry: File) {
+        if (entry.exists() && !entry.deleteRecursively()) {
+            throw IOException("Could not remove temporary private data from app storage.")
+        }
+    }
+
     /** Same-filesystem atomic rename followed by a directory sync. */
     private fun atomicRename(source: File, destination: File) {
         check(source.parentFile?.canonicalPath == destination.parentFile?.canonicalPath) {
@@ -1469,7 +1548,7 @@ class VaultRepository(context: Context) {
         root.listFiles()?.filter { it.name.endsWith(".psv.tmp") }?.forEach { file ->
             val modified = file.lastModified()
             if (modified > 0L && now >= modified && now - modified > INCOMPLETE_IMPORT_TTL_MS) {
-                file.delete()
+                deleteTemporaryEntry(file)
             }
         }
     }
@@ -1477,9 +1556,9 @@ class VaultRepository(context: Context) {
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
         directory.listFiles()?.forEach { child ->
             val modified = child.lastModified()
-            if (modified > 0L && now >= modified && now - modified > ttlMs) {
-                child.deleteRecursively()
-            }
+            val ageIsUnknown = modified <= 0L
+            val expired = modified > 0L && now >= modified && now - modified > ttlMs
+            if (ageIsUnknown || expired) deleteTemporaryEntry(child)
         }
     }
 

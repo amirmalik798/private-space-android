@@ -166,6 +166,76 @@ class VaultCryptoBytePreservationTest {
         assertEquals(original.size, restored.size())
     }
 
+    @Test
+    fun streamingEncryptorRoundTripsExactBytes() {
+        val original = payload(1_250_321)
+        val encryptedOutput = ByteArrayOutputStream()
+        val encrypting = VaultCrypto.encryptingOutputStreamForTest(
+            encryptedOutput,
+            aad,
+            key
+        )
+
+        var offset = 0
+        while (offset < original.size) {
+            val count = minOf(17_003, original.size - offset)
+            encrypting.write(original, offset, count)
+            offset += count
+        }
+        encrypting.finish()
+
+        val restored = ByteArrayOutputStream()
+        VaultCrypto.decryptForTest(
+            ByteArrayInputStream(encryptedOutput.toByteArray()),
+            restored,
+            aad,
+            key
+        )
+
+        assertArrayEquals(original, restored.toByteArray())
+        assertEquals(
+            original.size + VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES,
+            encryptedOutput.size()
+        )
+    }
+
+    @Test
+    fun abortedStreamingEncryptorDoesNotWriteAnAuthenticationTag() {
+        val encryptedOutput = ByteArrayOutputStream()
+        val encrypting = VaultCrypto.encryptingOutputStreamForTest(
+            encryptedOutput,
+            aad,
+            key
+        )
+        encrypting.write(payload(8_192))
+        encrypting.abort()
+
+        assertThrows(Exception::class.java) {
+            VaultCrypto.decryptForTest(
+                ByteArrayInputStream(encryptedOutput.toByteArray()),
+                ByteArrayOutputStream(),
+                aad,
+                key
+            )
+        }
+    }
+
+    @Test
+    fun streamingEncryptorRejectsWritesAfterFinalization() {
+        val encryptedOutput = ByteArrayOutputStream()
+        val encrypting = VaultCrypto.encryptingOutputStreamForTest(
+            encryptedOutput,
+            aad,
+            key
+        )
+        encrypting.write(byteArrayOf(1, 2, 3))
+        encrypting.finish()
+
+        assertThrows(IllegalStateException::class.java) {
+            encrypting.write(4)
+        }
+    }
+
     private class ZeroOnceInputStream(input: InputStream) : FilterInputStream(input) {
         private var returnedZero = false
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
