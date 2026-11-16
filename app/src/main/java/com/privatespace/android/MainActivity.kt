@@ -304,6 +304,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var mediaViewerLoading by remember { mutableStateOf(false) }
     var mediaRequestToken by remember { mutableLongStateOf(0L) }
     var topicQuery by remember { mutableStateOf("")}
+    var showVaultDetails by remember { mutableStateOf(false) }
     var showSecurityInfo by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
@@ -357,6 +358,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         activeMediaId = null
         mediaViewerLoading = false
         topicQuery = ""
+        showVaultDetails = false
         showSecurityInfo = false
         topMenuExpanded = false
         topics = emptyList()
@@ -1408,6 +1410,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 containerColor = Panel
                             ) {
                                 DropdownMenuItem(
+                                    enabled = !busy,
+                                    text = { Text("New topic") },
+                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = Cyan) },
+                                    onClick = {
+                                        topMenuExpanded = false
+                                        showCreateTopic = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Vault details") },
+                                    leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan) },
+                                    onClick = {
+                                        topMenuExpanded = false
+                                        showVaultDetails = true
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Security information") },
                                     leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
                                     onClick = {
@@ -1440,35 +1459,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             }
         },
-        floatingActionButton = {
-            if (topics.isNotEmpty()) {
-                ExtendedFloatingActionButton(
-                    onClick = { if (!busy) showCreateTopic = true },
-                    icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-                    text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
-                    containerColor = if (busy) Blue.copy(alpha = 0.55f) else Blue,
-                    contentColor = if (busy) Color.White.copy(alpha = 0.7f) else Color.White,
-                    shape = RoundedCornerShape(18.dp)
-                )
-            }
-        }
     ) { padding ->
         LazyColumn(
             Modifier.fillMaxSize()
                 .background(Brush.verticalGradient(listOf(Color(0xFF0E1728), Ink, Color(0xFF070B13))))
                 .padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 104.dp),
+            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(17.dp)
         ) {
-            item {
-                VaultOverviewCard(
-                    topicCount = topics.size,
-                    fileCount = vaultFiles.size,
-                    storageBytes = storageUsage.totalBytes,
-                    onExportAll = { launchAllExport() },
-                    exportEnabled = topics.isNotEmpty() && !busy
-                )
-            }
             item {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1541,6 +1539,20 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
     }
 
+
+    if (showVaultDetails) {
+        VaultDetailsDialog(
+            topicCount = topics.size,
+            fileCount = vaultFiles.size,
+            storageBytes = storageUsage.totalBytes,
+            exportEnabled = topics.isNotEmpty() && !busy,
+            onExportAll = {
+                showVaultDetails = false
+                launchAllExport()
+            },
+            onDismiss = { showVaultDetails = false }
+        )
+    }
 
     if (showTrash) {
         TrashDialog(
@@ -2204,83 +2216,70 @@ private fun AuthScreen(
 }
 
 @Composable
-private fun VaultOverviewCard(
+private fun VaultDetailsDialog(
     topicCount: Int,
     fileCount: Int,
     storageBytes: Long,
+    exportEnabled: Boolean,
     onExportAll: () -> Unit,
-    exportEnabled: Boolean
+    onDismiss: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.16f))
-    ) {
-        Box(
-            Modifier.background(
-                Brush.linearGradient(
-                    listOf(Color(0xFF1B3454), Color(0xFF14243B), Color(0xFF101A2B))
-                )
-            )
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = Panel,
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
         ) {
-            Column(
-                Modifier.fillMaxWidth().padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    Surface(
-                        color = Green.copy(alpha = 0.13f),
-                        shape = RoundedCornerShape(30.dp)
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(14.dp))
-                            Text("ON-DEVICE ENCRYPTION", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp), color = Green.copy(alpha = 0.13f)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(23.dp))
                         }
                     }
-                    Spacer(Modifier.weight(1f))
-                    Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Cyan.copy(alpha = 0.75f), modifier = Modifier.size(27.dp))
+                    Spacer(Modifier.width(11.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Vault details", color = White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("On-device encrypted storage", color = Muted, fontSize = 12.sp)
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close vault details", tint = Muted)
+                    }
                 }
-                Text("Your vault", color = White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OverviewMetric(
-                        modifier = Modifier.weight(1f),
-                        label = "Topics",
-                        value = topicCount.toString(),
-                        icon = Icons.Default.Folder
-                    )
-                    OverviewMetric(
-                        modifier = Modifier.weight(1f),
-                        label = "Files",
-                        value = fileCount.toString(),
-                        icon = Icons.Default.Description
-                    )
+                    OverviewMetric(Modifier.weight(1f), "Topics", topicCount.toString(), Icons.Default.Folder)
+                    OverviewMetric(Modifier.weight(1f), "Files", fileCount.toString(), Icons.Default.Description)
                 }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF223652).copy(alpha = 0.72f),
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, White.copy(alpha = 0.05f))
                 ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Storage used", color = Muted, fontSize = 12.sp)
-                        Text(formatBytes(storageBytes), color = Cyan, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(modifier = Modifier.size(38.dp), color = Cyan.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(11.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Storage used", color = Muted, fontSize = 12.sp)
+                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
-                    FilledTonalButton(
-                        onClick = onExportAll,
-                        enabled = exportEnabled,
-                        shape = RoundedCornerShape(14.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
-                    ) {
-                        Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text("Export all")
-                    }
+                }
+                FilledTonalButton(
+                    onClick = onExportAll,
+                    enabled = exportEnabled,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                ) {
+                    Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Export all")
                 }
             }
         }
@@ -2532,6 +2531,7 @@ private fun TopicScreen(
     var selectedFileIds by remember(topic.id) { mutableStateOf<Set<String>>(emptySet()) }
     var selectedFilter by remember(topic.id) { mutableStateOf(VaultFormatSupport.TopicFilter.ALL) }
     var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
+    var showTopicDetails by remember(topic.id) { mutableStateOf(false) }
     val selectedFiles = files.filter { it.id in selectedFileIds }
     val filteredFiles = files.filter(selectedFilter::matches)
     val visibleFileIds = filteredFiles.map { it.id }.toSet()
@@ -2583,7 +2583,7 @@ private fun TopicScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                "${files.size} ${if (files.size == 1) "item" else "items"} · PRIVATE TOPIC",
+                                "PRIVATE TOPIC",
                                 color = Muted,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -2601,16 +2601,27 @@ private fun TopicScreen(
                                 containerColor = Panel
                             ) {
                                 DropdownMenuItem(
+                                    enabled = !busy,
+                                    text = { Text("Add file(s)") },
+                                    leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = Cyan) },
+                                    onClick = { topicMenuExpanded = false; onAdd() }
+                                )
+                                DropdownMenuItem(
                                     enabled = files.isNotEmpty() && !busy,
                                     text = { Text("Share topic") },
-                                    leadingIcon = { Icon(Icons.Default.FolderShared, contentDescription = null) },
+                                    leadingIcon = { Icon(Icons.Default.FolderShared, contentDescription = null, tint = Color(0xFF80C8FF)) },
                                     onClick = { topicMenuExpanded = false; onShareTopic() }
                                 )
                                 DropdownMenuItem(
                                     enabled = !busy,
                                     text = { Text("Export topic") },
-                                    leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null) },
+                                    leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null, tint = Color(0xFFFFC078)) },
                                     onClick = { topicMenuExpanded = false; onExportTopic() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("View details") },
+                                    leadingIcon = { Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFBCA7FF)) },
+                                    onClick = { topicMenuExpanded = false; showTopicDetails = true }
                                 )
                                 HorizontalDivider(color = Line)
                                 DropdownMenuItem(
@@ -2634,73 +2645,6 @@ private fun TopicScreen(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = Panel,
-                shape = RoundedCornerShape(18.dp),
-                border = BorderStroke(1.dp, Line)
-            ) {
-                BoxWithConstraints(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)
-                ) {
-                    if (maxWidth < 340.dp) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                                    Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Column(modifier = Modifier.weight(1.2f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
-                                    Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                }
-                            }
-                            HorizontalDivider(color = Line.copy(alpha = 0.7f))
-                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                                Text(formatDate(topic.updatedAt), color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                                Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Box(Modifier.width(1.dp).height(34.dp).background(Line))
-                            Column(modifier = Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
-                                Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                            }
-                            Box(Modifier.width(1.dp).height(34.dp).background(Line))
-                            Column(modifier = Modifier.weight(1.15f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
-                                Text(formatDate(topic.updatedAt), color = White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Button(
-                onClick = onAdd,
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
-                shape = RoundedCornerShape(15.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-            ) {
-                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(19.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Add files", fontWeight = FontWeight.SemiBold)
-            }
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -2737,24 +2681,42 @@ private fun TopicScreen(
             ) {
                 VaultFormatSupport.TopicFilter.values().forEach { filter ->
                     val selected = selectedFilter == filter
+                    val filterIcon = when (filter) {
+                        VaultFormatSupport.TopicFilter.ALL -> Icons.Default.Folder
+                        VaultFormatSupport.TopicFilter.DOCUMENTS -> Icons.Default.Description
+                        VaultFormatSupport.TopicFilter.PHOTOS -> Icons.Default.Image
+                        VaultFormatSupport.TopicFilter.VIDEOS -> Icons.Default.Movie
+                    }
+                    val filterIconTint = when (filter) {
+                        VaultFormatSupport.TopicFilter.ALL -> Color(0xFF9DABFF)
+                        VaultFormatSupport.TopicFilter.DOCUMENTS -> Color(0xFF78B7FF)
+                        VaultFormatSupport.TopicFilter.PHOTOS -> Color(0xFFFF8EB5)
+                        VaultFormatSupport.TopicFilter.VIDEOS -> Color(0xFFFFB86B)
+                    }
                     Surface(
                         modifier = Modifier.clickable { selectedFilter = filter },
                         color = if (selected) Blue.copy(alpha = 0.22f) else Panel,
-                        shape = RoundedCornerShape(50),
+                        shape = RoundedCornerShape(50.dp),
                         border = BorderStroke(
                             if (selected) 1.4.dp else 1.dp,
                             if (selected) Cyan.copy(alpha = 0.8f) else Line
                         )
                     ) {
-                        Text(
-                            "${filter.title} (${filter.count(files)})",
+                        Row(
                             modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
-                            color = if (selected) White else Muted,
-                            fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(filterIcon, contentDescription = null, tint = filterIconTint, modifier = Modifier.size(16.dp))
+                            Text(
+                                filter.title,
+                                color = if (selected) White else Muted,
+                                fontSize = 12.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -2889,7 +2851,72 @@ private fun TopicScreen(
             }
         }
     }
+    if (showTopicDetails) {
+        TopicDetailsDialog(
+            fileCount = files.size,
+            storageBytes = storageBytes,
+            updatedAt = topic.updatedAt,
+            onDismiss = { showTopicDetails = false }
+        )
+    }
+
 }
+
+@Composable
+private fun TopicDetailsDialog(
+    fileCount: Int,
+    storageBytes: Long,
+    updatedAt: Long,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Info, contentDescription = null, tint = Cyan, modifier = Modifier.size(21.dp))
+                Spacer(Modifier.width(9.dp))
+                Text("Topic details", color = White, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                listOf(
+                    Triple(Icons.Default.Description, "Files", fileCount.toString()),
+                    Triple(Icons.Default.Storage, "Encrypted storage", formatBytes(storageBytes)),
+                    Triple(Icons.Default.Schedule, "Last updated", formatDate(updatedAt))
+                ).forEachIndexed { index, detail ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Panel2,
+                        shape = RoundedCornerShape(13.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                    ) {
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                detail.first,
+                                contentDescription = null,
+                                tint = when (index) {
+                                    0 -> Color(0xFF78B7FF)
+                                    1 -> Cyan
+                                    else -> Color(0xFFBCA7FF)
+                                },
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(detail.second, color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            Spacer(Modifier.width(8.dp))
+                            Text(detail.third, color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done", color = Cyan) } },
+        shape = RoundedCornerShape(22.dp),
+        containerColor = Panel
+    )
+}
+
 
 private data class ViewerImageLoadState(
     val loading: Boolean = true,
