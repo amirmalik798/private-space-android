@@ -1205,59 +1205,73 @@ private fun VaultOverviewCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = Panel),
-        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.16f))
     ) {
-        Box(Modifier.background(Brush.linearGradient(listOf(Panel2, Panel)))) {
+        Box(
+            Modifier.background(
+                Brush.linearGradient(
+                    listOf(Color(0xFF1B3454), Color(0xFF14243B), Color(0xFF101A2B))
+                )
+            )
+        ) {
             Column(
                 Modifier.fillMaxWidth().padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Surface(color = Green.copy(alpha = 0.13f), shape = RoundedCornerShape(30.dp)) {
-                    Row(
-                        Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Surface(
+                        color = Green.copy(alpha = 0.13f),
+                        shape = RoundedCornerShape(30.dp)
                     ) {
-                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text("ON-DEVICE ENCRYPTION", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(14.dp))
+                            Text("ON-DEVICE ENCRYPTION", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+                        }
                     }
+                    Spacer(Modifier.weight(1f))
+                    Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Cyan.copy(alpha = 0.75f), modifier = Modifier.size(27.dp))
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Your private library", color = White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Your vault", color = White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OverviewMetric(
                         modifier = Modifier.weight(1f),
-                        label = "TOPICS",
+                        label = "Topics",
                         value = topicCount.toString(),
                         icon = Icons.Default.Folder
                     )
                     OverviewMetric(
                         modifier = Modifier.weight(1f),
-                        label = "FILES",
+                        label = "Files",
                         value = fileCount.toString(),
                         icon = Icons.Default.Description
                     )
                 }
-                HorizontalDivider(color = Line.copy(alpha = 0.8f))
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Encrypted storage used", color = Muted, fontSize = 12.sp)
+                        Text("Storage used", color = Muted, fontSize = 12.sp)
                         Text(formatBytes(storageBytes), color = Cyan, fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     }
                     FilledTonalButton(
                         onClick = onExportAll,
                         enabled = exportEnabled,
-                        shape = RoundedCornerShape(13.dp)
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Export all topics")
+                        Text("Export all")
                     }
                 }
             }
@@ -1274,18 +1288,27 @@ private fun OverviewMetric(
 ) {
     Surface(
         modifier = modifier,
-        color = Panel2.copy(alpha = 0.85f),
-        shape = RoundedCornerShape(17.dp)
+        color = Color(0xFF223652).copy(alpha = 0.72f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, White.copy(alpha = 0.05f))
     ) {
         Row(
-            Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+            Modifier.padding(horizontal = 13.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(icon, contentDescription = null, tint = Cyan, modifier = Modifier.size(21.dp))
+            Surface(
+                modifier = Modifier.size(36.dp),
+                color = Cyan.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = Cyan, modifier = Modifier.size(19.dp))
+                }
+            }
             Spacer(Modifier.width(10.dp))
-            Column {
-                Text(value, color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text(label, color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(value, color = White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -1397,9 +1420,9 @@ private fun TopicCard(
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(21.dp),
-        border = BorderStroke(1.dp, Line.copy(alpha = 0.75f))
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF121F33)),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, Line.copy(alpha = 0.72f))
     ) {
         Row(
             Modifier.fillMaxWidth().padding(15.dp),
@@ -1424,14 +1447,19 @@ private fun TopicCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    (summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files") +
-                        " · " + formatBytes(summary.totalBytes),
-                    color = Cyan,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text("Updated " + formatDate(summary.topic.updatedAt), color = Muted, fontSize = 11.sp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files",
+                        color = Cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("·", color = Muted, fontSize = 12.sp)
+                    Text(formatBytes(summary.totalBytes), color = Muted, fontSize = 12.sp)
+                }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -1614,10 +1642,20 @@ private fun VaultFileRow(
     var menuExpanded by remember(file.id) { mutableStateOf(false) }
     val isPhoto = file.mimeType.startsWith("image/")
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
+    val fileIcon = when {
+        isPhoto -> Icons.Default.Image
+        extension == "PDF" -> Icons.Default.PictureAsPdf
+        extension in setOf("DOC", "DOCX", "ODT", "RTF") -> Icons.Default.Article
+        extension in setOf("XLS", "XLSX", "ODS", "CSV") -> Icons.Default.TableChart
+        extension in setOf("PPT", "PPTX", "ODP") -> Icons.Default.Slideshow
+        extension in setOf("ZIP", "7Z", "RAR", "TAR", "GZ") -> Icons.Default.FolderZip
+        else -> Icons.Default.InsertDriveFile
+    }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Panel2)
+        shape = RoundedCornerShape(17.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF192840)),
+        border = BorderStroke(1.dp, White.copy(alpha = 0.035f))
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 5.dp, top = 9.dp, bottom = 9.dp),
@@ -1630,7 +1668,7 @@ private fun VaultFileRow(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        if (isPhoto) Icons.Default.Image else Icons.Default.Description,
+                        fileIcon,
                         contentDescription = if (isPhoto) "Photo" else "Document",
                         tint = if (isPhoto) Green else Cyan
                     )
@@ -1639,7 +1677,7 @@ private fun VaultFileRow(
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(extension + " · " + formatBytes(file.sizeBytes) + " original size", color = Muted, fontSize = 11.sp, maxLines = 1)
+                Text(extension + "  ·  " + formatBytes(file.sizeBytes), color = Muted, fontSize = 11.sp, maxLines = 1)
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
