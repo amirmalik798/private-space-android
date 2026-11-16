@@ -26,4 +26,40 @@ class VaultSessionPolicyTest {
         assertFalse(VaultSessionPolicy.mayReleasePlaintext(isUnlocked = true, isResumed = false))
         assertFalse(VaultSessionPolicy.mayReleasePlaintext(isUnlocked = false, isResumed = false))
     }
+
+    @Test
+    fun switchingToAnotherAppDoesNotLockTheVault() {
+        assertFalse(
+            VaultSessionPolicy.shouldLockOnStop(
+                isFinishing = false,
+                isChangingConfigurations = false,
+                suppressAutoLockForPicker = false
+            )
+        )
+    }
+
+    @Test
+    fun closingTheAppLocksUnlessTheActivityIsChangingConfigurationOrLaunchingPicker() {
+        assertTrue(
+            VaultSessionPolicy.shouldLockOnStop(
+                isFinishing = true,
+                isChangingConfigurations = false,
+                suppressAutoLockForPicker = false
+            )
+        )
+        assertFalse(
+            VaultSessionPolicy.shouldLockOnStop(
+                isFinishing = true,
+                isChangingConfigurations = true,
+                suppressAutoLockForPicker = false
+            )
+        )
+        assertFalse(
+            VaultSessionPolicy.shouldLockOnStop(
+                isFinishing = true,
+                isChangingConfigurations = false,
+                suppressAutoLockForPicker = true
+            )
+        )
+    }
 }

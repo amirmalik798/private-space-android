@@ -1,6 +1,8 @@
 package com.privatespace.android.data
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.AtomicFile
@@ -334,6 +336,49 @@ class VaultRepository(context: Context) {
         } catch (failure: Throwable) {
             session.deleteRecursively()
             throw failure
+        }
+    }
+
+    /**
+     * Builds a small in-memory preview for an image without changing the encrypted
+     * record. Decryption completes (including AES-GCM tag verification) before the
+     * decoder sees the bytes. The private plaintext staging file is always removed.
+     * Records in Trash are supported so Recycle Bin previews work as well.
+     */
+    @Synchronized
+    fun loadImageThumbnail(id: String, maxDimensionPx: Int): Bitmap? {
+        val index = loadIndex()
+        val record = index.files.firstOrNull { it.id == id }
+            ?: index.trash.firstOrNull { it.file.id == id }?.file
+            ?: return null
+        if (!record.mimeType.startsWith("image/", ignoreCase = true)) return null
+
+        val target = File(staging, "thumbnail-${UUID.randomUUID()}.tmp")
+        try {
+            decryptInto(record, target)
+
+            val bounds = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+                inScaled = false
+            }
+            BitmapFactory.decodeFile(target.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+            val safeTargetSize = maxDimensionPx.coerceIn(32, 512)
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = false
+                inScaled = false
+                inDither = false
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inSampleSize = VaultThumbnailPolicy.calculateSampleSize(
+                    bounds.outWidth,
+                    bounds.outHeight,
+                    safeTargetSize
+                )
+            }
+            return BitmapFactory.decodeFile(target.absolutePath, options)
+        } finally {
+            target.delete()
         }
     }
 

@@ -18,4 +18,12 @@ internal object VaultSessionPolicy {
         isUnlocked: Boolean,
         isResumed: Boolean
     ): Boolean = isUnlocked && isResumed
+
+    /** Backgrounding to another app is not a close; finishing the task is. */
+    fun shouldLockOnStop(
+        isFinishing: Boolean,
+        isChangingConfigurations: Boolean,
+        suppressAutoLockForPicker: Boolean
+    ): Boolean =
+        isFinishing && !isChangingConfigurations && !suppressAutoLockForPicker
 }

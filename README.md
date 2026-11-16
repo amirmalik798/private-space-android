@@ -1,5 +1,14 @@
 # Private Space
 
+## Interface, thumbnails and session controls (0.10.0)
+
+- The dashboard and full-screen dialogs now account for Android system-bar insets. The password screen adjusts for the on-screen keyboard and remains vertically scrollable on compact displays.
+- The login screen displays the developer credit: **Developed by: Amir Malik (2026)**.
+- Opening a decrypted file launches Android's normal `ACTION_VIEW` resolver instead of forcing a temporary chooser. Android can therefore offer **Just once** and **Always**, and its saved default viewer is respected on later opens.
+- Switching to another app no longer automatically locks the vault. Use the visible in-app **Lock** control to lock immediately; closing the app/task locks it, and locking the Android device still locks the vault.
+- Image rows in topics and the Recycle Bin show downsampled previews. Previews are generated only after successful AES-GCM authentication, from a short-lived app-private staging file that is deleted immediately; stored originals and their encrypted bytes are not changed.
+
+
 ## Reliability hardening (0.9.1)
 
 - Authentication completes only if the app remains in the same foreground lifecycle generation. If the app is interrupted while the password is being checked, the vault stays locked and the password must be entered again.
@@ -84,7 +93,7 @@ The automated byte-preservation tests cover empty and buffer-boundary payloads, 
 - The first version's plaintext index is migrated automatically. Its old index entries are removed only after the encrypted index has been committed. Existing encrypted files and old password hashes remain readable.
 - Decryption verifies the GCM authentication tag before a temporary plaintext file is handed to another app or copied to an export destination. Failed decryptions remove their incomplete staging file.
 - A password is required at first launch. New passwords must be 10–128 characters and are stored as PBKDF2-HMAC-SHA256 hashes with 600,000 iterations. Existing password hashes without a saved iteration count continue using their original 310,000 iterations until the password is changed.
-- Failed unlock attempts trigger a persisted lockout. The app locks when it leaves the foreground, except while Android's document picker is active. Screenshots and recent-task previews are blocked with FLAG_SECURE.
+- Failed unlock attempts trigger a persisted lockout. The vault remains unlocked when you switch to another app. Use the in-app Lock control to lock immediately; closing the app/task or locking the Android device requires the password again. Screenshots and recent-task previews are blocked with FLAG_SECURE.
 - Android app backup and device-transfer backup are disabled. No network permission is requested. FileProvider exposes only the temporary outgoing cache directory.
 
 ## Important security boundaries
