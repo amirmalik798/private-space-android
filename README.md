@@ -35,6 +35,7 @@
 - Imports stream AES-256-GCM into a temporary encrypted file, sync it, atomically rename it, and then commit the encrypted index. Interrupted imports are reconciled on next startup.
 - Logical file/topic deletion commits a Trash entry to the encrypted index while keeping the encrypted payload in app-private storage. Restoring an item updates only the index and does not rewrite file bytes. Permanent deletion stages the payload under a recoverable tombstone, commits its removal from the index, then purges it; startup recovery reconciles interrupted permanent deletions using both active and trashed index entries.
 - Metadata decryption is bounded to the index-size limit. Temporary clear metadata and cipher buffers are wiped after use where the runtime permits.
+- When a document provider reports a file size, import verifies the completed stream byte count against it before committing the encrypted record. A mismatch discards the temporary encrypted file instead of saving a possibly truncated import; providers that report an unknown size remain supported.
 - **No application-level file-size ceiling is imposed.** Imports use bounded-memory streaming and a 64-bit byte counter. Practical limits still depend on available storage, the filesystem, Android's document provider and cryptographic provider. Photos/documents are never resized, recompressed, converted or stripped of metadata; new encrypted records add 36 bytes of container overhead.
 
 ## Modern user interface and usability (0.7.0)
