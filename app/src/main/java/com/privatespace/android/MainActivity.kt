@@ -69,6 +69,7 @@ import com.privatespace.android.data.*
 import com.privatespace.android.security.PasswordManager
 import com.privatespace.android.security.VaultSessionPolicy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -280,8 +281,22 @@ private fun VaultInitializationScreen(
 private fun PrivateSpaceContent(repository: VaultRepository) {
     val context = LocalContext.current
     val activity = remember(context) { context.findMainActivity() }
-    val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    var unhandledOperationFailure by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope {
+        CoroutineExceptionHandler { _, failure ->
+            // Do not pretend the process can safely recover from VM-level failures
+            // such as OutOfMemoryError. Ordinary unexpected coroutine failures,
+            // however, must fail closed instead of leaving an unlocked UI behind.
+            if (failure !is Exception || failure is CancellationException) {
+                throw failure
+            }
+            mainHandler.post {
+                unhandledOperationFailure =
+                    "An unexpected operation failed. Private Space will lock to protect your files. Please reopen the app and try again."
+            }
+        }
+    }
 
     var unlocked by remember { mutableStateOf(false) }
     var setup by remember { mutableStateOf(!PasswordManager.configured(context)) }
@@ -412,6 +427,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     fun failClosed(failure: Throwable) {
         val message = failure.message ?: "The vault could not be accessed safely."
         lockVault()
+        authError = message
+        toast(message)
+    }
+
+    LaunchedEffect(unhandledOperationFailure) {
+        val message = unhandledOperationFailure ?: return@LaunchedEffect
+        unhandledOperationFailure = null
+        if (unlocked) lockVault()
         authError = message
         toast(message)
     }
