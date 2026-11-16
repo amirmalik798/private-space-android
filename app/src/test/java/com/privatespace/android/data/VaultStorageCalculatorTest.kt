@@ -1,6 +1,7 @@
 package com.privatespace.android.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class VaultStorageCalculatorTest {
@@ -68,7 +69,7 @@ class VaultStorageCalculatorTest {
         assertEquals(1_972L, usage.totalBytes)
         assertEquals(1_036L, usage.topicBytes[topicB.id])
         assertEquals(936L, usage.trashBytes)
-        assertEquals(null, usage.topicBytes[topicA.id])
+        assertNull(usage.topicBytes[topicA.id])
     }
 
     @Test
