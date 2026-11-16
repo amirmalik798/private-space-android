@@ -24,6 +24,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -1594,7 +1595,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         if (currentFile == null || !unlocked) {
                             toast("This document is no longer available in the vault.")
                         } else {
-                            openExternalVaultFile(currentFile, preferSamsungVideoPlayer = isVideoRequest)
+                            openExternalVaultFile(currentFile)
                         }
                     },
                     shape = RoundedCornerShape(12.dp)
