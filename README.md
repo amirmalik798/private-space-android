@@ -9,7 +9,11 @@
 - Export the complete vault into `private-space-data/<topic name>/<files>`. Every topic gets its own subfolder, including empty topics. If the selected destination already contains a `private-space-data` folder, the app stops and asks you to choose another location rather than overwrite existing content.
 - File-name collisions inside an export are resolved by adding a numbered suffix so no exported file silently replaces another.
 
-## User interface and usability (0.6.0)
+## Modern user interface and usability (0.7.0)
+
+The dashboard uses a refined dark visual system, a gradient vault overview, clearer topic and storage metrics, and quieter topic/file cards. Topic and file details use familiar file-type icons. Actions throughout the app use consistent, meaningful icons with readable labels, including create, import, share, export, lock, password, and destructive actions. Redundant helper copy, repeated status text, and low-value metadata have been removed while retaining essential security and recovery warnings.
+
+## User interface and usability (previous design)
 
 The vault has a redesigned, accessibility-conscious interface with a searchable topic dashboard, at-a-glance topic/file/storage totals, a clearer empty state, a full-height topic view, and streamlined per-file actions. Password fields can be revealed while typing, destructive actions explain what will be removed, and security guidance is available from the dashboard.
 
