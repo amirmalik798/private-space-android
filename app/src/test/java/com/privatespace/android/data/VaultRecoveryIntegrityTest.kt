@@ -14,6 +14,19 @@ class VaultRecoveryIntegrityTest {
     }
 
     @Test
+    fun acceptsNewChunkedContainerLengthsIncludingOneTerabyte() {
+        val sizes = listOf(0L, 1L, 65_536L, 65_537L, 1_099_511_627_776L)
+        sizes.forEach { plain ->
+            assertTrue(
+                VaultRecoveryIntegrity.hasExpectedEncryptedLength(
+                    plain,
+                    com.privatespace.android.security.VaultCrypto.encryptedContainerLength(plain)
+                )
+            )
+        }
+    }
+
+    @Test
     fun rejectsTruncatedOrUnexpectedContainerLengths() {
         assertFalse(VaultRecoveryIntegrity.hasExpectedEncryptedLength(0L, 27L))
         assertFalse(VaultRecoveryIntegrity.hasExpectedEncryptedLength(0L, 35L))
