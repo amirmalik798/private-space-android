@@ -19,7 +19,8 @@ import javax.crypto.spec.SecretKeySpec
  *
  * The recovery key is random and independent from Android Keystore. Only its
  * password-wrapped envelope is stored in the user-selected shared directory.
- * Payload encryption is streaming AES-256-GCM and preserves source bytes.
+ * Payload encryption uses bounded-memory, independently authenticated AES-GCM frames
+ * and preserves source bytes. The previous single-tag recovery format remains readable.
  */
 object PersistentVaultCrypto {
     private const val PBKDF2_ROUNDS = 600_000
