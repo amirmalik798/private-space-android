@@ -44,6 +44,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.87")
 
     testImplementation("junit:junit:4.13.2")
 
