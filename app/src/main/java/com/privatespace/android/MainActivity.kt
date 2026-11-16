@@ -2056,9 +2056,8 @@ private fun VaultFileRow(
         ) {
             VaultThumbnail(
                 file = file,
-                repository = repository,
-                modifier = Modifier.size(46.dp),
                 preview = mediaPreview,
+                modifier = Modifier.size(46.dp),
                 fallbackIcon = fileIcon,
                 isImage = isPhoto,
                 isVideo = isVideo
@@ -2213,9 +2212,8 @@ private fun TrashFileRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 VaultThumbnail(
                     file = file,
-                    repository = repository,
-                    modifier = Modifier.size(50.dp),
                     preview = mediaPreview,
+                    modifier = Modifier.size(50.dp),
                     fallbackIcon = when {
                         isPhoto -> Icons.Default.Image
                         isVideo -> Icons.Default.Movie

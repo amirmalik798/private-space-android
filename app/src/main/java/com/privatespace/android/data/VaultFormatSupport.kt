@@ -24,7 +24,7 @@ object VaultFormatSupport {
         "avi" to "video/x-msvideo", "mpg" to "video/mpeg", "mpeg" to "video/mpeg",
         "mpe" to "video/mpeg", "m2v" to "video/mpeg", "vob" to "video/mpeg",
         "ts" to "video/mp2t", "mts" to "video/mp2t", "m2ts" to "video/mp2t",
-        "ogv" to "video/ogg", "ogg" to "video/ogg",
+        "ogv" to "video/ogg",
         "wmv" to "video/x-ms-wmv", "asf" to "video/x-ms-asf",
         "flv" to "video/x-flv", "f4v" to "video/mp4",
         "dv" to "video/x-dv", "mxf" to "application/mxf",
