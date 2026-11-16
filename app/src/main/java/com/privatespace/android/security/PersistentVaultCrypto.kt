@@ -13,6 +13,11 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import org.bouncycastle.crypto.InvalidCipherTextException
+import org.bouncycastle.crypto.engines.AESEngine
+import org.bouncycastle.crypto.modes.GCMBlockCipher
+import org.bouncycastle.crypto.params.AEADParameters
+import org.bouncycastle.crypto.params.KeyParameter
 
 /**
  * Cryptographic primitives for the uninstall-persistent recovery copy.
@@ -193,38 +198,61 @@ object PersistentVaultCrypto {
         val magic = ByteArray(8)
         readExactly(input, magic, 0, magic.size)
         val keyMaterial = dataKey.copyOf()
-        val key = try { SecretKeySpec(keyMaterial, "AES") } finally { keyMaterial.fill(0) }
-        when {
-            magic.contentEquals(CHUNKED_PAYLOAD_MAGIC) ->
-                ChunkedAesGcm.decryptAfterMagic(input, output, aad, key, CHUNKED_PAYLOAD_MAGIC)
-            magic.contentEquals(LEGACY_PAYLOAD_MAGIC) -> decryptLegacyPayload(input, output, aad, key)
-            else -> throw IOException("Unsupported recovery payload format.")
+        try {
+            val key = SecretKeySpec(keyMaterial, "AES")
+            when {
+                magic.contentEquals(CHUNKED_PAYLOAD_MAGIC) ->
+                    ChunkedAesGcm.decryptAfterMagic(input, output, aad, key, CHUNKED_PAYLOAD_MAGIC)
+                magic.contentEquals(LEGACY_PAYLOAD_MAGIC) ->
+                    decryptLegacyPayload(input, output, aad, keyMaterial)
+                else -> throw IOException("Unsupported recovery payload format.")
+            }
+        } finally {
+            magic.fill(0)
+            keyMaterial.fill(0)
         }
-        magic.fill(0)
     }
 
-    /** Reads pre-chunked recovery records without changing their on-disk format. */
-    private fun decryptLegacyPayload(input: InputStream, output: OutputStream, aad: ByteArray, key: SecretKeySpec) {
+    /**
+     * Decrypts the previous single-tag recovery format with BC's lightweight
+     * streaming GCM implementation. Some JCA providers buffer an entire GCM
+     * decryption until doFinal(); this path keeps old multi-gigabyte backups
+     * bounded to fixed-size input/output buffers as well.
+     */
+    private fun decryptLegacyPayload(input: InputStream, output: OutputStream, aad: ByteArray, key: ByteArray) {
         val nonce = ByteArray(NONCE_BYTES)
-        readExactly(input, nonce, 0, nonce.size)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-        cipher.updateAAD(aad)
         val buffer = ByteArray(BUFFER_BYTES)
+        val clearBuffer = ByteArray(BUFFER_BYTES + TAG_BYTES / 8)
         try {
+            readExactly(input, nonce, 0, nonce.size)
+            val cipher = GCMBlockCipher(AESEngine.newInstance())
+            cipher.init(
+                false,
+                AEADParameters(KeyParameter(key), TAG_BITS, nonce, aad)
+            )
             while (true) {
                 val count = readChunkOrEof(input, buffer)
                 if (count < 0) break
                 try {
-                    val clear = cipher.update(buffer, 0, count)
-                    if (clear != null) try { output.write(clear) } finally { clear.fill(0) }
-                } finally { buffer.fill(0, 0, count) }
+                    val clearCount = cipher.processBytes(buffer, 0, count, clearBuffer, 0)
+                    if (clearCount > 0) output.write(clearBuffer, 0, clearCount)
+                    clearBuffer.fill(0, 0, clearCount)
+                } finally {
+                    buffer.fill(0, 0, count)
+                }
             }
-            val finalClear = try { cipher.doFinal() } catch (badTag: AEADBadTagException) {
-                throw IOException("Recovery vault integrity check failed.", badTag)
+            val finalCount = try {
+                cipher.doFinal(clearBuffer, 0)
+            } catch (failure: InvalidCipherTextException) {
+                throw IOException("Recovery vault integrity check failed.", failure)
             }
-            try { output.write(finalClear); output.flush() } finally { finalClear.fill(0) }
-        } finally { nonce.fill(0); buffer.fill(0) }
+            if (finalCount > 0) output.write(clearBuffer, 0, finalCount)
+            output.flush()
+        } finally {
+            nonce.fill(0)
+            buffer.fill(0)
+            clearBuffer.fill(0)
+        }
     }
 
     fun sha256(bytes: ByteArray): String =
