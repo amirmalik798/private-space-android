@@ -36,4 +36,40 @@ class VaultSessionPolicyTest {
     fun actualScreenLockLocksTheVault() {
         assertTrue(VaultSessionPolicy.shouldLockForScreenLock(isKeyguardLocked = true))
     }
+    @Test
+    fun recoverySetupIsNotOfferedAfterRestoreOrWhenStorageIsAlreadyActive() {
+        assertFalse(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = true,
+                restoringExistingRecovery = true,
+                recoveryStorageAlreadyActive = true
+            )
+        )
+        assertFalse(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = true,
+                restoringExistingRecovery = false,
+                recoveryStorageAlreadyActive = true
+            )
+        )
+        assertFalse(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = false,
+                restoringExistingRecovery = false,
+                recoveryStorageAlreadyActive = false
+            )
+        )
+    }
+
+    @Test
+    fun recoverySetupIsOfferedOnlyForNewPasswordWithoutActiveRecovery() {
+        assertTrue(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = true,
+                restoringExistingRecovery = false,
+                recoveryStorageAlreadyActive = false
+            )
+        )
+    }
+
 }

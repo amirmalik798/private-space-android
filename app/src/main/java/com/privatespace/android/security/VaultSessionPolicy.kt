@@ -21,4 +21,13 @@ internal object VaultSessionPolicy {
 
     /** Backgrounding never locks the vault; an actual Android keyguard lock does. */
     fun shouldLockForScreenLock(isKeyguardLocked: Boolean): Boolean = isKeyguardLocked
+
+    fun shouldOfferRecoverySetup(
+        hasPendingRecoveryPassword: Boolean,
+        restoringExistingRecovery: Boolean,
+        recoveryStorageAlreadyActive: Boolean
+    ): Boolean =
+        hasPendingRecoveryPassword &&
+            !restoringExistingRecovery &&
+            !recoveryStorageAlreadyActive
 }

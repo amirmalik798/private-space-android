@@ -160,6 +160,17 @@ class VaultRepository(context: Context) {
         persistentTreeUri = null
     }
 
+    @Synchronized
+    fun hasActivePersistentStorage(): Boolean = persistentStore != null
+
+    private fun isAlreadyActiveFor(treeUri: Uri): Boolean {
+        if (persistentStore == null) return false
+        check(persistentTreeUri == treeUri) {
+            "A different recovery folder is already active. Lock the vault before switching recovery folders."
+        }
+        return true
+    }
+
     /**
      * Creates a device-local recovery folder and migrates the currently active
      * encrypted vault into it. Existing app-private data remains unchanged.
@@ -167,7 +178,7 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun enablePersistentStorage(treeUri: Uri, password: CharArray) {
         try {
-            check(persistentStore == null) { "Persistent recovery storage is already active." }
+            if (isAlreadyActiveFor(treeUri)) return
             val index = loadIndex()
             val store = PersistentVaultStore.create(appContext, treeUri, password)
             try {
@@ -209,84 +220,92 @@ class VaultRepository(context: Context) {
      */
     @Synchronized
     fun openPersistentStorage(treeUri: Uri, password: CharArray) {
-        check(persistentStore == null) { "Persistent recovery storage is already active." }
-        val store = PersistentVaultStore.open(appContext, treeUri, password)
         try {
-            val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+            if (isAlreadyActiveFor(treeUri)) return
+            val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
-                val index = parseIndexBytes(snapshot.clearBytes)
-                val knownDigest = recoveryPrefs.getString(RECOVERY_INDEX_DIGEST, null)
-                val hasLocalIndex = metadata.baseFile.isFile ||
-                    File(metadata.baseFile.path + ".bak").isFile
+                val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+                try {
+                    val index = parseIndexBytes(snapshot.clearBytes)
+                    val knownDigest = recoveryPrefs.getString(RECOVERY_INDEX_DIGEST, null)
+                    val hasLocalIndex = metadata.baseFile.isFile ||
+                        File(metadata.baseFile.path + ".bak").isFile
 
-                // Do not trust a matching digest preference or an index filename
-                // by itself. Authenticate the local index, compare its contents
-                // with the recovery index, and check every referenced payload's
-                // presence and expected container length before reusing the
-                // working copy. This is a bounded metadata/filesystem check; full
-                // GCM authentication is still performed whenever a record is read.
-                val localIndex = if (hasLocalIndex) {
-                    runCatching { loadIndex() }.getOrNull()
-                } else {
-                    null
-                }
-                val localPayloadsComplete = localIndex?.let { local ->
-                    (local.files + local.trash.map { it.file }).all { record ->
-                        val localFile = encryptedFile(record.id)
-                        localFile.isFile &&
-                            VaultRecoveryIntegrity.hasExpectedEncryptedLength(
-                                record.sizeBytes,
-                                localFile.length()
-                            )
+                    // Do not trust a matching digest preference or an index filename
+                    // by itself. Authenticate the local index, compare its contents
+                    // with the recovery index, and check every referenced payload's
+                    // presence and expected container length before reusing the
+                    // working copy. This is a bounded metadata/filesystem check; full
+                    // GCM authentication is still performed whenever a record is read.
+                    val localIndex = if (hasLocalIndex) {
+                        runCatching { loadIndex() }.getOrNull()
+                    } else {
+                        null
                     }
-                } ?: false
-                val localIndexMatchesRecovery = localIndex != null && localIndex == index
+                    val localPayloadsComplete = localIndex?.let { local ->
+                        (local.files + local.trash.map { it.file }).all { record ->
+                            val localFile = encryptedFile(record.id)
+                            localFile.isFile &&
+                                VaultRecoveryIntegrity.hasExpectedEncryptedLength(
+                                    record.sizeBytes,
+                                    localFile.length()
+                                )
+                        }
+                    } ?: false
+                    val localIndexMatchesRecovery = localIndex != null && localIndex == index
 
-                if (
-                    !hasLocalIndex ||
-                    knownDigest != snapshot.encryptedDigest ||
-                    !localIndexMatchesRecovery ||
-                    !localPayloadsComplete
-                ) {
-                    restoreWorkingVault(index, store)
+                    if (
+                        !hasLocalIndex ||
+                        knownDigest != snapshot.encryptedDigest ||
+                        !localIndexMatchesRecovery ||
+                        !localPayloadsComplete
+                    ) {
+                        restoreWorkingVault(index, store)
+                    }
+                    // Keep unreferenced encrypted payloads. They may be newer file
+                    // records from an interrupted index commit or older-index fallback.
+                    store.markReady()
+                    saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
+                    persistentStore = store
+                    persistentTreeUri = treeUri
+                } finally {
+                    snapshot.clearBytes.fill(0)
                 }
-                // Keep unreferenced encrypted payloads. They may be newer file
-                // records from an interrupted index commit or older-index fallback.
-                store.markReady()
-                saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
-                persistentStore = store
-                persistentTreeUri = treeUri
-            } finally {
-                snapshot.clearBytes.fill(0)
+            } catch (failure: Throwable) {
+                store.clearKey()
+                throw failure
             }
-        } catch (failure: Throwable) {
-            store.clearKey()
-            throw failure
+        } finally {
+            password.fill('\u0000')
         }
     }
 
     /** Restores an existing encrypted recovery vault after a fresh installation. */
     @Synchronized
     fun restorePersistentVault(treeUri: Uri, password: CharArray) {
-        check(persistentStore == null) { "Persistent recovery storage is already active." }
-        val store = PersistentVaultStore.open(appContext, treeUri, password)
         try {
-            val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+            if (isAlreadyActiveFor(treeUri)) return
+            val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
-                val index = parseIndexBytes(snapshot.clearBytes)
-                restoreWorkingVault(index, store)
-                // Keep unreferenced encrypted payloads; an older authenticated
-                // index must never cause newer recoverable data to be deleted.
-                store.markReady()
-                saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
-                persistentStore = store
-                persistentTreeUri = treeUri
-            } finally {
-                snapshot.clearBytes.fill(0)
+                val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+                try {
+                    val index = parseIndexBytes(snapshot.clearBytes)
+                    restoreWorkingVault(index, store)
+                    // Keep unreferenced encrypted payloads; an older authenticated
+                    // index must never cause newer recoverable data to be deleted.
+                    store.markReady()
+                    saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
+                    persistentStore = store
+                    persistentTreeUri = treeUri
+                } finally {
+                    snapshot.clearBytes.fill(0)
+                }
+            } catch (failure: Throwable) {
+                store.clearKey()
+                throw failure
             }
-        } catch (failure: Throwable) {
-            store.clearKey()
-            throw failure
+        } finally {
+            password.fill('\u0000')
         }
     }
 

@@ -537,6 +537,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             } else if (choosingExistingRecovery) {
                 choosingExistingRecovery = false
+                pendingRecoveryPassword?.fill('\u0000')
+                pendingRecoveryPassword = null
+                showRecoverySetup = false
+                recoverySetupError = ""
                 recoveryTreeUri = selectedTreeUri
                 setup = false
                 password = ""
@@ -1110,6 +1114,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onPassword = { password = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
             onConfirmation = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
             onRestore = {
+                pendingRecoveryPassword?.fill('\u0000')
+                pendingRecoveryPassword = null
+                showRecoverySetup = false
+                recoverySetupError = ""
                 choosingExistingRecovery = true
                 runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
                     choosingExistingRecovery = false
@@ -1139,8 +1147,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                     PasswordManager.recordFailure(context)
                                     throw failure
                                 }
-                                PasswordManager.set(context, entered.toCharArray())
-                                PasswordManager.clearFailures(context)
+                                try {
+                                    PasswordManager.set(context, entered.toCharArray())
+                                    PasswordManager.clearFailures(context)
+                                } catch (failure: Throwable) {
+                                    repository.lockPersistentStorage()
+                                    throw failure
+                                }
                                 true to null
                             }
                             wasSetup -> {
@@ -1190,9 +1203,20 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             password = ""
                             confirmation = ""
                             pendingRecoveryPassword?.fill(0.toChar())
-                            pendingRecoveryPassword = recoveryPassword
-                            showRecoverySetup = recoveryPassword != null
+                            val shouldOfferRecoverySetup = VaultSessionPolicy.shouldOfferRecoverySetup(
+                                hasPendingRecoveryPassword = recoveryPassword != null,
+                                restoringExistingRecovery = restoreUri != null,
+                                recoveryStorageAlreadyActive = repository.hasActivePersistentStorage()
+                            )
+                            if (shouldOfferRecoverySetup) {
+                                pendingRecoveryPassword = recoveryPassword
+                            } else {
+                                recoveryPassword?.fill('\u0000')
+                                pendingRecoveryPassword = null
+                            }
+                            showRecoverySetup = shouldOfferRecoverySetup
                             recoverySetupError = ""
+                            choosingExistingRecovery = false
                             if (VaultSessionPolicy.mayCompleteUnlock(
                                     authGeneration,
                                     activity?.foregroundGeneration,
@@ -1215,6 +1239,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }
                     },
                     onFailure = {
+                        if (restoreUri != null) {
+                            repository.lockPersistentStorage()
+                            choosingExistingRecovery = false
+                        }
                         lockUntil = PasswordManager.lockedUntil(context)
                         authError = it.message ?: "Authentication failed."
                         password = ""
