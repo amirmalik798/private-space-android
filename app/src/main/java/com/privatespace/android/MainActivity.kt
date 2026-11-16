@@ -830,10 +830,18 @@ private fun PrivateSpaceRoot() {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                         Spacer(Modifier.width(8.dp))
                     }
+                    Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
                     Text("Create topic")
                 }
             },
-            dismissButton = { TextButton(onClick = { showCreateTopic = false }) { Text("Cancel") } },
+            dismissButton = {
+                TextButton(onClick = { showCreateTopic = false }) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Cancel")
+                }
+            },
             shape = RoundedCornerShape(24.dp),
             containerColor = Panel
         )
@@ -1015,15 +1023,21 @@ private fun FilePickerChoiceDialog(
                 onClick = { onChoice(targets[selectedIndex], true) },
                 colors = ButtonDefaults.buttonColors(containerColor = Blue)
             ) {
+                Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
                 Text("Always", color = White)
             }
         },
         dismissButton = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text("Cancel", color = Muted)
                 }
                 TextButton(onClick = { onChoice(targets[selectedIndex], false) }) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text("Just once", color = Cyan)
                 }
             }
@@ -1183,9 +1197,13 @@ private fun AuthScreen(
                             Spacer(Modifier.width(10.dp))
                             Text("Securing your vault…")
                         } else {
-                            Text(if (setup) "Create secure vault" else "Unlock vault", fontWeight = FontWeight.SemiBold)
+                            Icon(
+                                if (setup) Icons.Default.Shield else Icons.Default.LockOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
                             Spacer(Modifier.width(8.dp))
-                            Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(if (setup) "Create secure vault" else "Unlock vault", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -1387,7 +1405,13 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 )
             }
         },
-        confirmButton = { Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) { Text("Got it") } },
+        confirmButton = {
+            Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) {
+                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Got it")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
@@ -1576,18 +1600,18 @@ private fun TopicDialog(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(13.dp)
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderShared, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Share topic")
+                        Text("Share")
                     }
                     OutlinedButton(
                         onClick = onExportTopic,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(13.dp)
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Export topic")
+                        Text("Export")
                     }
                 }
                 HorizontalDivider(color = Line)
@@ -1619,13 +1643,7 @@ private fun TopicDialog(
                     }
                 }
                 HorizontalDivider(color = Line)
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Created " + formatDate(topic.createdAt), color = Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = onDismiss) { Text("Done") }
-                }
+                Spacer(Modifier.height(8.dp))
             }
         }
     }
@@ -1690,7 +1708,7 @@ private fun VaultFileRow(
                 ) {
                     DropdownMenuItem(
                         text = { Text("Open") },
-                        leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpen() }
                     )
                     DropdownMenuItem(
@@ -1809,9 +1827,19 @@ private fun ChangePasswordDialog(
                     newPassword == confirmation,
                 onClick = { onChange(oldPassword, newPassword) },
                 shape = RoundedCornerShape(12.dp)
-            ) { Text("Save password") }
+            ) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Save password")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Cancel")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
@@ -1834,9 +1862,19 @@ private fun ConfirmDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Ink),
                 shape = RoundedCornerShape(12.dp)
-            ) { Text("Delete permanently", fontWeight = FontWeight.SemiBold) }
+            ) {
+                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Delete permanently", fontWeight = FontWeight.SemiBold)
+            }
         },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Keep it") } },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Keep it")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
