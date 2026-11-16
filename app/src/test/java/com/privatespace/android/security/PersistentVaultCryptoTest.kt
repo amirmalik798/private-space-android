@@ -148,8 +148,19 @@ class PersistentVaultCryptoTest {
         PersistentVaultCrypto.decrypt(ByteArrayInputStream(legacy), restored, aad, dataKey)
 
         assertArrayEquals(input, restored.toByteArray())
+        val damaged = legacy.copyOf()
+        damaged[damaged.lastIndex] = (damaged.last().toInt() xor 0x01).toByte()
+        assertThrows(java.io.IOException::class.java) {
+            PersistentVaultCrypto.decrypt(
+                ByteArrayInputStream(damaged),
+                ByteArrayOutputStream(),
+                aad,
+                dataKey
+            )
+        }
         dataKey.fill(0)
         legacy.fill(0)
+        damaged.fill(0)
     }
 
     @Test
