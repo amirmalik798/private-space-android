@@ -232,7 +232,12 @@ class VaultRepository(context: Context) {
                             )
                     }
                 } ?: false
-                val localIndexMatchesRecovery = localIndex != null && localIndex == index
+                // Schema versions may differ after a compatible local migration.
+                // Compare the actual vault contents, not the serialization version.
+                val localIndexMatchesRecovery = localIndex != null &&
+                    localIndex.topics == index.topics &&
+                    localIndex.files == index.files &&
+                    localIndex.trash == index.trash
 
                 if (
                     !hasLocalIndex ||
