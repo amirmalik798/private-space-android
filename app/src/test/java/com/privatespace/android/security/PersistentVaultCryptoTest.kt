@@ -135,7 +135,7 @@ class PersistentVaultCryptoTest {
 
     @Test
     fun previousSingleTagRecoveryPayloadRemainsReadable() {
-        val input = ByteArray(128_123) { ((it * 19) % 251).toByte() }
+        val input = ByteArray(8 * 1024 * 1024 + 123) { ((it * 19) % 251).toByte() }
         val aad = "private-space:file:legacy".toByteArray()
         val dataKey = PersistentVaultCrypto.newDataKey()
         val nonce = ByteArray(12) { (it + 3).toByte() }
