@@ -8,16 +8,22 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.MediaController
 import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
@@ -39,6 +45,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -46,8 +53,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -62,6 +71,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -260,7 +270,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var trashEntries by remember { mutableStateOf<List<VaultTrashEntry>>(emptyList()) }
     var storageUsage by remember { mutableStateOf(VaultStorageUsage()) }
     var activeTopicId by remember { mutableStateOf<String?>(null) }
-    var topicQuery by remember { mutableStateOf("") }
+    var activeMediaId by remember { mutableStateOf<String?>(null) }
+    var activeMediaFile by remember { mutableStateOf<PreparedVaultFile?>(null) }
+    var mediaViewerLoading by remember { mutableStateOf(false) }
+    var mediaRequestToken by remember { mutableLongStateOf(0L) }
+    var pendingOpenFile by remember { mutableStateOf<VaultFile?>(null) }
+    var topicQuery by remember { mutableStateOf("")}
     var showSecurityInfo by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
@@ -296,6 +311,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         confirmation = ""
         authError = ""
         activeTopicId = null
+        mediaRequestToken += 1L
+        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        activeMediaFile = null
+        activeMediaId = null
+        mediaViewerLoading = false
+        pendingOpenFile = null
         topicQuery = ""
         showSecurityInfo = false
         topMenuExpanded = false
@@ -323,6 +344,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     DisposableEffect(activity) {
         activity?.onVaultShouldLock = { lockVault() }
         onDispose { activity?.onVaultShouldLock = null }
+    }
+
+    fun closeMediaViewer() {
+        mediaRequestToken += 1L
+        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        activeMediaFile = null
+        activeMediaId = null
+        mediaViewerLoading = false
     }
 
     fun applySnapshot(snapshot: VaultSnapshot): Boolean {
@@ -721,7 +750,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun openVaultFile(file: VaultFile) {
+    fun openExternalVaultFile(file: VaultFile) {
         scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) {
@@ -756,6 +785,65 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
+
+    fun openVaultFile(file: VaultFile) {
+        val isMedia = VaultFormatSupport.isImageMimeType(file.mimeType) ||
+            VaultFormatSupport.isVideoMimeType(file.mimeType)
+        if (!isMedia) {
+            // Documents need a separate, explicit consent step before plaintext
+            // is handed to another app through FileProvider.
+            pendingOpenFile = file
+            return
+        }
+
+        if (activeTopicId != file.topicId || vaultFiles.none { it.id == file.id }) {
+            toast("This media item is no longer available in the open topic.")
+            return
+        }
+
+        mediaRequestToken += 1L
+        val requestToken = mediaRequestToken
+        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        activeMediaFile = null
+        activeMediaId = file.id
+        mediaViewerLoading = true
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repository.prepareDecryptedFile(file.id) }
+            }
+
+            if (requestToken != mediaRequestToken) {
+                result.getOrNull()?.file?.parentFile?.let { directory ->
+                    runCatching { directory.deleteRecursively() }
+                }
+                return@launch
+            }
+
+            mediaViewerLoading = false
+            result.fold(
+                onSuccess = { prepared ->
+                    val stillAvailable = unlocked &&
+                        activeTopicId == file.topicId &&
+                        vaultFiles.any { it.id == file.id } &&
+                        VaultSessionPolicy.mayReleasePlaintext(
+                            unlocked,
+                            activity?.isResumedForVault == true
+                        )
+                    if (stillAvailable) {
+                        activeMediaFile = prepared
+                    } else {
+                        runCatching { prepared.file.parentFile?.deleteRecursively() }
+                        activeMediaId = null
+                    }
+                },
+                onFailure = {
+                    activeMediaId = null
+                    toast(it.message ?: "The media could not be decrypted for viewing.")
+                }
+            )
+        }
+    }
     fun shareVaultFile(file: VaultFile) {
         scope.launch {
             busy = true
@@ -1112,7 +1200,78 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         return
     }
 
-    Scaffold(
+
+    val activeTopic = topics.firstOrNull { it.id == activeTopicId }
+    val activeTopicFiles = activeTopic?.let { topic ->
+        vaultFiles.filter { it.topicId == topic.id }
+    } ?: emptyList()
+    val topicMediaFiles = activeTopic?.let { topic ->
+        VaultMediaNavigation.mediaFilesInTopic(vaultFiles, topic.id)
+    } ?: emptyList()
+    val activeMedia = activeMediaId?.let { mediaId ->
+        topicMediaFiles.firstOrNull { it.id == mediaId }
+    }
+
+    LaunchedEffect(activeTopicId, topics) {
+        if (activeTopicId != null && topics.none { it.id == activeTopicId }) {
+            closeMediaViewer()
+            activeTopicId = null
+        }
+    }
+
+    BackHandler(enabled = activeMediaId != null) {
+        closeMediaViewer()
+    }
+    BackHandler(enabled = activeTopicId != null && activeMediaId == null) {
+        activeTopicId = null
+    }
+
+    if (activeMediaId != null) {
+        if (activeMedia == null) {
+            LaunchedEffect(activeMediaId) {
+                closeMediaViewer()
+            }
+        } else {
+            val mediaPosition = topicMediaFiles.indexOfFirst { it.id == activeMedia.id }
+            VaultMediaViewer(
+                file = activeMedia,
+                preparedFile = activeMediaFile,
+                loading = mediaViewerLoading,
+                position = mediaPosition + 1,
+                total = topicMediaFiles.size,
+                canGoPrevious = mediaPosition > 0,
+                canGoNext = mediaPosition >= 0 && mediaPosition < topicMediaFiles.lastIndex,
+                onBack = ::closeMediaViewer,
+                onPrevious = {
+                    VaultMediaNavigation.adjacent(topicMediaFiles, activeMedia.id, -1)?.let(::openVaultFile)
+                },
+                onNext = {
+                    VaultMediaNavigation.adjacent(topicMediaFiles, activeMedia.id, 1)?.let(::openVaultFile)
+                },
+                onPlaybackError = { toast("This video format or codec is not supported by this device.") }
+            )
+        }
+    } else if (activeTopic != null) {
+        TopicScreen(
+            topic = activeTopic,
+            files = activeTopicFiles,
+            repository = repository,
+            storageBytes = storageUsage.topicBytes[activeTopic.id] ?: 0L,
+            busy = busy,
+            onBack = { activeTopicId = null },
+            onAdd = { launchImport(activeTopic.id) },
+            onOpen = ::openVaultFile,
+            onShare = { requestFileReleaseConfirmation(it, VaultReleaseAction.SHARE) },
+            onExport = ::launchSingleFileExport,
+            onDelete = { fileToDelete = it },
+            onShareSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.SHARE) },
+            onExportSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.EXPORT) },
+            onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
+            onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) },
+            onDeleteTopic = { topicToDelete = activeTopic }
+        )
+    } else {
+        Scaffold(
         containerColor = Ink,
         topBar = {
             Surface(
@@ -1297,9 +1456,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             }
         }
     }
+    }
 
-
-    val activeTopic = topics.firstOrNull { it.id == activeTopicId }
 
     if (showTrash) {
         TrashDialog(
@@ -1330,22 +1488,43 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         SecurityInfoDialog(onDismiss = { showSecurityInfo = false })
     }
 
-    if (activeTopic != null) {
-        TopicDialog(
-            topic = activeTopic,
-            files = vaultFiles.filter { it.topicId == activeTopic.id },
-            repository = repository,
-            storageBytes = storageUsage.topicBytes[activeTopic.id] ?: 0L,
-            onDismiss = { activeTopicId = null },
-            onAdd = { launchImport(activeTopic.id) },
-            onOpen = ::openVaultFile,
-            onShare = { requestFileReleaseConfirmation(it, VaultReleaseAction.SHARE) },
-            onExport = ::launchSingleFileExport,
-            onDelete = { fileToDelete = it },
-            onShareSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.SHARE) },
-            onExportSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.EXPORT) },
-            onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
-            onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) }
+
+
+    pendingOpenFile?.let { requestedFile ->
+        AlertDialog(
+            onDismissRequest = { pendingOpenFile = null },
+            title = {
+                Text("Open document outside Private Space?", color = White, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Private Space does not render this document internally. To open it, the app must create a temporary decrypted copy and grant the app you choose access to that copy. That app may retain or copy the document. Continue only when you trust the receiving app.",
+                    color = Muted
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingOpenFile = null
+                        val currentFile = vaultFiles.firstOrNull { it.id == requestedFile.id }
+                        if (currentFile == null || !unlocked) {
+                            toast("This document is no longer available in the vault.")
+                        } else {
+                            openExternalVaultFile(currentFile)
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Continue to document app")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOpenFile = null }) {
+                    Text("Keep private")
+                }
+            },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = Panel
         )
     }
 
@@ -2258,12 +2437,13 @@ private fun TopicCard(
 }
 
 @Composable
-private fun TopicDialog(
+private fun TopicScreen(
     topic: VaultTopic,
     files: List<VaultFile>,
     repository: VaultRepository,
     storageBytes: Long,
-    onDismiss: () -> Unit,
+    busy: Boolean,
+    onBack: () -> Unit,
     onAdd: () -> Unit,
     onOpen: (VaultFile) -> Unit,
     onShare: (VaultFile) -> Unit,
@@ -2272,10 +2452,12 @@ private fun TopicDialog(
     onShareSelected: (List<VaultFile>) -> Unit,
     onExportSelected: (List<VaultFile>) -> Unit,
     onShareTopic: () -> Unit,
-    onExportTopic: () -> Unit
+    onExportTopic: () -> Unit,
+    onDeleteTopic: () -> Unit
 ) {
     var selectionMode by remember(topic.id) { mutableStateOf(false) }
     var selectedFileIds by remember(topic.id) { mutableStateOf<Set<String>>(emptySet()) }
+    var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     val selectedFiles = files.filter { it.id in selectedFileIds }
 
     LaunchedEffect(files) {
@@ -2284,193 +2466,475 @@ private fun TopicDialog(
         if (selectedFileIds.isEmpty()) selectionMode = false
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
-            shape = RoundedCornerShape(27.dp),
-            color = Panel,
-            border = BorderStroke(1.dp, Line)
-        ) {
-            Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        modifier = Modifier.size(48.dp),
-                        shape = RoundedCornerShape(15.dp),
-                        color = Blue.copy(alpha = 0.15f)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan, modifier = Modifier.size(25.dp))
-                        }
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(topic.name, color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(files.size.toString() + if (files.size == 1) " file" else " files", color = Muted, fontSize = 12.sp)
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close topic", tint = Muted)
-                    }
-                }
-                Spacer(Modifier.height(13.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        color = Panel2,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                Icon(Icons.Default.Lock, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
-                                Text("Storage", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                            }
-                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Surface(
-                        modifier = Modifier.weight(1f),
-                        color = Panel2,
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                Icon(Icons.Default.History, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
-                                Text("Updated", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                            }
-                            Text(formatDate(topic.updatedAt), color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(13.dp))
-                Button(
-                    onClick = onAdd,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(13.dp)
-                ) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(7.dp))
-                    Text("Add files")
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(
-                        onClick = {
-                            selectionMode = !selectionMode
-                            selectedFileIds = emptySet()
-                        }
-                    ) {
-                        Icon(
-                            if (selectionMode) Icons.Default.Close else Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(17.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Text(if (selectionMode) "Cancel selection" else "Select files")
-                    }
-                }
-                if (selectionMode) {
+    Scaffold(
+        containerColor = Ink,
+        topBar = {
+            Surface(
+                modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars),
+                color = Ink
+            ) {
+                Column {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(
-                            onClick = {
-                                selectedFileIds = if (selectedFileIds.size == files.size) emptySet()
-                                else files.map { it.id }.toSet()
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back to topics", tint = White)
+                        }
+                        Surface(
+                            modifier = Modifier.size(42.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            color = Blue.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan, modifier = Modifier.size(23.dp))
                             }
-                        ) {
-                            Text(if (selectedFileIds.size == files.size) "Clear" else "Select all")
                         }
-                        Spacer(Modifier.weight(1f))
-                        OutlinedButton(
-                            enabled = selectedFiles.isNotEmpty(),
-                            onClick = { onShareSelected(selectedFiles) },
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Share (${selectedFiles.size})")
-                        }
-                        Button(
-                            enabled = selectedFiles.isNotEmpty(),
-                            onClick = { onExportSelected(selectedFiles) },
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Export (${selectedFiles.size})")
-                        }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    OutlinedButton(
-                        onClick = onShareTopic,
-                        enabled = files.isNotEmpty(),
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(13.dp)
-                    ) {
-                        Icon(Icons.Default.FolderShared, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Share")
-                    }
-                    OutlinedButton(
-                        onClick = onExportTopic,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(13.dp)
-                    ) {
-                        Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Export")
-                    }
-                }
-                HorizontalDivider(color = Line)
-                if (files.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Spacer(Modifier.width(11.dp))
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(9.dp)
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Icon(Icons.Default.Description, contentDescription = null, tint = Muted, modifier = Modifier.size(38.dp))
-                            Text("No files yet", color = White, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(files, key = { it.id }) { file ->
-                            VaultFileRow(
-                                file = file,
-                                repository = repository,
-                                onOpen = { onOpen(file) },
-                                onShare = { onShare(file) },
-                                onExport = { onExport(file) },
-                                onDelete = { onDelete(file) },
-                                selectionMode = selectionMode,
-                                selected = file.id in selectedFileIds,
-                                onToggleSelection = {
-                                    selectedFileIds = if (file.id in selectedFileIds) {
-                                        selectedFileIds - file.id
-                                    } else {
-                                        selectedFileIds + file.id
-                                    }
-                                }
+                            Text(
+                                topic.name,
+                                color = White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${files.size} ${if (files.size == 1) "item" else "items"} · PRIVATE TOPIC",
+                                color = Muted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.8.sp,
+                                maxLines = 1
                             )
                         }
+                        Box {
+                            IconButton(onClick = { topicMenuExpanded = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Topic actions", tint = Muted)
+                            }
+                            DropdownMenu(
+                                expanded = topicMenuExpanded,
+                                onDismissRequest = { topicMenuExpanded = false },
+                                containerColor = Panel
+                            ) {
+                                DropdownMenuItem(
+                                    enabled = files.isNotEmpty() && !busy,
+                                    text = { Text("Share topic") },
+                                    leadingIcon = { Icon(Icons.Default.FolderShared, contentDescription = null) },
+                                    onClick = { topicMenuExpanded = false; onShareTopic() }
+                                )
+                                DropdownMenuItem(
+                                    enabled = !busy,
+                                    text = { Text("Export topic") },
+                                    leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null) },
+                                    onClick = { topicMenuExpanded = false; onExportTopic() }
+                                )
+                                HorizontalDivider(color = Line)
+                                DropdownMenuItem(
+                                    enabled = !busy,
+                                    text = { Text("Delete topic", color = Red) },
+                                    leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Red) },
+                                    onClick = { topicMenuExpanded = false; onDeleteTopic() }
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = Line.copy(alpha = 0.65f), thickness = 0.7.dp)
+                }
+            }
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier.fillMaxSize()
+                .background(Brush.verticalGradient(listOf(Color(0xFF101C30), Ink, Color(0xFF070B13))))
+                .padding(padding)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Panel,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, Line)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("FILES", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                        Text(files.size.toString(), color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Box(Modifier.width(1.dp).height(34.dp).background(Line))
+                    Column(modifier = Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.35.sp)
+                        Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                    Box(Modifier.width(1.dp).height(34.dp).background(Line))
+                    Column(modifier = Modifier.weight(1.15f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                        Text(formatDate(topic.updatedAt), color = White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                HorizontalDivider(color = Line)
-                Spacer(Modifier.height(8.dp))
+            }
+
+            Button(
+                onClick = onAdd,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                shape = RoundedCornerShape(15.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(19.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Add files", fontWeight = FontWeight.SemiBold)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Your files", color = White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(
+                        if (selectionMode) "${selectedFiles.size} selected" else "Stored securely in this topic",
+                        color = Muted,
+                        fontSize = 11.sp
+                    )
+                }
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        selectionMode = !selectionMode
+                        selectedFileIds = emptySet()
+                    }
+                ) {
+                    Icon(
+                        if (selectionMode) Icons.Default.Close else Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (selectionMode) "Cancel" else "Select")
+                }
+            }
+
+            if (selectionMode) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Panel,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Line)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "${selectedFiles.size} of ${files.size} selected",
+                                color = White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            TextButton(
+                                enabled = !busy && files.isNotEmpty(),
+                                onClick = {
+                                    selectedFileIds = if (selectedFileIds.size == files.size) {
+                                        emptySet()
+                                    } else {
+                                        files.map { it.id }.toSet()
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(if (selectedFileIds.size == files.size && files.isNotEmpty()) "Clear all" else "Select all")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                enabled = selectedFiles.isNotEmpty() && !busy,
+                                onClick = { onShareSelected(selectedFiles) },
+                                modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Share (${selectedFiles.size})", maxLines = 1, softWrap = false, fontSize = 12.sp)
+                            }
+                            Button(
+                                enabled = selectedFiles.isNotEmpty() && !busy,
+                                onClick = { onExportSelected(selectedFiles) },
+                                modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Export (${selectedFiles.size})", maxLines = 1, softWrap = false, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = Line.copy(alpha = 0.8f))
+            if (files.isEmpty()) {
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(70.dp),
+                            color = Panel2,
+                            shape = RoundedCornerShape(22.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Cyan, modifier = Modifier.size(34.dp))
+                            }
+                        }
+                        Text("Nothing here yet", color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Add documents, photos or videos to this topic.", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    items(files, key = { it.id }) { file ->
+                        VaultFileRow(
+                            file = file,
+                            repository = repository,
+                            onOpen = { onOpen(file) },
+                            onShare = { onShare(file) },
+                            onExport = { onExport(file) },
+                            onDelete = { onDelete(file) },
+                            selectionMode = selectionMode,
+                            selected = file.id in selectedFileIds,
+                            onToggleSelection = {
+                                selectedFileIds = if (file.id in selectedFileIds) {
+                                    selectedFileIds - file.id
+                                } else {
+                                    selectedFileIds + file.id
+                                }
+                            }
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun VaultMediaViewer(
+    file: VaultFile,
+    preparedFile: PreparedVaultFile?,
+    loading: Boolean,
+    position: Int,
+    total: Int,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    onBack: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onPlaybackError: () -> Unit
+) {
+    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
+    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val privateMediaFile = preparedFile?.file?.takeIf { it.isFile }
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val targetSizePx = with(density) {
+        maxOf(configuration.screenWidthDp.dp.roundToPx(), configuration.screenHeightDp.dp.roundToPx())
+            .coerceIn(1024, 4096)
+    }
+    val swipeThresholdPx = with(density) { 72.dp.toPx() }
+
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .background(Color.Black)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back to topic", tint = White)
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(file.displayName, color = White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "${if (isPhoto) "PHOTO" else "VIDEO"} · ${position.coerceAtLeast(1)} OF ${total.coerceAtLeast(1)}",
+                    color = Cyan,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.7.sp
+                )
+            }
+            IconButton(onClick = onPrevious, enabled = canGoPrevious) {
+                Icon(Icons.Default.ChevronLeft, contentDescription = "Previous media", tint = if (canGoPrevious) White else Muted.copy(alpha = 0.35f))
+            }
+            IconButton(onClick = onNext, enabled = canGoNext) {
+                Icon(Icons.Default.ChevronRight, contentDescription = "Next media", tint = if (canGoNext) White else Muted.copy(alpha = 0.35f))
+            }
+        }
+
+        Box(
+            modifier = Modifier.weight(1f).fillMaxWidth()
+                .pointerInput(file.id, canGoPrevious, canGoNext) {
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { _, dragAmount -> totalDrag += dragAmount },
+                        onDragEnd = {
+                            when {
+                                totalDrag <= -swipeThresholdPx && canGoNext -> onNext()
+                                totalDrag >= swipeThresholdPx && canGoPrevious -> onPrevious()
+                            }
+                            totalDrag = 0f
+                        },
+                        onDragCancel = { totalDrag = 0f }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            when {
+                loading -> CircularProgressIndicator(color = Cyan)
+                privateMediaFile == null -> {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Default.BrokenImage, contentDescription = null, tint = Muted, modifier = Modifier.size(38.dp))
+                        Text("This media item could not be loaded.", color = Muted, fontSize = 13.sp)
+                    }
+                }
+                isPhoto -> {
+                    val imageBitmap by produceState<Bitmap?>(
+                        initialValue = null,
+                        privateMediaFile.absolutePath,
+                        targetSizePx
+                    ) {
+                        value = withContext(Dispatchers.IO) {
+                            try {
+                                decodeViewerImage(privateMediaFile, targetSizePx)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }
+                    DisposableEffect(imageBitmap) {
+                        val bitmap = imageBitmap
+                        onDispose {
+                            if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
+                        }
+                    }
+                    val displayedBitmap = imageBitmap
+                    if (displayedBitmap == null) {
+                        CircularProgressIndicator(color = Cyan)
+                    } else {
+                        Image(
+                            bitmap = displayedBitmap.asImageBitmap(),
+                            contentDescription = file.displayName,
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+                isVideo -> {
+                    key(file.id) {
+                        AndroidView(
+                            factory = { playerContext ->
+                                val player = VideoView(playerContext)
+                                val controls = MediaController(playerContext)
+                                controls.setAnchorView(player)
+                                player.setMediaController(controls)
+                                player.setVideoPath(privateMediaFile.absolutePath)
+                                player.setOnPreparedListener { mediaPlayer ->
+                                    mediaPlayer.isLooping = false
+                                    player.start()
+                                }
+                                player.setOnErrorListener { _, _, _ ->
+                                    onPlaybackError()
+                                    true
+                                }
+                                player
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                            onRelease = { player -> player.stopPlayback() }
+                        )
+                    }
+                }
+                else -> Text("Unsupported media type.", color = Muted)
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF101722),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(if (isPhoto) "Photo" else "Video", color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(formatBytes(file.sizeBytes), color = Muted, fontSize = 11.sp)
+                }
+                Text(
+                    when {
+                        !canGoPrevious && !canGoNext -> "1 item"
+                        else -> "Swipe to browse"
+                    },
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+private fun decodeViewerImage(source: File, targetMaxDimension: Int): Bitmap? {
+    if (!source.isFile || source.length() <= 0L) return null
+    val bounds = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+        inScaled = false
+    }
+    BitmapFactory.decodeFile(source.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    val largestDimension = maxOf(bounds.outWidth, bounds.outHeight)
+    var sampleSize = 1
+    while (largestDimension / sampleSize > targetMaxDimension && sampleSize < (1 shl 29)) {
+        sampleSize *= 2
+    }
+    val options = BitmapFactory.Options().apply {
+        inJustDecodeBounds = false
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    return BitmapFactory.decodeFile(source.absolutePath, options)
 }
 
 @Composable
