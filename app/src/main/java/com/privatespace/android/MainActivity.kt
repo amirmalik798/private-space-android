@@ -794,7 +794,7 @@ private fun PrivateSpaceRoot() {
                     busy = false
                     result.onSuccess {
                         refreshVault()
-                        toast("Restored to “\${entry.originalTopic.name}”.")
+                        toast("Restored to “${entry.originalTopic.name}”.")
                     }.onFailure {
                         toast(it.message ?: "Could not restore this file.")
                     }
@@ -889,9 +889,9 @@ private fun PrivateSpaceRoot() {
         ConfirmDialog(
             title = "Delete topic?",
             message = if (fileCount == 0) {
-                "“\${topic.name}” is empty and will be removed from your topics."
+                "“${topic.name}” is empty and will be removed from your topics."
             } else {
-                "“\${topic.name}” will be removed from your topics. Its \${fileCount} file(s) will be moved to the Recycle Bin, where you can restore them or permanently delete them."
+                "“${topic.name}” will be removed from your topics. Its ${fileCount} file(s) will be moved to the Recycle Bin, where you can restore them or permanently delete them."
             },
             confirmLabel = "Delete topic",
             onCancel = { topicToDelete = null },
@@ -916,7 +916,7 @@ private fun PrivateSpaceRoot() {
     fileToDelete?.let { file ->
         ConfirmDialog(
             title = "Move file to Trash?",
-            message = "“\${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
+            message = "“${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
             confirmLabel = "Move to Trash",
             onCancel = { fileToDelete = null },
             onConfirm = {
@@ -939,7 +939,7 @@ private fun PrivateSpaceRoot() {
     trashEntryToPermanentlyDelete?.let { entry ->
         ConfirmDialog(
             title = "Permanently delete file?",
-            message = "“\${entry.file.displayName}” will be removed from this device and cannot be restored. This does not affect any original file or previously exported/shared copy.",
+            message = "“${entry.file.displayName}” will be removed from this device and cannot be restored. This does not affect any original file or previously exported/shared copy.",
             confirmLabel = "Delete forever",
             onCancel = { trashEntryToPermanentlyDelete = null },
             onConfirm = {
@@ -1908,8 +1908,8 @@ private fun TrashFileRow(
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("From \${entry.originalTopic.name}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Deleted \${formatDate(entry.deletedAt)}", color = Muted, fontSize = 10.sp)
+                    Text("From ${entry.originalTopic.name}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Deleted ${formatDate(entry.deletedAt)}", color = Muted, fontSize = 10.sp)
                 }
             }
             Row(
