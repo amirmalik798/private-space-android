@@ -22,11 +22,10 @@ import javax.crypto.spec.GCMParameterSpec
  * recompressed, normalized, or transcoded. AES-GCM encrypts the exact input
  * bytes and restores those exact bytes during decryption.
  *
- * Container layout for new records:
- *   8-byte magic | 12-byte random nonce | original bytes as ciphertext | 16-byte GCM tag
- *
- * Therefore encrypted storage uses exactly 36 bytes of container overhead.
- * Legacy records (12-byte nonce followed by ciphertext/tag) remain readable.
+ * New records use independently authenticated 64 KiB AES-GCM frames and an
+ * authenticated terminal frame. This keeps decryption memory bounded regardless
+ * of file size while detecting truncation, reordering and trailing data.
+ * Previous versioned and legacy single-tag containers remain readable.
  */
 object VaultCrypto {
     private const val ALIAS = "private_space_aes_v1"
