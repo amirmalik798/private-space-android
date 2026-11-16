@@ -32,7 +32,8 @@ object PersistentVaultCrypto {
     private const val BUFFER_BYTES = 64 * 1024
 
     private val ENVELOPE_MAGIC = "PSKEY001".toByteArray(Charsets.US_ASCII)
-    private val PAYLOAD_MAGIC = "PSPERS01".toByteArray(Charsets.US_ASCII)
+    private val LEGACY_PAYLOAD_MAGIC = "PSPERS01".toByteArray(Charsets.US_ASCII)
+    private val CHUNKED_PAYLOAD_MAGIC = "PSPERS02".toByteArray(Charsets.US_ASCII)
     private val ENVELOPE_AAD = "private-space:recovery-key:v1".toByteArray(Charsets.UTF_8)
 
     fun newDataKey(): ByteArray = ByteArray(KEY_BYTES).also(SecureRandom()::nextBytes)
@@ -136,60 +137,14 @@ object PersistentVaultCrypto {
      * ever writing a plaintext staging file to disk.
      */
     class EncryptingOutputStream internal constructor(
-        private val output: OutputStream,
-        private val cipher: Cipher
+        private val delegate: ChunkedAesGcm.EncryptingOutputStream
     ) : OutputStream() {
-        private var finished = false
-
-        override fun write(value: Int) {
-            val single = byteArrayOf(value.toByte())
-            try {
-                write(single, 0, 1)
-            } finally {
-                single.fill(0)
-            }
-        }
-
-        override fun write(bytes: ByteArray, offset: Int, length: Int) {
-            check(!finished) { "Recovery encryption stream is already finalized." }
-            require(offset >= 0 && length >= 0 && offset <= bytes.size - length)
-            if (length == 0) return
-            val encrypted = cipher.update(bytes, offset, length)
-            if (encrypted != null) {
-                try {
-                    output.write(encrypted)
-                } finally {
-                    encrypted.fill(0)
-                }
-            }
-        }
-
-        override fun flush() {
-            check(!finished) { "Recovery encryption stream is already finalized." }
-            output.flush()
-        }
-
-        /** Writes the GCM authentication tag only after the source decrypt succeeds. */
-        fun finish() {
-            check(!finished) { "Recovery encryption stream is already finalized." }
-            val finalBytes = cipher.doFinal()
-            try {
-                output.write(finalBytes)
-                output.flush()
-                finished = true
-            } finally {
-                finalBytes.fill(0)
-            }
-        }
-
-        /** Invalidates this stream after a source integrity or destination write failure. */
-        fun abort() {
-            finished = true
-        }
-
-        override fun close() {
-            abort()
-        }
+        override fun write(value: Int) = delegate.write(value)
+        override fun write(bytes: ByteArray, offset: Int, length: Int) = delegate.write(bytes, offset, length)
+        override fun flush() = delegate.flush()
+        fun finish() = delegate.finish()
+        fun abort() = delegate.abort()
+        override fun close() = abort()
     }
 
     fun encryptingOutputStream(
@@ -198,30 +153,12 @@ object PersistentVaultCrypto {
         dataKey: ByteArray
     ): EncryptingOutputStream {
         require(dataKey.size == KEY_BYTES) { "Invalid recovery key size." }
-
-        // Supply the nonce explicitly rather than retrieving Cipher.iv after
-        // initialization. This matches the proven recovery-key envelope path
-        // and keeps the exact serialized nonce under our control on OEM JCA providers.
-        val keyMaterial = dataKey.copyOf()
-        val nonce = ByteArray(NONCE_BYTES).also(SecureRandom()::nextBytes)
-        try {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(keyMaterial, "AES"),
-                GCMParameterSpec(TAG_BITS, nonce)
-            )
-            cipher.updateAAD(aad)
-            output.write(PAYLOAD_MAGIC)
-            output.write(nonce)
-            return EncryptingOutputStream(output, cipher)
-        } finally {
-            keyMaterial.fill(0)
-            nonce.fill(0)
-        }
+        val key = SecretKeySpec(dataKey.copyOf(), "AES")
+        return EncryptingOutputStream(
+            ChunkedAesGcm.encryptingOutputStream(output, aad, key, CHUNKED_PAYLOAD_MAGIC)
+        )
     }
 
-    @Throws(IOException::class, GeneralSecurityException::class)
     fun encrypt(input: InputStream, output: OutputStream, aad: ByteArray, dataKey: ByteArray) {
         val encrypted = encryptingOutputStream(output, aad, dataKey)
         val buffer = ByteArray(BUFFER_BYTES)
@@ -229,11 +166,7 @@ object PersistentVaultCrypto {
             while (true) {
                 val count = readChunkOrEof(input, buffer)
                 if (count < 0) break
-                try {
-                    encrypted.write(buffer, 0, count)
-                } finally {
-                    buffer.fill(0, 0, count)
-                }
+                try { encrypted.write(buffer, 0, count) } finally { buffer.fill(0, 0, count) }
             }
             encrypted.finish()
         } catch (failure: Throwable) {
@@ -251,25 +184,26 @@ object PersistentVaultCrypto {
     @Throws(IOException::class, GeneralSecurityException::class)
     fun decrypt(input: InputStream, output: OutputStream, aad: ByteArray, dataKey: ByteArray) {
         require(dataKey.size == KEY_BYTES) { "Invalid recovery key size." }
-        val magic = ByteArray(PAYLOAD_MAGIC.size)
+        val magic = ByteArray(8)
         readExactly(input, magic, 0, magic.size)
-        require(magic.contentEquals(PAYLOAD_MAGIC)) { "Unsupported recovery payload format." }
+        val keyMaterial = dataKey.copyOf()
+        val key = try { SecretKeySpec(keyMaterial, "AES") } finally { keyMaterial.fill(0) }
+        when {
+            magic.contentEquals(CHUNKED_PAYLOAD_MAGIC) ->
+                ChunkedAesGcm.decryptAfterMagic(input, output, aad, key, CHUNKED_PAYLOAD_MAGIC)
+            magic.contentEquals(LEGACY_PAYLOAD_MAGIC) -> decryptLegacyPayload(input, output, aad, key)
+            else -> throw IOException("Unsupported recovery payload format.")
+        }
+        magic.fill(0)
+    }
+
+    /** Reads pre-chunked recovery records without changing their on-disk format. */
+    private fun decryptLegacyPayload(input: InputStream, output: OutputStream, aad: ByteArray, key: SecretKeySpec) {
         val nonce = ByteArray(NONCE_BYTES)
         readExactly(input, nonce, 0, nonce.size)
-
-        val keyMaterial = dataKey.copyOf()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        try {
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(keyMaterial, "AES"),
-                GCMParameterSpec(TAG_BITS, nonce)
-            )
-            cipher.updateAAD(aad)
-        } finally {
-            keyMaterial.fill(0)
-        }
-
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
+        cipher.updateAAD(aad)
         val buffer = ByteArray(BUFFER_BYTES)
         try {
             while (true) {
@@ -277,29 +211,14 @@ object PersistentVaultCrypto {
                 if (count < 0) break
                 try {
                     val clear = cipher.update(buffer, 0, count)
-                    if (clear != null) {
-                        try { output.write(clear) } finally { clear.fill(0) }
-                    }
-                } finally {
-                    buffer.fill(0, 0, count)
-                }
+                    if (clear != null) try { output.write(clear) } finally { clear.fill(0) }
+                } finally { buffer.fill(0, 0, count) }
             }
-            val finalClear = try {
-                cipher.doFinal()
-            } catch (badTag: AEADBadTagException) {
+            val finalClear = try { cipher.doFinal() } catch (badTag: AEADBadTagException) {
                 throw IOException("Recovery vault integrity check failed.", badTag)
             }
-            try {
-                output.write(finalClear)
-                output.flush()
-            } finally {
-                finalClear.fill(0)
-            }
-        } finally {
-            magic.fill(0)
-            nonce.fill(0)
-            buffer.fill(0)
-        }
+            try { output.write(finalClear); output.flush() } finally { finalClear.fill(0) }
+        } finally { nonce.fill(0); buffer.fill(0) }
     }
 
     fun sha256(bytes: ByteArray): String =
