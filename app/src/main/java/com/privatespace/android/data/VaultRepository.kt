@@ -1281,6 +1281,19 @@ class VaultRepository(context: Context) {
                 throw IOException("Recovery backup size exceeds the supported range.", failure)
             }
         }
+        val requiredLocalBytes = records.fold(0L) { total, record ->
+            try {
+                Math.addExact(total, VaultCrypto.encryptedContainerLength(record.sizeBytes))
+            } catch (failure: ArithmeticException) {
+                throw IOException("Recovery backup storage requirement exceeds the supported range.", failure)
+            }
+        }
+        if (root.usableSpace < requiredLocalBytes) {
+            throw IOException(
+                "There is not enough free device storage to restore this encrypted vault. " +
+                    "Free at least the required space and try again. Your recovery backup has not been changed."
+            )
+        }
         val incomingFiles = mutableMapOf<String, File>()
         var completedBytes = 0L
         var lastProgressAtNanos = 0L
