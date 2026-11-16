@@ -143,10 +143,13 @@ private fun PrivateSpaceRoot() {
 
     var topics by remember { mutableStateOf<List<VaultTopic>>(emptyList()) }
     var vaultFiles by remember { mutableStateOf<List<VaultFile>>(emptyList()) }
+    var trashEntries by remember { mutableStateOf<List<VaultTrashEntry>>(emptyList()) }
     var storageUsage by remember { mutableStateOf(VaultStorageUsage()) }
     var activeTopicId by remember { mutableStateOf<String?>(null) }
     var topicQuery by remember { mutableStateOf("") }
     var showSecurityInfo by remember { mutableStateOf(false) }
+    var showTrash by remember { mutableStateOf(false) }
+    var trashEntryToPermanentlyDelete by remember { mutableStateOf<VaultTrashEntry?>(null) }
     var showCreateTopic by remember { mutableStateOf(false) }
     var topicName by remember { mutableStateOf("") }
     var showChangePassword by remember { mutableStateOf(false) }
@@ -173,7 +176,10 @@ private fun PrivateSpaceRoot() {
         showSecurityInfo = false
         topics = emptyList()
         vaultFiles = emptyList()
+        trashEntries = emptyList()
         storageUsage = VaultStorageUsage()
+        showTrash = false
+        trashEntryToPermanentlyDelete = null
         topicName = ""
         showCreateTopic = false
         showChangePassword = false
@@ -193,6 +199,7 @@ private fun PrivateSpaceRoot() {
         val snapshot = withContext(Dispatchers.IO) { repository.snapshot() }
         topics = snapshot.topics
         vaultFiles = snapshot.files
+        trashEntries = snapshot.trash
         storageUsage = snapshot.storageUsage
     }
 
@@ -206,6 +213,7 @@ private fun PrivateSpaceRoot() {
             }.onSuccess { snapshot ->
                 topics = snapshot.topics
                 vaultFiles = snapshot.files
+                trashEntries = snapshot.trash
                 storageUsage = snapshot.storageUsage
             }.onFailure {
                 authError = it.message ?: "The vault could not be opened safely."
@@ -649,6 +657,13 @@ private fun PrivateSpaceRoot() {
                                 Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
                             }
                         }
+                        IconButton(onClick = { showTrash = true }) {
+                            Icon(
+                                Icons.Default.DeleteSweep,
+                                contentDescription = "Recycle Bin",
+                                tint = if (trashEntries.isNotEmpty()) Cyan else Muted
+                            )
+                        }
                         IconButton(onClick = { showSecurityInfo = true }) {
                             Icon(Icons.Default.Info, contentDescription = "Security", tint = Muted)
                         }
@@ -764,6 +779,31 @@ private fun PrivateSpaceRoot() {
 
 
     val activeTopic = topics.firstOrNull { it.id == activeTopicId }
+
+    if (showTrash) {
+        TrashDialog(
+            entries = trashEntries,
+            busy = busy,
+            onDismiss = { showTrash = false },
+            onRestore = { entry ->
+                scope.launch {
+                    busy = true
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { repository.restoreTrashFile(entry.file.id) }
+                    }
+                    busy = false
+                    result.onSuccess {
+                        refreshVault()
+                        toast("Restored to “\${entry.originalTopic.name}”.")
+                    }.onFailure {
+                        toast(it.message ?: "Could not restore this file.")
+                    }
+                }
+            },
+            onDeletePermanently = { trashEntryToPermanentlyDelete = it }
+        )
+    }
+
     if (showSecurityInfo) {
         SecurityInfoDialog(onDismiss = { showSecurityInfo = false })
     }
@@ -845,11 +885,15 @@ private fun PrivateSpaceRoot() {
     }
 
     topicToDelete?.let { topic ->
+        val fileCount = vaultFiles.count { it.topicId == topic.id }
         ConfirmDialog(
-            title = "Delete topic and files?",
-            message = "“" + topic.name + "” and all " +
-                vaultFiles.count { it.topicId == topic.id } +
-                " stored file(s) will be permanently deleted from this device. This cannot be undone.",
+            title = "Delete topic?",
+            message = if (fileCount == 0) {
+                "“\${topic.name}” is empty and will be removed from your topics."
+            } else {
+                "“\${topic.name}” will be removed from your topics. Its \${fileCount} file(s) will be moved to the Recycle Bin, where you can restore them or permanently delete them."
+            },
+            confirmLabel = "Delete topic",
             onCancel = { topicToDelete = null },
             onConfirm = {
                 topicToDelete = null
@@ -862,6 +906,7 @@ private fun PrivateSpaceRoot() {
                     result.onSuccess {
                         if (activeTopicId == topic.id) activeTopicId = null
                         refreshVault()
+                        if (fileCount > 0) toast("Topic deleted. Its files are in the Recycle Bin.")
                     }.onFailure { toast(it.message ?: "Could not delete topic.") }
                 }
             }
@@ -870,8 +915,9 @@ private fun PrivateSpaceRoot() {
 
     fileToDelete?.let { file ->
         ConfirmDialog(
-            title = "Delete file?",
-            message = "“" + file.displayName + "” will be permanently removed from Private Space. This does not delete the original file outside the vault.",
+            title = "Move file to Trash?",
+            message = "“\${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
+            confirmLabel = "Move to Trash",
             onCancel = { fileToDelete = null },
             onConfirm = {
                 fileToDelete = null
@@ -881,8 +927,35 @@ private fun PrivateSpaceRoot() {
                         runCatching { repository.deleteFile(file.id) }
                     }
                     busy = false
-                    result.onSuccess { refreshVault() }
-                        .onFailure { toast(it.message ?: "Could not delete file.") }
+                    result.onSuccess {
+                        refreshVault()
+                        toast("Moved to the Recycle Bin. You can restore this file later.")
+                    }.onFailure { toast(it.message ?: "Could not move file to Trash.") }
+                }
+            }
+        )
+    }
+
+    trashEntryToPermanentlyDelete?.let { entry ->
+        ConfirmDialog(
+            title = "Permanently delete file?",
+            message = "“\${entry.file.displayName}” will be removed from this device and cannot be restored. This does not affect any original file or previously exported/shared copy.",
+            confirmLabel = "Delete forever",
+            onCancel = { trashEntryToPermanentlyDelete = null },
+            onConfirm = {
+                trashEntryToPermanentlyDelete = null
+                scope.launch {
+                    busy = true
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { repository.permanentlyDeleteTrashFile(entry.file.id) }
+                    }
+                    busy = false
+                    result.onSuccess {
+                        refreshVault()
+                        toast("File permanently deleted.")
+                    }.onFailure {
+                        toast(it.message ?: "Could not permanently delete this file.")
+                    }
                 }
             }
         )
@@ -1725,6 +1798,141 @@ private fun VaultFileRow(
 
 
 @Composable
+private fun TrashDialog(
+    entries: List<VaultTrashEntry>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onRestore: (VaultTrashEntry) -> Unit,
+    onDeletePermanently: (VaultTrashEntry) -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
+            shape = RoundedCornerShape(27.dp),
+            color = Panel,
+            border = BorderStroke(1.dp, Line)
+        ) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        modifier = Modifier.size(48.dp),
+                        shape = RoundedCornerShape(15.dp),
+                        color = Blue.copy(alpha = 0.15f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = Cyan, modifier = Modifier.size(25.dp))
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Recycle Bin", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
+                        Text(
+                            entries.size.toString() + if (entries.size == 1) " deleted file" else " deleted files",
+                            color = Muted,
+                            fontSize = 12.sp
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close Recycle Bin", tint = Muted)
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = Line)
+                if (entries.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Muted, modifier = Modifier.size(42.dp))
+                            Text("Recycle Bin is empty", color = White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            Text("Files you delete will appear here.", color = Muted, fontSize = 12.sp)
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        items(entries, key = { it.file.id }) { entry ->
+                            TrashFileRow(
+                                entry = entry,
+                                enabled = !busy,
+                                onRestore = { onRestore(entry) },
+                                onDeletePermanently = { onDeletePermanently(entry) }
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = Line)
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrashFileRow(
+    entry: VaultTrashEntry,
+    enabled: Boolean,
+    onRestore: () -> Unit,
+    onDeletePermanently: () -> Unit
+) {
+    val file = entry.file
+    val isPhoto = file.mimeType.startsWith("image/")
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(17.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF192840)),
+        border = BorderStroke(1.dp, White.copy(alpha = 0.035f))
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.size(42.dp),
+                    shape = RoundedCornerShape(13.dp),
+                    color = if (isPhoto) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (isPhoto) Icons.Default.Image else Icons.Default.InsertDriveFile,
+                            contentDescription = if (isPhoto) "Photo" else "Document",
+                            tint = if (isPhoto) Green else Cyan
+                        )
+                    }
+                }
+                Spacer(Modifier.width(11.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("From \${entry.originalTopic.name}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Deleted \${formatDate(entry.deletedAt)}", color = Muted, fontSize = 10.sp)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onRestore, enabled = enabled) {
+                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(17.dp), tint = Cyan)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Restore", color = Cyan)
+                }
+                TextButton(onClick = onDeletePermanently, enabled = enabled) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(17.dp), tint = Red)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Delete forever", color = Red)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChangePasswordDialog(
     onDismiss: () -> Unit,
     onChange: (String, String) -> Unit
@@ -1836,6 +2044,7 @@ private fun ChangePasswordDialog(
 private fun ConfirmDialog(
     title: String,
     message: String,
+    confirmLabel: String = "Delete permanently",
     onCancel: () -> Unit,
     onConfirm: () -> Unit
 ) {
@@ -1852,7 +2061,7 @@ private fun ConfirmDialog(
             ) {
                 Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("Delete permanently", fontWeight = FontWeight.SemiBold)
+                Text(confirmLabel, fontWeight = FontWeight.SemiBold)
             }
         },
         dismissButton = {
