@@ -247,6 +247,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var confirmation by remember { mutableStateOf("") }
     var authError by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
+    var choosingExistingRecovery by remember { mutableStateOf(false) }
+    var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
+    var showRecoverySetup by remember { mutableStateOf(false) }
+    var recoverySetupError by remember { mutableStateOf("") }
     var lockUntil by remember { mutableLongStateOf(PasswordManager.lockedUntil(context)) }
     var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -279,6 +284,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun lockVault() {
+        repository.lockPersistentStorage()
+        pendingRecoveryPassword?.fill('\u0000')
+        pendingRecoveryPassword = null
+        recoveryTreeUri = null
+        choosingExistingRecovery = false
+        showRecoverySetup = false
+        recoverySetupError = ""
         unlocked = false
         password = ""
         confirmation = ""
@@ -417,6 +429,79 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             emptyList()
         }
         handleImportUris(selectedUris)
+    }
+
+    val recoveryFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { selectedTreeUri ->
+        activity?.suppressAutoLockForPicker = false
+        if (selectedTreeUri == null) {
+            if (choosingExistingRecovery) {
+                choosingExistingRecovery = false
+                authError = "Choose the folder containing your existing Private Space Vault."
+            } else {
+                recoverySetupError = "Select a device-storage folder to protect your vault."
+            }
+        } else if (selectedTreeUri.authority != "com.android.externalstorage.documents") {
+            if (choosingExistingRecovery) {
+                choosingExistingRecovery = false
+                authError = "Choose a folder in this device's internal or SD-card storage, not a cloud provider."
+            } else {
+                recoverySetupError = "Choose a folder in this device's internal or SD-card storage, not a cloud provider."
+            }
+        } else {
+            val grantFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            val grantResult = runCatching {
+                context.contentResolver.takePersistableUriPermission(selectedTreeUri, grantFlags)
+            }
+            if (grantResult.isFailure) {
+                val message = "Android could not retain access to the selected recovery folder. Choose a device Documents folder and try again."
+                if (choosingExistingRecovery) {
+                    choosingExistingRecovery = false
+                    authError = message
+                } else {
+                    recoverySetupError = message
+                }
+            } else if (choosingExistingRecovery) {
+                choosingExistingRecovery = false
+                recoveryTreeUri = selectedTreeUri
+                setup = false
+                password = ""
+                confirmation = ""
+                authError = "Enter the password that protected this encrypted recovery vault."
+            } else {
+                val secret = pendingRecoveryPassword?.copyOf()
+                if (secret == null) {
+                    recoverySetupError = "The setup session expired. Unlock Private Space again."
+                } else {
+                    scope.launch {
+                        busy = true
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching { repository.enablePersistentStorage(selectedTreeUri, secret) }
+                        }
+                        busy = false
+                        result.onSuccess {
+                            if (!unlocked || activity?.isResumedForVault != true) {
+                                repository.lockPersistentStorage()
+                                pendingRecoveryPassword?.fill(0.toChar())
+                                pendingRecoveryPassword = null
+                                showRecoverySetup = false
+                                return@onSuccess
+                            }
+                            pendingRecoveryPassword?.fill(0.toChar())
+                            pendingRecoveryPassword = null
+                            showRecoverySetup = false
+                            recoverySetupError = ""
+                            toast("Encrypted recovery storage is ready. Your vault can now be restored after reinstalling Private Space.")
+                        }.onFailure {
+                            recoverySetupError = it.message ?: "Could not prepare encrypted recovery storage."
+                            toast(recoverySetupError)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     val filePickerPreferences = remember(context) {
@@ -904,8 +989,19 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             busy = busy,
             lockUntil = lockUntil,
             now = clockNow,
+            recoveryFolderSelected = recoveryTreeUri != null,
+            recoveryAvailable = setup || recoveryTreeUri != null,
             onPassword = { password = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
-            onConfirmation = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) }
+            onConfirmation = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+            onRestore = {
+                choosingExistingRecovery = true
+                activity?.suppressAutoLockForPicker = true
+                runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
+                    choosingExistingRecovery = false
+                    activity?.suppressAutoLockForPicker = false
+                    authError = "Could not open the device folder picker."
+                }
+            }
         ) {
             if (busy || lockUntil > System.currentTimeMillis()) return@AuthScreen
             busy = true
@@ -913,35 +1009,76 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val entered = password
             val confirm = confirmation
             val wasSetup = setup
+            val restoreUri = recoveryTreeUri
             val authGeneration = activity?.foregroundGeneration
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        if (wasSetup) {
-                            require(entered.length in PasswordManager.MIN_PASSWORD_LENGTH..PasswordManager.MAX_PASSWORD_LENGTH) {
-                                "Use at least ${PasswordManager.MIN_PASSWORD_LENGTH} characters."
+                        when {
+                            restoreUri != null -> {
+                                if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                                    error("Too many attempts. Wait for the lockout to end.")
+                                }
+                                try {
+                                    repository.restorePersistentVault(restoreUri, entered.toCharArray())
+                                } catch (failure: Throwable) {
+                                    PasswordManager.recordFailure(context)
+                                    throw failure
+                                }
+                                PasswordManager.set(context, entered.toCharArray())
+                                PasswordManager.clearFailures(context)
+                                true to null
                             }
-                            require(entered == confirm) { "Passwords do not match." }
-                            PasswordManager.set(context, entered.toCharArray())
-                            true
-                        } else {
-                            if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
-                                error("Too many attempts. Wait for the lockout to end.")
+                            wasSetup -> {
+                                require(entered.length in PasswordManager.MIN_PASSWORD_LENGTH..PasswordManager.MAX_PASSWORD_LENGTH) {
+                                    "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters."
+                                }
+                                require(entered == confirm) { "Passwords do not match." }
+                                PasswordManager.set(context, entered.toCharArray())
+                                true to entered.toCharArray()
                             }
-                            val valid = PasswordManager.verify(context, entered.toCharArray())
-                            if (valid) PasswordManager.clearFailures(context)
-                            else PasswordManager.recordFailure(context)
-                            valid
+                            else -> {
+                                if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                                    error("Too many attempts. Wait for the lockout to end.")
+                                }
+                                val valid = PasswordManager.verify(context, entered.toCharArray())
+                                if (!valid) {
+                                    PasswordManager.recordFailure(context)
+                                    false to null
+                                } else {
+                                    PasswordManager.clearFailures(context)
+                                    val savedTree = repository.persistentStorageUri()
+                                    if (savedTree == null) {
+                                        true to entered.toCharArray()
+                                    } else {
+                                        try {
+                                            repository.openPersistentStorage(savedTree, entered.toCharArray())
+                                            true to null
+                                        } catch (_: Exception) {
+                                            // Local encrypted records remain intact. Let the
+                                            // user select a new recovery folder and migrate them.
+                                            true to entered.toCharArray()
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 busy = false
                 result.fold(
-                    onSuccess = { valid ->
+                    onSuccess = { outcome ->
+                        val valid = outcome.first
+                        val recoveryPassword = outcome.second
                         if (valid) {
                             setup = false
+                            recoveryTreeUri = null
                             password = ""
                             confirmation = ""
+                            pendingRecoveryPassword?.fill(0.toChar())
+                            pendingRecoveryPassword = recoveryPassword
+                            showRecoverySetup = recoveryPassword != null
+                            recoverySetupError = ""
                             if (VaultSessionPolicy.mayCompleteUnlock(
                                     authGeneration,
                                     activity?.foregroundGeneration,
@@ -951,6 +1088,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 unlocked = true
                                 authError = ""
                             } else {
+                                repository.lockPersistentStorage()
+                                pendingRecoveryPassword?.fill(0.toChar())
+                                pendingRecoveryPassword = null
+                                showRecoverySetup = false
                                 authError = "Private Space was interrupted. Enter your password again to unlock it."
                             }
                         } else {
@@ -1281,6 +1422,58 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
     }
 
+    if (showRecoverySetup) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = {
+                Text("Protect your vault across reinstallations", color = White, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Choose a folder in this device's Documents or other local storage. Private Space will create a dedicated folder named " +
+                            PersistentVaultStore.FOLDER_NAME + " containing only encrypted recovery data.",
+                        color = Muted
+                    )
+                    Text(
+                        "Your current vault stays in Private Space. The recovery copy is updated when files or topics change. Keep your vault password safe: it is required to restore this data after reinstalling.",
+                        color = White,
+                        fontSize = 13.sp
+                    )
+                    if (recoverySetupError.isNotBlank()) {
+                        Surface(color = Red.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
+                            Text(
+                                recoverySetupError,
+                                color = Red,
+                                modifier = Modifier.padding(11.dp),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy && pendingRecoveryPassword != null,
+                    onClick = {
+                        activity?.suppressAutoLockForPicker = true
+                        runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
+                            activity?.suppressAutoLockForPicker = false
+                            recoverySetupError = "Could not open Android's device folder picker."
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (busy) "Preparing recovery…" else "Choose device folder")
+                }
+            },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = Panel
+        )
+    }
+
     if (showCreateTopic) {
         AlertDialog(
             onDismissRequest = { showCreateTopic = false },
@@ -1432,7 +1625,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             error("Current password is incorrect.")
                         }
                         PasswordManager.clearFailures(context)
+                        repository.rotatePersistentPassword(newPassword.toCharArray())
                         PasswordManager.set(context, newPassword.toCharArray())
+                        repository.finishPersistentPasswordRotation()
                     }
                 }
                 result.onSuccess {
@@ -1574,8 +1769,11 @@ private fun AuthScreen(
     busy: Boolean,
     lockUntil: Long,
     now: Long,
+    recoveryFolderSelected: Boolean,
+    recoveryAvailable: Boolean,
     onPassword: (String) -> Unit,
     onConfirmation: (String) -> Unit,
+    onRestore: () -> Unit,
     onSubmit: () -> Unit
 ) {
     var passwordVisible by remember { mutableStateOf(false) }
@@ -1717,7 +1915,28 @@ private fun AuthScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(if (setup) "Create secure vault" else "Unlock vault", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                when {
+                                    setup -> "Create secure vault"
+                                    recoveryFolderSelected -> "Restore encrypted vault"
+                                    else -> "Unlock vault"
+                                },
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                    if (recoveryAvailable) {
+                        TextButton(
+                            onClick = onRestore,
+                            enabled = !busy && !locked,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                if (recoveryFolderSelected) "Choose a different recovery folder"
+                                else "Restore an existing encrypted vault"
+                            )
                         }
                     }
                 }

@@ -69,6 +69,9 @@ class VaultRepository(context: Context) {
     private val outgoing = File(appContext.cacheDir, "outgoing")
     private val legacyPrefs = appContext.getSharedPreferences("private_space_vault", Context.MODE_PRIVATE)
     private val metadata = AtomicFile(File(root, "vault-index.enc"))
+    private val recoveryPrefs = appContext.getSharedPreferences("private_space_recovery", Context.MODE_PRIVATE)
+    private var persistentStore: PersistentVaultStore? = null
+    private var persistentTreeUri: Uri? = null
     private var initializationFailure: Throwable? = null
 
     companion object {
@@ -101,6 +104,8 @@ class VaultRepository(context: Context) {
         private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
         private const val INCOMPLETE_IMPORT_TTL_MS = 7L * 24L * 60L * 60L * 1000L
         private const val METADATA_AAD = "private-space:metadata:v2"
+        private const val RECOVERY_TREE_URI = "tree_uri"
+        private const val RECOVERY_INDEX_DIGEST = "index_digest"
         private const val PRIVATE_DIRECTORY_MODE = 0x1C0 // 0700
         private const val PRIVATE_FILE_MODE = 0x180 // 0600
         private const val FILE_DELETE_SUFFIX = ".psv.delete"
@@ -130,6 +135,133 @@ class VaultRepository(context: Context) {
         } catch (failure: Exception) {
             initializationFailure = failure
         }
+    }
+
+    /** True when this installation has a persisted Storage Access Framework tree grant. */
+    @Synchronized
+    fun persistentStorageUri(): Uri? =
+        recoveryPrefs.getString(RECOVERY_TREE_URI, null)?.let(Uri::parse)
+
+    /** Wipes the password-recoverable key from memory whenever the vault locks. */
+    @Synchronized
+    fun lockPersistentStorage() {
+        persistentStore?.clearKey()
+        persistentStore = null
+        persistentTreeUri = null
+    }
+
+    /**
+     * Creates a device-local recovery folder and migrates the currently active
+     * encrypted vault into it. Existing app-private data remains unchanged.
+     */
+    @Synchronized
+    fun enablePersistentStorage(treeUri: Uri, password: CharArray) {
+        check(persistentStore == null) { "Persistent recovery storage is already active." }
+        val index = loadIndex()
+        val store = PersistentVaultStore.create(appContext, treeUri, password)
+        try {
+            (index.files + index.trash.map { it.file }).forEach { record ->
+                val localFile = encryptedFile(record.id)
+                check(localFile.isFile) {
+                    "A vault file is missing and cannot be protected for reinstall recovery."
+                }
+                persistLocalEncryptedPayload(store, record.id, localFile, record.sizeBytes)
+            }
+            val clearIndex = serializeIndex(index)
+            val saved = try {
+                store.saveIndex(clearIndex, METADATA_AAD.toByteArray(Charsets.UTF_8))
+            } finally {
+                clearIndex.fill(0)
+            }
+            store.markReady()
+            saveRecoveryPreferences(treeUri, saved.encryptedDigest)
+            persistentStore = store
+            persistentTreeUri = treeUri
+        } catch (failure: Throwable) {
+            store.deleteRecoveryFolder()
+            store.clearKey()
+            throw failure
+        }
+    }
+
+    /**
+     * Opens an existing recovery vault. A changed authenticated index digest
+     * means the durable copy is newer and the private working copy is rebuilt.
+     */
+    @Synchronized
+    fun openPersistentStorage(treeUri: Uri, password: CharArray) {
+        check(persistentStore == null) { "Persistent recovery storage is already active." }
+        val store = PersistentVaultStore.open(appContext, treeUri, password)
+        try {
+            val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+            try {
+                val knownDigest = recoveryPrefs.getString(RECOVERY_INDEX_DIGEST, null)
+                val hasLocalIndex = metadata.baseFile.isFile ||
+                    File(metadata.baseFile.path + ".bak").isFile
+                if (!hasLocalIndex || knownDigest != snapshot.encryptedDigest) {
+                    val index = parseIndexBytes(snapshot.clearBytes)
+                    restoreWorkingVault(index, store)
+                }
+                val index = parseIndexBytes(snapshot.clearBytes)
+                // Keep unreferenced encrypted payloads. They may be newer file
+                // records from an interrupted index commit or older-index fallback.
+                store.markReady()
+                saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
+                persistentStore = store
+                persistentTreeUri = treeUri
+            } finally {
+                snapshot.clearBytes.fill(0)
+            }
+        } catch (failure: Throwable) {
+            store.clearKey()
+            throw failure
+        }
+    }
+
+    /** Restores an existing encrypted recovery vault after a fresh installation. */
+    @Synchronized
+    fun restorePersistentVault(treeUri: Uri, password: CharArray) {
+        check(persistentStore == null) { "Persistent recovery storage is already active." }
+        val store = PersistentVaultStore.open(appContext, treeUri, password)
+        try {
+            val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
+            try {
+                val index = parseIndexBytes(snapshot.clearBytes)
+                restoreWorkingVault(index, store)
+                // Keep unreferenced encrypted payloads; an older authenticated
+                // index must never cause newer recoverable data to be deleted.
+                store.markReady()
+                saveRecoveryPreferences(treeUri, snapshot.encryptedDigest)
+                persistentStore = store
+                persistentTreeUri = treeUri
+            } finally {
+                snapshot.clearBytes.fill(0)
+            }
+        } catch (failure: Throwable) {
+            store.clearKey()
+            throw failure
+        }
+    }
+
+    /** Re-wraps the same random data key when the user changes their password. */
+    @Synchronized
+    fun rotatePersistentPassword(password: CharArray) {
+        val store = persistentStore
+        if (store == null) {
+            val recoveryWasConfigured = persistentStorageUri() != null
+            password.fill('\u0000')
+            check(!recoveryWasConfigured) {
+                "Reconnect the encrypted recovery folder before changing your vault password."
+            }
+            return
+        }
+        store.rotatePassword(password)
+    }
+
+    /** Call only after the new app password has been committed successfully. */
+    @Synchronized
+    fun finishPersistentPasswordRotation() {
+        persistentStore?.pruneKeyEnvelopes()
     }
 
     @Synchronized
@@ -220,6 +352,9 @@ class VaultRepository(context: Context) {
 
             atomicRename(temporary, target)
             finalized = true
+            persistentStore?.let { store ->
+                persistLocalEncryptedPayload(store, id, target, byteCount)
+            }
             val now = System.currentTimeMillis()
             val record = VaultFile(id, topicId, safeName, mime, byteCount, now)
             val changedTopics = index.topics.map {
@@ -320,6 +455,9 @@ class VaultRepository(context: Context) {
             rollbackDeletion(id, tombstone, failure)
             throw failure
         }
+        // The durable index no longer references this ID. A failed delete
+        // leaves only unreferenced ciphertext, never plaintext.
+        runCatching { persistentStore?.deletePayload(id) }
         tombstone?.let(::deleteStagedPayload)
     }
 
@@ -781,6 +919,62 @@ class VaultRepository(context: Context) {
 
     @Synchronized
     private fun saveIndex(index: VaultIndex) {
+        validateIndexForSave(index)
+        val previousBytes = serializeIndex(runCatching { loadIndex() }.getOrDefault(VaultIndex()))
+        val bytes = serializeIndex(index)
+        try {
+            val persistentSnapshot = persistentStore?.saveIndex(
+                bytes,
+                METADATA_AAD.toByteArray(Charsets.UTF_8)
+            )
+
+            try {
+                val stream = metadata.startWrite()
+                try {
+                    VaultCrypto.encrypt(
+                        ByteArrayInputStream(bytes),
+                        stream,
+                        METADATA_AAD.toByteArray(Charsets.UTF_8)
+                    )
+                    stream.fd.sync()
+                    metadata.finishWrite(stream)
+                } catch (failure: Throwable) {
+                    metadata.failWrite(stream)
+                    throw failure
+                }
+            } catch (localFailure: Throwable) {
+                // Do not leave the durable mirror ahead of a rolled-back local
+                // operation. Restore the previous authenticated index as a new
+                // generation; any payload staged for the failed operation then
+                // remains only an unreferenced encrypted orphan.
+                if (persistentSnapshot != null) {
+                    try {
+                        val rollback = persistentStore?.saveIndex(
+                            previousBytes,
+                            METADATA_AAD.toByteArray(Charsets.UTF_8)
+                        ) ?: error("The recovery store became unavailable during rollback.")
+                        val tree = persistentTreeUri
+                            ?: error("Persistent recovery folder is unavailable.")
+                        runCatching { saveRecoveryPreferences(tree, rollback.encryptedDigest) }
+                    } catch (rollbackFailure: Throwable) {
+                        localFailure.addSuppressed(rollbackFailure)
+                    }
+                }
+                throw localFailure
+            }
+
+            persistentSnapshot?.let { saved ->
+                val tree = persistentTreeUri
+                    ?: throw IllegalStateException("Persistent recovery folder is unavailable.")
+                runCatching { saveRecoveryPreferences(tree, saved.encryptedDigest) }
+            }
+        } finally {
+            previousBytes.fill(0)
+            bytes.fill(0)
+        }
+    }
+
+    private fun validateIndexForSave(index: VaultIndex) {
         val topicIds = index.topics.map { it.id }.toSet()
         require(index.files.all { it.topicId in topicIds }) { "Cannot save a file without a valid topic." }
         require(index.files.map { it.id }.distinct().size == index.files.size) {
@@ -793,13 +987,14 @@ class VaultRepository(context: Context) {
         require(allFileIds.distinct().size == allFileIds.size) {
             "Cannot save duplicate active or trashed file identifiers."
         }
+    }
 
+    private fun serializeIndex(index: VaultIndex): ByteArray {
         fun topicObject(topic: VaultTopic) = JSONObject()
             .put("id", topic.id)
             .put("name", topic.name)
             .put("created", topic.createdAt)
             .put("updated", topic.updatedAt)
-
         fun fileObject(file: VaultFile) = JSONObject()
             .put("id", file.id)
             .put("topic", file.topicId)
@@ -811,10 +1006,8 @@ class VaultRepository(context: Context) {
         val json = JSONObject().put("version", VaultIndexSchema.CURRENT_VERSION)
         val topicArray = JSONArray()
         index.topics.forEach { topic -> topicArray.put(topicObject(topic)) }
-
         val fileArray = JSONArray()
         index.files.forEach { file -> fileArray.put(fileObject(file)) }
-
         val trashArray = JSONArray()
         index.trash.forEach { entry ->
             trashArray.put(
@@ -824,30 +1017,198 @@ class VaultRepository(context: Context) {
                     .put("topic", topicObject(entry.originalTopic))
             )
         }
-
         json.put("topics", topicArray)
             .put("files", fileArray)
             .put("trash", trashArray)
         val bytes = json.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= MAX_METADATA_BYTES) { "Vault index has reached its supported size limit." }
+        return bytes
+    }
 
-        val stream = metadata.startWrite()
-        try {
-            VaultCrypto.encrypt(
-                ByteArrayInputStream(bytes),
-                stream,
-                METADATA_AAD.toByteArray(Charsets.UTF_8)
-            )
-            stream.fd.sync()
-            metadata.finishWrite(stream)
-        } catch (failure: Throwable) {
-            metadata.failWrite(stream)
-            throw failure
-        } finally {
-            bytes.fill(0)
+    private fun saveRecoveryPreferences(treeUri: Uri, digest: String) {
+        check(
+            recoveryPrefs.edit()
+                .putString(RECOVERY_TREE_URI, treeUri.toString())
+                .putString(RECOVERY_INDEX_DIGEST, digest)
+                .commit()
+        ) { "Could not save the recovery-folder reference." }
+    }
+
+    /**
+     * Streams from the current Keystore-encrypted record into the independent
+     * recovery encryptor. The original local AES-GCM tag is verified before the
+     * recovery tag is finalized, so no plaintext staging file is written.
+     */
+    private fun persistLocalEncryptedPayload(
+        store: PersistentVaultStore,
+        id: String,
+        localEncrypted: File,
+        expectedPlainBytes: Long
+    ) {
+        val aad = fileAad(id)
+        FileInputStream(localEncrypted).use { localCiphertext ->
+            store.writePayload(id, expectedPlainBytes, aad) { recoveryEncryptor ->
+                VaultCrypto.decrypt(localCiphertext, recoveryEncryptor, aad)
+            }
         }
     }
 
+
+    /** Rebuilds the private working copy from authenticated recovery records. */
+    private fun restoreWorkingVault(index: VaultIndex, store: PersistentVaultStore) {
+        validateIndexForSave(index)
+        recoverInterruptedRestoreFiles()
+        val records = index.files + index.trash.map { it.file }
+        val stage = createPrivateDirectory(staging, "restore-${UUID.randomUUID()}")
+        try {
+            val stagedFiles = mutableMapOf<String, File>()
+            records.forEach { record ->
+                val clearTemp = File(stage, "${record.id}.clear")
+                val encryptedTemp = File(stage, "${record.id}.enc")
+                FileOutputStream(clearTemp).use { clear ->
+                    restrictFilePermissions(clearTemp)
+                    store.decryptPayload(record.id, clear, fileAad(record.id))
+                    clear.fd.sync()
+                }
+                FileInputStream(clearTemp).use { clear ->
+                    FileOutputStream(encryptedTemp).use { encrypted ->
+                        restrictFilePermissions(encryptedTemp)
+                        VaultCrypto.encrypt(clear, encrypted, fileAad(record.id))
+                        encrypted.fd.sync()
+                    }
+                }
+                clearTemp.delete()
+                stagedFiles[record.id] = encryptedTemp
+            }
+            stagedFiles.forEach { (id, staged) -> replaceRestoredPayload(id, staged) }
+            saveIndex(index)
+        } finally {
+            stage.deleteRecursively()
+        }
+    }
+
+    private fun replaceRestoredPayload(id: String, staged: File) {
+        val destination = encryptedFile(id)
+        val incoming = File(root, "$id.restore.tmp")
+        val backup = File(root, "$id.restore.bak")
+        check(!backup.exists()) { "An interrupted vault restore needs recovery." }
+        FileInputStream(staged).use { input ->
+            FileOutputStream(incoming).use { output ->
+                restrictFilePermissions(incoming)
+                input.copyTo(output, 64 * 1024)
+                output.fd.sync()
+            }
+        }
+        if (destination.exists()) Os.rename(destination.absolutePath, backup.absolutePath)
+        try {
+            Os.rename(incoming.absolutePath, destination.absolutePath)
+            syncDirectory(root)
+            if (backup.exists()) {
+                check(backup.delete()) { "Could not finalize a restored vault record." }
+                syncDirectory(root)
+            }
+        } catch (failure: Throwable) {
+            runCatching {
+                if (destination.exists()) destination.delete()
+                if (backup.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
+                if (incoming.exists()) incoming.delete()
+                syncDirectory(root)
+            }.onFailure(failure::addSuppressed)
+            throw failure
+        }
+    }
+
+    private fun recoverInterruptedRestoreFiles() {
+        root.listFiles()?.filter { it.name.endsWith(".restore.bak") }?.forEach { backup ->
+            val id = backup.name.removeSuffix(".restore.bak")
+            val destination = encryptedFile(id)
+            if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
+            else backup.delete()
+        }
+        root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach { it.delete() }
+        syncDirectory(root)
+    }
+
+    private fun parseIndexBytes(clear: ByteArray): VaultIndex {
+        require(clear.size <= MAX_METADATA_BYTES) { "Encrypted recovery index exceeds its supported size." }
+        val json = JSONObject(String(clear, Charsets.UTF_8))
+        val schemaVersion = json.optInt("version")
+        require(VaultIndexSchema.isSupported(schemaVersion)) {
+            "Unsupported vault index version. Preserve the recovery folder and use a compatible app version."
+        }
+
+        val topicArray = json.getJSONArray("topics")
+        val topics = (0 until topicArray.length()).map { index ->
+            val item = topicArray.getJSONObject(index)
+            val id = item.getString("id")
+            UUID.fromString(id)
+            VaultTopic(
+                id = id,
+                name = VaultInputValidation.topicName(item.getString("name")),
+                createdAt = item.getLong("created"),
+                updatedAt = item.getLong("updated")
+            )
+        }
+        require(topics.map { it.id }.distinct().size == topics.size) {
+            "Vault index contains duplicate topic identifiers."
+        }
+
+        val topicIds = topics.map { it.id }.toSet()
+        fun readFile(item: JSONObject, requireActiveTopic: Boolean): VaultFile {
+            val id = item.getString("id")
+            val topicId = item.getString("topic")
+            UUID.fromString(id)
+            UUID.fromString(topicId)
+            if (requireActiveTopic) require(topicId in topicIds) {
+                "Vault index contains a file with no topic."
+            }
+            val size = item.getLong("size")
+            require(size >= 0L) { "Vault index contains an invalid file size." }
+            return VaultFile(
+                id = id,
+                topicId = topicId,
+                displayName = VaultInputValidation.displayName(item.getString("name")),
+                mimeType = VaultInputValidation.mimeType(item.getString("mime")),
+                sizeBytes = size,
+                addedAt = item.getLong("added")
+            )
+        }
+
+        val fileArray = json.getJSONArray("files")
+        val files = (0 until fileArray.length()).map { index ->
+            readFile(fileArray.getJSONObject(index), requireActiveTopic = true)
+        }
+        val trashArray = if (VaultIndexSchema.requiresTrashArray(schemaVersion)) {
+            json.getJSONArray("trash")
+        } else {
+            json.optJSONArray("trash") ?: JSONArray()
+        }
+        val trash = (0 until trashArray.length()).map { index ->
+            val item = trashArray.getJSONObject(index)
+            val deletedAt = item.getLong("deleted")
+            require(deletedAt >= 0L) { "Vault index contains an invalid Trash date." }
+            val file = readFile(item.getJSONObject("file"), requireActiveTopic = false)
+            val topicItem = item.getJSONObject("topic")
+            val topicId = topicItem.getString("id")
+            UUID.fromString(topicId)
+            val originalTopic = VaultTopic(
+                id = topicId,
+                name = VaultInputValidation.topicName(topicItem.getString("name")),
+                createdAt = topicItem.getLong("created"),
+                updatedAt = topicItem.getLong("updated")
+            )
+            require(file.topicId == originalTopic.id) {
+                "Vault Trash entry does not match its original topic."
+            }
+            VaultTrashEntry(file, deletedAt, originalTopic)
+        }
+
+        val allFileIds = files.map { it.id } + trash.map { it.file.id }
+        require(allFileIds.distinct().size == allFileIds.size) {
+            "Vault index contains duplicate active or trashed file identifiers."
+        }
+        return VaultIndex(topics, files, trash, schemaVersion)
+    }
     /**
      * One-time migration of the old plaintext SharedPreferences index.
      * Old keys are removed only after the encrypted AtomicFile is committed.
