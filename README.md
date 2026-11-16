@@ -2,6 +2,10 @@
 
 Private Space is a local-only Android vault for organizing documents and photos into topics. The project uses Kotlin, Jetpack Compose, Android Keystore, Gradle 8.13, a Windows PowerShell APK script, and GitHub Actions.
 
+## File-manager import preference (0.5.0)
+
+When adding documents or photos, Private Space lists compatible Android apps that can return selectable files. Choose **Just once** to use an app for the current import, or **Always** to remember that app as the import picker. The saved choice is kept in Private Space app preferences. If that app is removed or stops handling file selection, Private Space clears the stale choice and lets you select another app. When no compatible app is discoverable, the standard Android multi-document picker is used as a fallback. Multi-selection is requested where the selected app supports it.
+
 ## Storage reporting and file format support (0.4.0)
 
 The vault dashboard displays the combined encrypted storage used by saved documents and photos. Each topic shows the combined encrypted size of its files. Values are calculated from the actual encrypted container lengths under app-private vault storage, including encryption framing. They exclude the APK, encrypted index, and temporary cache. New AES-GCM containers add 36 bytes per file.
