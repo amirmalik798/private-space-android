@@ -543,7 +543,7 @@ class VaultRepository(context: Context) {
             val clear = output.toByteArray()
             try {
                 val json = JSONObject(String(clear, Charsets.UTF_8))
-                require(json.optInt("version") == 2) { "Unsupported vault index version." }
+                require(VaultIndexSchema.isSupported(json.optInt("version"))) { "Unsupported vault index version. Preserve app data and use a compatible app version." }
 
                 val topicArray = json.getJSONArray("topics")
                 val topics = (0 until topicArray.length()).map { index ->
@@ -652,7 +652,7 @@ class VaultRepository(context: Context) {
             .put("size", file.sizeBytes)
             .put("added", file.addedAt)
 
-        val json = JSONObject().put("version", 2)
+        val json = JSONObject().put("version", VaultIndexSchema.CURRENT_VERSION)
         val topicArray = JSONArray()
         index.topics.forEach { topic -> topicArray.put(topicObject(topic)) }
 
