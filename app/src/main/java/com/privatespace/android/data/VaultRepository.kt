@@ -1306,7 +1306,7 @@ class VaultRepository(context: Context) {
                 now - lastProgressAtNanos >= 500_000_000L
             ) {
                 lastProgressAtNanos = now
-                onProgress(progress)
+                runCatching { onProgress(progress) }
             }
         }
         reportProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
