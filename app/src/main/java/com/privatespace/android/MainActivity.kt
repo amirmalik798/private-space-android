@@ -62,7 +62,7 @@ private val Panel2 = Color(0xFF18263C)
 private val Line = Color(0xFF293A54)
 private val White = Color(0xFFF4F7FC)
 private val Muted = Color(0xFF9BAEC5)
-private val Blue = Color(0xFF6F9FFF)
+private val Blue = Color(0xFF315FBA)
 private val Cyan = Color(0xFF69E0D0)
 private val Red = Color(0xFFFF7888)
 private val Green = Color(0xFF70D6A6)
@@ -657,14 +657,16 @@ private fun PrivateSpaceRoot() {
             }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { showCreateTopic = true },
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
-                containerColor = Blue,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(18.dp)
-            )
+            if (topics.isNotEmpty()) {
+                ExtendedFloatingActionButton(
+                    onClick = { showCreateTopic = true },
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
+                    containerColor = Blue,
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(18.dp)
+                )
+            }
         }
     ) { padding ->
         LazyColumn(
