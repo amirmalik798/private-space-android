@@ -1,5 +1,14 @@
 # Private Space
 
+## Topic and file actions (0.7.0)
+
+- Create named topics and permanently delete a topic together with every encrypted file inside it.
+- Add multiple photos and documents to a topic using the selected Android file manager; remove an individual file from its topic.
+- Share one file, or share every file in a topic through Android's share sheet.
+- Export one topic into a newly created folder with the same name as the topic.
+- Export the complete vault into `private-space-data/<topic name>/<files>`. Every topic gets its own subfolder, including empty topics. If the selected destination already contains a `private-space-data` folder, the app stops and asks you to choose another location rather than overwrite existing content.
+- File-name collisions inside an export are resolved by adding a numbered suffix so no exported file silently replaces another.
+
 ## User interface and usability (0.6.0)
 
 The vault has a redesigned, accessibility-conscious interface with a searchable topic dashboard, at-a-glance topic/file/storage totals, a clearer empty state, a full-height topic view, and streamlined per-file actions. Password fields can be revealed while typing, destructive actions explain what will be removed, and security guidance is available from the dashboard.
