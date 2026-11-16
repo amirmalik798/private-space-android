@@ -113,7 +113,7 @@ class PersistentVaultCryptoTest {
 
         val firstBytes = first.toByteArray()
         val secondBytes = second.toByteArray()
-        // Container format: 8-byte magic followed by the 12-byte GCM nonce.
+        // Chunked format: 8-byte magic, 4-byte frame length, then a 12-byte GCM nonce.
         assertNotEquals(
             firstBytes.copyOfRange(12, 24).toList(),
             secondBytes.copyOfRange(12, 24).toList()
@@ -128,6 +128,14 @@ class PersistentVaultCryptoTest {
         }
         dataKey.fill(0)
         originalKey.fill(0)
+    }
+
+    @Test
+    fun recoveryContainerLengthSupportsOneTerabyte() {
+        val oneTerabyte = 1_099_511_627_776L
+        val encryptedLength = PersistentVaultCrypto.encryptedContainerLength(oneTerabyte)
+        assertEquals(true, encryptedLength > oneTerabyte)
+        assertEquals(true, encryptedLength < Long.MAX_VALUE)
     }
 
     @Test
