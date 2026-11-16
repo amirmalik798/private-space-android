@@ -46,7 +46,7 @@ Displayed storage values are the actual encrypted document/photo container lengt
 - External apps may retain shared content; exported copies are not encrypted by Private Space.
 - The app password is not the Android Keystore key used for the on-device working vault. For the optional reinstall-recovery copy, a password-derived key wraps a separate random data key; changing the password re-wraps that same data key.
 - Restoring after reinstall requires selecting the preserved device-storage recovery folder and entering the password that last protected its recovery-key envelope. After restoration, the user can change the app password from inside Private Space.
-- If the user skips restoration and creates a different password, the new installation starts with a separate empty vault; the existing recovery folder is left untouched and is not automatically merged.
+- If the user skips restoration and creates a different password, the new installation starts with a separate empty vault; the existing recovery folder is left untouched and is not automatically merged. The recovery-protection prompt allows a deliberate later restore, which replaces the current app-private vault and requires the recovery password; the user can then change the app password.
 - Device compromise, root access, malicious system components, and attacks against an already-unlocked device are outside the protection boundary.
 - There is no account, automatic sync, cloud storage, cross-device restore, or password reset. Without an intact local recovery folder, uninstalling removes the app-private data and Android Keystore key needed to decrypt the working vault.
 

@@ -251,7 +251,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var choosingExistingRecovery by remember { mutableStateOf(false) }
     var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
     var showRecoverySetup by remember { mutableStateOf(false) }
-    var showRecoveryRestoreConfirmation by remember { mutableStateOf(false) }
     var recoverySetupError by remember { mutableStateOf("") }
     var lockUntil by remember { mutableLongStateOf(PasswordManager.lockedUntil(context)) }
     var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -291,7 +290,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         recoveryTreeUri = null
         choosingExistingRecovery = false
         showRecoverySetup = false
-        showRecoveryRestoreConfirmation = false
         recoverySetupError = ""
         unlocked = false
         password = ""
@@ -1469,63 +1467,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(7.dp))
                     Text(if (busy) "Preparing recovery…" else "Choose device folder")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    enabled = !busy && pendingRecoveryPassword != null,
-                    onClick = { showRecoveryRestoreConfirmation = true }
-                ) {
-                    Text("I already have a recovery vault")
-                }
-            },
-            shape = RoundedCornerShape(24.dp),
-            containerColor = Panel
-        )
-    }
-
-    if (showRecoveryRestoreConfirmation) {
-        AlertDialog(
-            onDismissRequest = {
-                if (!busy) showRecoveryRestoreConfirmation = false
-            },
-            title = {
-                Text("Restore an existing vault?", color = White, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Text(
-                    "Restoring replaces the current app-private vault with the selected recovery copy. Choose the parent folder containing “Private Space Vault” and enter the password that last protected that recovery copy. After restoring, use Change password to choose your preferred password.",
-                    color = Muted
-                )
-            },
-            confirmButton = {
-                Button(
-                    enabled = !busy,
-                    onClick = {
-                        showRecoveryRestoreConfirmation = false
-                        pendingRecoveryPassword?.fill(0.toChar())
-                        pendingRecoveryPassword = null
-                        showRecoverySetup = false
-                        lockVault()
-                        choosingExistingRecovery = true
-                        activity?.suppressAutoLockForPicker = true
-                        runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
-                            choosingExistingRecovery = false
-                            activity?.suppressAutoLockForPicker = false
-                            authError = "Could not open Android's device folder picker."
-                        }
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Continue to restore")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    enabled = !busy,
-                    onClick = { showRecoveryRestoreConfirmation = false }
-                ) {
-                    Text("Cancel")
                 }
             },
             shape = RoundedCornerShape(24.dp),
