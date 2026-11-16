@@ -821,11 +821,24 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     } else {
                         emptyList()
                     }
-                    val samsungIntent = samsungPackages
-                        .asSequence()
+                    val samsungIntents = samsungPackages
                         .map { packageName -> Intent(baseIntent).setPackage(packageName) }
-                        .firstOrNull { it.resolveActivity(context.packageManager) != null }
-                    context.startActivity(samsungIntent ?: baseIntent)
+                        .filter { it.resolveActivity(context.packageManager) != null }
+                    val launchCandidates = samsungIntents + baseIntent
+                    var launchFailure: Exception? = null
+                    var launched = false
+                    for (candidate in launchCandidates) {
+                        try {
+                            context.startActivity(candidate)
+                            launched = true
+                            break
+                        } catch (failure: Exception) {
+                            launchFailure = failure
+                        }
+                    }
+                    if (!launched) {
+                        throw launchFailure ?: IllegalStateException("No compatible video player is installed.")
+                    }
                 } catch (failure: Exception) {
                     runCatching { prepared.file.parentFile?.deleteRecursively() }
                     toast("No compatible app could open this file.")
@@ -1320,7 +1333,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 position = mediaPosition + 1,
                 total = topicImageFiles.size,
                 canGoPrevious = mediaPosition > 0,
-                canGoNext = mediaPosition >= 0 && mediaPosition < topicMediaFiles.lastIndex,
+                canGoNext = mediaPosition >= 0 && mediaPosition < topicImageFiles.lastIndex,
                 onBack = ::closeMediaViewer,
                 onPrevious = {
                     VaultMediaNavigation.adjacent(topicImageFiles, activeMedia.id, -1)?.let(::openVaultFile)
