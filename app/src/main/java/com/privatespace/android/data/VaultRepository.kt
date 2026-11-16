@@ -1099,7 +1099,10 @@ class VaultRepository(context: Context) {
                 }
             }
         } catch (failure: Throwable) {
-            target.delete()
+            // A failed authentication or length check must never leave a partial
+            // plaintext copy available to a later viewer/share operation.
+            runCatching { deleteTemporaryEntry(target) }
+                .onFailure(failure::addSuppressed)
             throw failure
         }
     }
