@@ -116,6 +116,17 @@ class VaultRepository(context: Context) {
             ensurePrivateDirectory(root)
             ensurePrivateDirectory(staging)
             ensurePrivateDirectory(outgoing)
+            // Restore an interrupted per-record promotion before trusting the
+            // local index. An existing .restore.bak is the last known-good file.
+            recoverInterruptedRestoreFiles()
+            // No export, preview, or restore is active when a repository is
+            // first created for this process. Remove all abandoned plaintext
+            // staging left by a previous process before exposing the vault UI.
+            staging.listFiles()?.forEach { temporary ->
+                check(temporary.deleteRecursively()) {
+                    "Could not securely remove abandoned plaintext staging files."
+                }
+            }
             migrateLegacyMetadataIfNeeded()
 
             // Authenticate the committed index before recovering file operations.
