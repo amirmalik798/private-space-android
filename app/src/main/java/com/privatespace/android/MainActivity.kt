@@ -2385,8 +2385,8 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 )
                 SecurityInfoRow(
                     icon = Icons.Default.Share,
-                    title = "Sharing and exporting",
-                    body = "A temporary decrypted copy is prepared for another app. Exported or shared copies are no longer protected by this vault."
+                    title = "Opening, sharing and exporting",
+                    body = "Opening a file, sharing it or exporting it makes a temporary decrypted copy available to another app or destination. Only sharing and exporting require an extra confirmation. An external app may retain or copy a file it receives; those copies are no longer protected by this vault."
                 )
                 SecurityInfoRow(
                     icon = Icons.Default.Warning,
@@ -3236,7 +3236,7 @@ private fun VaultFileRow(
                 Text(details, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (!selectionMode) Box {
-                IconButton(onClick = { menuExpanded = true }) {
+                IconButton(onClick = { menuExpanded = true }, enabled = !busy) {
                     Icon(Icons.Default.MoreVert, contentDescription = "Actions for " + file.displayName, tint = Muted)
                 }
                 DropdownMenu(
@@ -3246,7 +3246,7 @@ private fun VaultFileRow(
                 ) {
                     DropdownMenuItem(
                         enabled = !busy,
-                        text = { Text("Open") },
+                        text = { Text("Open in another app") },
                         leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpen() }
                     )
