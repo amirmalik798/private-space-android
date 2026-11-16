@@ -739,10 +739,7 @@ private fun PrivateSpaceRoot() {
                 }
                 filteredTopics.isEmpty() -> {
                     item {
-                        EmptySearchState(
-                            query = topicQuery,
-                            onClear = { topicQuery = "" }
-                        )
+                        EmptySearchState(onClear = { topicQuery = "" })
                     }
                 }
                 else -> {
@@ -959,12 +956,6 @@ private fun FilePickerChoiceDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Choose an app to browse and select documents or photos.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -995,13 +986,6 @@ private fun FilePickerChoiceDialog(
                                     color = White,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    if (selected) "Selected file picker" else "Tap to choose this app",
-                                    color = Muted,
-                                    fontSize = 11.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1364,7 +1348,7 @@ private fun EmptyTopicsState(onCreate: () -> Unit) {
 }
 
 @Composable
-private fun EmptySearchState(query: String, onClear: () -> Unit) {
+private fun EmptySearchState(onClear: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 30.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1568,8 +1552,11 @@ private fun TopicDialog(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
-                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.Lock, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
+                                Text("Storage", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            }
+                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Surface(
@@ -1578,7 +1565,10 @@ private fun TopicDialog(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("LAST UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.History, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
+                                Text("Updated", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            }
                             Text(formatDate(topic.updatedAt), color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
                         }
                     }
@@ -1589,7 +1579,7 @@ private fun TopicDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(13.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
                     Text("Add files")
                 }
@@ -1751,7 +1741,6 @@ private fun ChangePasswordDialog(
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Change password", fontWeight = FontWeight.Bold)
-                Text("Choose a new password for this device.", color = Muted, fontSize = 12.sp)
             }
         },
         text = {
@@ -1811,13 +1800,11 @@ private fun ChangePasswordDialog(
                     shape = RoundedCornerShape(13.dp),
                     isError = confirmation.isNotEmpty() && newPassword != confirmation
                 )
-                Text(
-                    "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH +
-                        " characters. The new password must match its confirmation.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
+                if (confirmation.isNotEmpty() && newPassword != confirmation) {
+                    Text("Passwords do not match.", color = Red, fontSize = 12.sp)
+                } else if (newPassword.isNotEmpty() && newPassword.length < PasswordManager.MIN_PASSWORD_LENGTH) {
+                    Text("Use at least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters.", color = Muted, fontSize = 12.sp)
+                }
             }
         },
         confirmButton = {
