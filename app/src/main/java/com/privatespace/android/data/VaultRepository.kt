@@ -3,6 +3,7 @@ package com.privatespace.android.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.media.MediaDataSource
 import android.os.Build
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -17,6 +18,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.io.IOException
 import java.io.OutputStream
 import java.util.Locale
@@ -706,24 +708,36 @@ class VaultRepository(context: Context) {
         val isVideo = kind == VaultFormatSupport.FileKind.VIDEO
         if (!isImage && !isVideo) return null
 
-        // Thumbnail generation decrypts the complete source before it can
-        // authenticate and decode it. Do not repeatedly decrypt large videos
-        // or photos just to populate a 46dp list thumbnail; this work can
-        // overwhelm storage I/O and CPU on mobile devices after bulk imports.
-        // The original encrypted file remains intact and fully usable.
-        if (!VaultThumbnailPolicy.shouldGeneratePreview(record.sizeBytes)) {
+        // Images still use the bounded full-authentication path. New-format
+        // videos use random-access reads: Android's decoder requests only the
+        // media ranges needed for the first frame, and each returned 64 KiB
+        // encrypted frame is authenticated before plaintext is exposed.
+        if (isImage && !VaultThumbnailPolicy.shouldGeneratePreview(record.sizeBytes)) {
             return VaultMediaPreview(null)
+        }
+
+        if (isVideo) {
+            val randomAccessPreview = decodeChunkedVideoPreview(record, maxDimensionPx)
+            if (randomAccessPreview != null) return randomAccessPreview
+
+            // Older single-tag AES-GCM records cannot be safely seek-decrypted.
+            // Preserve compatibility for small legacy videos only; never create
+            // a full plaintext staging copy for a large legacy video.
+            if (!VaultThumbnailPolicy.shouldGeneratePreview(record.sizeBytes)) {
+                return VaultMediaPreview(null)
+            }
         }
 
         val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))
         var previewBitmap: Bitmap? = null
         try {
-            // decryptInto returns only after the AES-GCM authentication tag is verified.
+            // Full-file decrypt verifies the complete AES-GCM authentication tag
+            // before the compatibility decoder is allowed to inspect the bytes.
             decryptInto(record, target)
             val preview = if (isImage) {
                 VaultMediaPreview(decodeImageThumbnail(target, maxDimensionPx))
             } else {
-                decodeVideoPreview(target, maxDimensionPx)
+                decodeVideoPreview(target, maxDimensionPx, firstFrame = true)
             }
             previewBitmap = preview.bitmap
             return preview
@@ -737,6 +751,37 @@ class VaultRepository(context: Context) {
         }
     }
 
+    private fun decodeChunkedVideoPreview(
+        record: VaultFile,
+        maxDimensionPx: Int
+    ): VaultMediaPreview? {
+        val encrypted = RandomAccessFile(encryptedFile(record.id), "r")
+        val reader = try {
+            VaultCrypto.openChunkedRandomAccessReader(
+                encrypted,
+                record.sizeBytes,
+                fileAad(record.id)
+            )
+        } catch (failure: Throwable) {
+            runCatching { encrypted.close() }
+            throw failure
+        } ?: run {
+            encrypted.close()
+            return null
+        }
+
+        val mediaSource = object : MediaDataSource() {
+            override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int =
+                reader.readAt(position, buffer, offset, size)
+
+            override fun getSize(): Long = reader.sizeBytes
+
+            override fun close() = reader.close()
+        }
+
+        return decodeVideoPreview(mediaSource, maxDimensionPx, firstFrame = true)
+    }
+
     private fun decodeImageThumbnail(source: File, maxDimensionPx: Int): Bitmap? {
         val safeTarget = maxDimensionPx.coerceIn(32, 512)
         return VaultThumbnailPolicy.decodeSampledBitmap(
@@ -746,62 +791,100 @@ class VaultRepository(context: Context) {
         )
     }
 
-    private fun decodeVideoPreview(source: File, maxDimensionPx: Int): VaultMediaPreview {
+    private fun decodeVideoPreview(
+        source: File,
+        maxDimensionPx: Int,
+        firstFrame: Boolean = false
+    ): VaultMediaPreview {
         val retriever = try {
             MediaMetadataRetriever()
         } catch (_: OutOfMemoryError) {
             return VaultMediaPreview(null)
         }
-        var durationMs: Long? = null
-        try {
+        return try {
             retriever.setDataSource(source.absolutePath)
-            durationMs = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_DURATION
-            )?.toLongOrNull()?.takeIf { it >= 0L }
-
-            val safeTarget = maxDimensionPx.coerceIn(32, 512)
-            val width = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
-            )?.toIntOrNull() ?: 0
-            val height = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
-            )?.toIntOrNull() ?: 0
-            val dimensions = if (width > 0 && height > 0) {
-                VaultThumbnailPolicy.fitWithin(width, height, safeTarget)
-            } else {
-                safeTarget to safeTarget
-            }
-
-            val bitmap = runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    retriever.getScaledFrameAtTime(
-                        -1L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        dimensions.first,
-                        dimensions.second
-                    )
-                } else {
-                    val fullFrame = retriever.getFrameAtTime(
-                        -1L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                    ) ?: return@runCatching null
-                    var scaled: Bitmap? = null
-                    try {
-                        val target = VaultThumbnailPolicy.fitWithin(fullFrame.width, fullFrame.height, safeTarget)
-                        scaled = Bitmap.createScaledBitmap(fullFrame, target.first, target.second, true)
-                        scaled
-                    } finally {
-                        if (scaled !== fullFrame && !fullFrame.isRecycled) fullFrame.recycle()
-                    }
-                }
-            }.getOrNull()
-
-            return VaultMediaPreview(bitmap, durationMs)
+            extractVideoPreview(retriever, maxDimensionPx, firstFrame)
         } catch (_: OutOfMemoryError) {
-            return VaultMediaPreview(null, durationMs)
+            VaultMediaPreview(null)
+        } catch (_: Exception) {
+            VaultMediaPreview(null)
         } finally {
             runCatching { retriever.release() }
         }
+    }
+
+    private fun decodeVideoPreview(
+        source: MediaDataSource,
+        maxDimensionPx: Int,
+        firstFrame: Boolean
+    ): VaultMediaPreview {
+        val retriever = try {
+            MediaMetadataRetriever()
+        } catch (_: OutOfMemoryError) {
+            runCatching { source.close() }
+            return VaultMediaPreview(null)
+        }
+        return try {
+            retriever.setDataSource(source)
+            extractVideoPreview(retriever, maxDimensionPx, firstFrame)
+        } catch (_: OutOfMemoryError) {
+            VaultMediaPreview(null)
+        } catch (_: Exception) {
+            VaultMediaPreview(null)
+        } finally {
+            runCatching { retriever.release() }
+            runCatching { source.close() }
+        }
+    }
+
+    private fun extractVideoPreview(
+        retriever: MediaMetadataRetriever,
+        maxDimensionPx: Int,
+        firstFrame: Boolean
+    ): VaultMediaPreview {
+        val durationMs = retriever.extractMetadata(
+            MediaMetadataRetriever.METADATA_KEY_DURATION
+        )?.toLongOrNull()?.takeIf { it >= 0L }
+
+        val safeTarget = maxDimensionPx.coerceIn(32, 512)
+        val width = retriever.extractMetadata(
+            MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+        )?.toIntOrNull() ?: 0
+        val height = retriever.extractMetadata(
+            MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+        )?.toIntOrNull() ?: 0
+        val dimensions = if (width > 0 && height > 0) {
+            VaultThumbnailPolicy.fitWithin(width, height, safeTarget)
+        } else {
+            safeTarget to safeTarget
+        }
+        val frameTimeUs = if (firstFrame) 0L else -1L
+
+        val bitmap = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    frameTimeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    dimensions.first,
+                    dimensions.second
+                )
+            } else {
+                val fullFrame = retriever.getFrameAtTime(
+                    frameTimeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                ) ?: return@runCatching null
+                var scaled: Bitmap? = null
+                try {
+                    val target = VaultThumbnailPolicy.fitWithin(fullFrame.width, fullFrame.height, safeTarget)
+                    scaled = Bitmap.createScaledBitmap(fullFrame, target.first, target.second, true)
+                    scaled
+                } finally {
+                    if (scaled !== fullFrame && !fullFrame.isRecycled) fullFrame.recycle()
+                }
+            }
+        }.getOrNull()
+
+        return VaultMediaPreview(bitmap, durationMs)
     }
 
     /** Prepares each topic file independently; a failure removes the whole temporary share set. */
