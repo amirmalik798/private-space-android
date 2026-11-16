@@ -347,11 +347,19 @@ private fun PrivateSpaceRoot() {
 
     fun launchImport(topicId: String) {
         pendingImportTopic = topicId
-        val pickerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-            type = "*/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // Some file managers register ACTION_OPEN_DOCUMENT, others register
+        // ACTION_GET_CONTENT. Query both while preferring the document contract
+        // when the same activity supports both.
+        val pickerIntents = listOf(
+            Intent(Intent.ACTION_OPEN_DOCUMENT),
+            Intent(Intent.ACTION_GET_CONTENT)
+        ).map { intent ->
+            intent.apply {
+                type = "*/*"
+                addCategory(Intent.CATEGORY_OPENABLE)
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
 
         val preferredPackages = listOf(
@@ -359,23 +367,25 @@ private fun PrivateSpaceRoot() {
             "com.alphainventor.filemanager"
         )
         val targets = runCatching {
-            context.packageManager
-                .queryIntentActivities(pickerIntent, PackageManager.MATCH_DEFAULT_ONLY)
-                .mapNotNull { resolved ->
-                    val info = resolved.activityInfo ?: return@mapNotNull null
-                    val component = ComponentName(info.packageName, info.name)
-                    val label = runCatching {
-                        resolved.loadLabel(context.packageManager).toString()
-                    }.getOrNull()?.takeIf { it.isNotBlank() }
-                        ?: runCatching { info.loadLabel(context.packageManager).toString() }
-                            .getOrNull()?.takeIf { it.isNotBlank() }
-                        ?: info.packageName
-                    FilePickerTarget(
-                        label = label,
-                        component = component,
-                        intent = Intent(pickerIntent).setComponent(component)
-                    )
-                }
+            pickerIntents.flatMap { pickerIntent ->
+                context.packageManager
+                    .queryIntentActivities(pickerIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                    .mapNotNull { resolved ->
+                        val info = resolved.activityInfo ?: return@mapNotNull null
+                        val component = ComponentName(info.packageName, info.name)
+                        val label = runCatching {
+                            resolved.loadLabel(context.packageManager).toString()
+                        }.getOrNull()?.takeIf { it.isNotBlank() }
+                            ?: runCatching { info.loadLabel(context.packageManager).toString() }
+                                .getOrNull()?.takeIf { it.isNotBlank() }
+                            ?: info.packageName
+                        FilePickerTarget(
+                            label = label,
+                            component = component,
+                            intent = Intent(pickerIntent).setComponent(component)
+                        )
+                    }
+            }
                 .distinctBy { it.component }
                 .sortedWith(
                     compareBy<FilePickerTarget> {
