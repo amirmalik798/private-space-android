@@ -13,7 +13,7 @@
 
 The dashboard uses a refined dark visual system, a gradient vault overview, clearer topic and storage metrics, and quieter topic/file cards. Topic and file details use familiar file-type icons. Actions throughout the app use consistent, meaningful icons with readable labels, including create, import, share, export, lock, password, and destructive actions. Redundant helper copy, repeated status text, and low-value metadata have been removed while retaining essential security and recovery warnings.
 
-## User interface and usability (previous design)
+## Usability heuristics
 
 The vault has a redesigned, accessibility-conscious interface with a searchable topic dashboard, at-a-glance topic/file/storage totals, a clearer empty state, a full-height topic view, and streamlined per-file actions. Password fields can be revealed while typing, destructive actions explain what will be removed, and security guidance is available from the dashboard.
 
