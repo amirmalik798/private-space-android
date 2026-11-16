@@ -1089,7 +1089,12 @@ class VaultRepository(context: Context) {
             FileInputStream(source).use { encrypted ->
                 FileOutputStream(target).use { clear ->
                     restrictFilePermissions(target)
-                    VaultCrypto.decrypt(encrypted, clear, fileAad(record.id))
+                    val exactLength = ExactLengthOutputStream(clear, record.sizeBytes)
+                    VaultCrypto.decrypt(encrypted, exactLength, fileAad(record.id))
+                    // A valid authentication tag is necessary but the authenticated
+                    // index size is also an invariant. Do not expose, share, or export
+                    // a decrypted file unless both checks agree exactly.
+                    exactLength.finish()
                     clear.fd.sync()
                 }
             }
