@@ -28,9 +28,20 @@ object VaultCrypto {
     private const val BUFFER_SIZE = 64 * 1024
     private val MAGIC = byteArrayOf(0x50, 0x53, 0x56, 0x4c, 0x54, 0x30, 0x32, 0x0a)
 
-    private fun key(): SecretKey {
+    private fun existingKey(): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        return store.getKey(ALIAS, null) as? SecretKey
+            ?: throw GeneralSecurityException(
+                "The vault encryption key is unavailable. Do not clear app data or reinstall the app."
+            )
+    }
+
+    private fun encryptionKey(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        if (store.containsAlias(ALIAS)) {
+            throw GeneralSecurityException("The existing vault encryption key is invalid and was not replaced.")
+        }
 
         val builder = KeyGenParameterSpec.Builder(
             ALIAS,
@@ -52,10 +63,15 @@ object VaultCrypto {
         ).apply { init(builder.build()) }.generateKey()
     }
 
+    /** Fails closed when existing encrypted files have lost their Keystore key. */
+    fun requireExistingKey() {
+        existingKey()
+    }
+
     @Throws(IOException::class, GeneralSecurityException::class)
     fun encrypt(input: InputStream, output: OutputStream, aad: ByteArray) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
         cipher.updateAAD(aad)
 
         val iv = cipher.iv
@@ -95,7 +111,7 @@ object VaultCrypto {
         }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, existingKey(), GCMParameterSpec(128, iv))
         if (versioned) cipher.updateAAD(aad)
 
         val buffer = ByteArray(BUFFER_SIZE)

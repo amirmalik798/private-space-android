@@ -518,6 +518,12 @@ class VaultRepository(context: Context) {
                 )
             }
 
+            // Do not generate a replacement key if old encrypted payloads still exist.
+            // A new key would make a successful metadata migration look healthy while
+            // silently making those legacy payloads permanently unreadable.
+            if (files.any { File(root, "${it.id}.psv").isFile }) {
+                VaultCrypto.requireExistingKey()
+            }
             saveIndex(VaultIndex(topics, files))
             check(
                 legacyPrefs.edit()
