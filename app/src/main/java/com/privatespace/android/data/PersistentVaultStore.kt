@@ -559,8 +559,8 @@ internal class PersistentVaultStore private constructor(
                     envelope.fill(0)
                 }
             } finally {
-                verificationPassword.fill(0)
-                password.fill(0)
+                verificationPassword.fill(0.toChar())
+                password.fill(0.toChar())
             }
         }
 
