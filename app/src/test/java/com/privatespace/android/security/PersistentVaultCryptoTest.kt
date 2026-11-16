@@ -8,6 +8,9 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.GeneralSecurityException
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class PersistentVaultCryptoTest {
     @Test
@@ -128,6 +131,25 @@ class PersistentVaultCryptoTest {
         }
         dataKey.fill(0)
         originalKey.fill(0)
+    }
+
+    @Test
+    fun previousSingleTagRecoveryPayloadRemainsReadable() {
+        val input = ByteArray(128_123) { ((it * 19) % 251).toByte() }
+        val aad = "private-space:file:legacy".toByteArray()
+        val dataKey = PersistentVaultCrypto.newDataKey()
+        val nonce = ByteArray(12) { (it + 3).toByte() }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(dataKey, "AES"), GCMParameterSpec(128, nonce))
+        cipher.updateAAD(aad)
+        val legacy = "PSPERS01".toByteArray(Charsets.US_ASCII) + nonce + cipher.doFinal(input)
+
+        val restored = ByteArrayOutputStream()
+        PersistentVaultCrypto.decrypt(ByteArrayInputStream(legacy), restored, aad, dataKey)
+
+        assertArrayEquals(input, restored.toByteArray())
+        dataKey.fill(0)
+        legacy.fill(0)
     }
 
     @Test
