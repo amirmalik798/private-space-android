@@ -386,7 +386,7 @@ private fun PrivateSpaceRoot() {
 
         val savedComponent = filePickerPreferences
             .getString(FILE_PICKER_PREFERENCE, null)
-            ?.let(ComponentName::unflattenFromString)
+            ?.let { ComponentName.unflattenFromString(it) }
         if (savedComponent != null) {
             val savedTarget = targets.firstOrNull { it.component == savedComponent }
             if (savedTarget != null && launchFilePickerTarget(savedTarget, rememberChoice = false)) {
