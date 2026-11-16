@@ -79,6 +79,7 @@ object PersistentVaultCrypto {
         var salt: ByteArray? = null
         var nonce: ByteArray? = null
         var wrappingKey: ByteArray? = null
+        var wrappedBytes: ByteArray? = null
         try {
             val expectedLength = ENVELOPE_MAGIC.size + 4 + SALT_BYTES + NONCE_BYTES + KEY_BYTES + 16
             require(envelope.size == expectedLength) { "The recovery key file is invalid or incomplete." }
@@ -98,6 +99,7 @@ object PersistentVaultCrypto {
             nonce = envelope.copyOfRange(offset, offset + NONCE_BYTES)
             offset += NONCE_BYTES
             val wrapped = envelope.copyOfRange(offset, envelope.size)
+            wrappedBytes = wrapped
 
             require(password.size in 1..128) { "Invalid vault password." }
             wrappingKey = deriveWrappingKey(password, salt, rounds)
@@ -124,6 +126,7 @@ object PersistentVaultCrypto {
             salt?.fill(0)
             nonce?.fill(0)
             wrappingKey?.fill(0)
+            wrappedBytes?.fill(0)
         }
     }
 

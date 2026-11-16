@@ -173,19 +173,27 @@ internal class PersistentVaultStore private constructor(
             encryptedBuffer.wipe()
         }
 
+        val expectedEncryptedDigest = PersistentVaultCrypto.sha256(encryptedPayload)
         try {
-            val output = resolver.openOutputStream(document.uri, "w")
-                ?: error("Could not open the encrypted recovery index.")
-            output.use {
-                it.write(encryptedPayload)
-                it.flush()
+            try {
+                val output = resolver.openOutputStream(document.uri, "w")
+                    ?: error("Could not open the encrypted recovery index.")
+                output.use {
+                    it.write(encryptedPayload)
+                    it.flush()
+                }
+            } finally {
+                // The expected ciphertext is no longer needed once the provider
+                // has closed the write. Do not retain a second full index copy
+                // while the provider's copy is read back and authenticated.
+                encryptedPayload.fill(0)
             }
 
             val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
                 operation = "the encrypted recovery index",
                 read = { readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD) },
                 verify = { candidate ->
-                    if (!candidate.contentEquals(encryptedPayload)) {
+                    if (PersistentVaultCrypto.sha256(candidate) != expectedEncryptedDigest) {
                         throw IOException("The storage provider changed the encrypted recovery index after writing.")
                     }
                     val verified = WipingByteArrayOutputStream(clearIndex.size)
@@ -279,11 +287,32 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun rotatePassword(password: CharArray) {
         val verificationPassword = password.copyOf()
+        val previousGeneration = keyGeneration
+        val createdGenerations = mutableListOf<Long>()
         try {
-            val firstPassword = verificationPassword.copyOf()
-            writeKeyEnvelope(resolver, directory, requireKey(), firstPassword, keyGeneration + 1L)
-            val secondPassword = verificationPassword.copyOf()
-            writeKeyEnvelope(resolver, directory, requireKey(), secondPassword, keyGeneration + 1L)
+            createdGenerations.add(
+                writeKeyEnvelope(
+                    resolver, directory, requireKey(), verificationPassword.copyOf(), keyGeneration + 1L
+                )
+            )
+            createdGenerations.add(
+                writeKeyEnvelope(
+                    resolver, directory, requireKey(), verificationPassword.copyOf(), keyGeneration + 1L
+                )
+            )
+        } catch (failure: Throwable) {
+            createdGenerations.asReversed().forEach { generation ->
+                try {
+                    val document = findChild(keyName(generation))
+                    if (document != null && !document.delete()) {
+                        throw IOException("Could not roll back an incomplete recovery password change.")
+                    }
+                } catch (rollbackFailure: Throwable) {
+                    failure.addSuppressed(rollbackFailure)
+                }
+            }
+            keyGeneration = previousGeneration
+            throw failure
         } finally {
             verificationPassword.fill('\u0000')
             password.fill('\u0000')
@@ -296,7 +325,7 @@ internal class PersistentVaultStore private constructor(
         key: ByteArray,
         password: CharArray,
         generation: Long
-    ) {
+    ): Long {
         val verificationPassword = password.copyOf()
         try {
             val envelope = PersistentVaultCrypto.wrapDataKey(key, password)
@@ -329,8 +358,13 @@ internal class PersistentVaultStore private constructor(
                     )
                     saved.fill(0)
                     keyGeneration = safeGeneration
+                    return safeGeneration
                 } catch (failure: Throwable) {
-                    runCatching { document.delete() }
+                    runCatching {
+                        check(document.delete()) {
+                            "Could not remove an incomplete recovery-key envelope."
+                        }
+                    }.onFailure(failure::addSuppressed)
                     throw failure
                 }
             } finally {
@@ -533,9 +567,12 @@ internal class PersistentVaultStore private constructor(
                 for ((generation, document) in candidates) {
                     try {
                         val envelope = readBytes(context, document, MAX_ENVELOPE_BYTES)
-                        key = PersistentVaultCrypto.unwrapDataKey(envelope, password.copyOf())
-                        envelope.fill(0)
-                        keyGeneration = generation
+                        try {
+                            key = PersistentVaultCrypto.unwrapDataKey(envelope, password.copyOf())
+                            keyGeneration = generation
+                        } finally {
+                            envelope.fill(0)
+                        }
                         break
                     } catch (failure: Exception) {
                         lastFailure = failure

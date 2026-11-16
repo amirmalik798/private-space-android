@@ -32,6 +32,42 @@ class PersistentVaultCryptoTest {
     }
 
     @Test
+    fun successfulKeyUnwrapWipesTheSuppliedPassword() {
+        val dataKey = PersistentVaultCrypto.newDataKey()
+        val envelope = PersistentVaultCrypto.wrapDataKey(
+            dataKey.copyOf(),
+            "correct horse battery staple".toCharArray()
+        )
+        val password = "correct horse battery staple".toCharArray()
+
+        val restored = PersistentVaultCrypto.unwrapDataKey(envelope, password)
+
+        assertArrayEquals(dataKey, restored)
+        assertArrayEquals(CharArray(password.size) { Char.MIN_VALUE }, password)
+        dataKey.fill(0)
+        restored.fill(0)
+        envelope.fill(0)
+    }
+
+    @Test
+    fun failedKeyUnwrapAlsoWipesTheSuppliedPassword() {
+        val dataKey = PersistentVaultCrypto.newDataKey()
+        val envelope = PersistentVaultCrypto.wrapDataKey(
+            dataKey.copyOf(),
+            "correct horse battery staple".toCharArray()
+        )
+        val password = "incorrect password".toCharArray()
+
+        assertThrows(GeneralSecurityException::class.java) {
+            PersistentVaultCrypto.unwrapDataKey(envelope, password)
+        }
+
+        assertArrayEquals(CharArray(password.size) { Char.MIN_VALUE }, password)
+        dataKey.fill(0)
+        envelope.fill(0)
+    }
+
+    @Test
     fun encryptedPayloadRoundTripsExactBytesWithoutTransformation() {
         val input = ByteArray(1_200_123) { ((it * 37) % 251).toByte() }
         val aad = "private-space:file:test-id".toByteArray()

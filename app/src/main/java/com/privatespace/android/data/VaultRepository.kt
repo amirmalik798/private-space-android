@@ -102,7 +102,6 @@ class VaultRepository(context: Context) {
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
         private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
-        private const val INCOMPLETE_IMPORT_TTL_MS = 7L * 24L * 60L * 60L * 1000L
         private const val METADATA_AAD = "private-space:metadata:v2"
         private const val RECOVERY_TREE_URI = "tree_uri"
         private const val RECOVERY_INDEX_DIGEST = "index_digest"
@@ -1558,15 +1557,13 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun removeAbandonedTemporaryFiles(now: Long = System.currentTimeMillis()) {
-        // Keep any active/slow import temp file. Interrupted imports are
-        // encrypted and reclaimed after a conservative age threshold.
-        root.listFiles()?.filter { it.name.endsWith(".psv.tmp") }?.forEach { file ->
-            val modified = file.lastModified()
-            if (modified > 0L && now >= modified && now - modified > INCOMPLETE_IMPORT_TTL_MS) {
-                deleteTemporaryEntry(file)
-            }
-        }
+    private fun removeAbandonedTemporaryFiles() {
+        // Repository initialization runs before the UI can start a new import.
+        // Every .psv.tmp file here was left by an interrupted prior process;
+        // these incomplete encrypted records cannot be resumed and only waste space.
+        root.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
+            ?.forEach(::deleteTemporaryEntry)
     }
 
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {

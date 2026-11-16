@@ -152,6 +152,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        suppressAutoLockForPicker = false
         isResumedForVault = true
     }
 
@@ -168,7 +169,6 @@ class MainActivity : ComponentActivity() {
         isResumedForVault = false
         super.onStop()
         if (VaultSessionPolicy.shouldLockOnStop(
-                isFinishing = isFinishing,
                 isChangingConfigurations = isChangingConfigurations,
                 suppressAutoLockForPicker = suppressAutoLockForPicker
             )
@@ -1833,31 +1833,57 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     if (showChangePassword) {
-        ChangePasswordDialog(onDismiss = { showChangePassword = false }) { oldPassword, newPassword ->
-            scope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
-                            error("Too many attempts. Wait for the lockout to end.")
+        ChangePasswordDialog(
+            busy = busy,
+            onDismiss = { if (!busy) showChangePassword = false }
+        ) { oldPassword, newPassword ->
+            if (!busy) {
+                busy = true
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                                error("Too many attempts. Wait for the lockout to end.")
+                            }
+                            val oldSecret = oldPassword.toCharArray()
+                            val newSecret = newPassword.toCharArray()
+                            try {
+                                val valid = PasswordManager.verify(context, oldSecret.copyOf())
+                                if (!valid) {
+                                    PasswordManager.recordFailure(context)
+                                    error("Current password is incorrect.")
+                                }
+                                PasswordManager.clearFailures(context)
+                                repository.rotatePersistentPassword(newSecret.copyOf())
+                                try {
+                                    PasswordManager.set(context, newSecret.copyOf())
+                                } catch (passwordSaveFailure: Throwable) {
+                                    // Keep the recovery copy protected by the old
+                                    // password if the local password commit fails.
+                                    try {
+                                        repository.rotatePersistentPassword(oldSecret.copyOf())
+                                        repository.finishPersistentPasswordRotation()
+                                    } catch (rollbackFailure: Throwable) {
+                                        passwordSaveFailure.addSuppressed(rollbackFailure)
+                                    }
+                                    throw passwordSaveFailure
+                                }
+                                repository.finishPersistentPasswordRotation()
+                            } finally {
+                                oldSecret.fill(Char.MIN_VALUE)
+                                newSecret.fill(Char.MIN_VALUE)
+                            }
                         }
-                        val valid = PasswordManager.verify(context, oldPassword.toCharArray())
-                        if (!valid) {
-                            PasswordManager.recordFailure(context)
-                            error("Current password is incorrect.")
-                        }
-                        PasswordManager.clearFailures(context)
-                        repository.rotatePersistentPassword(newPassword.toCharArray())
-                        PasswordManager.set(context, newPassword.toCharArray())
-                        repository.finishPersistentPasswordRotation()
                     }
-                }
-                result.onSuccess {
-                    showChangePassword = false
-                    toast("Password changed.")
-                }.onFailure {
-                    lockUntil = PasswordManager.lockedUntil(context)
-                    toast(it.message ?: "Password could not be changed.")
-                    if (lockUntil > System.currentTimeMillis()) lockVault()
+                    busy = false
+                    result.onSuccess {
+                        showChangePassword = false
+                        toast("Password changed.")
+                    }.onFailure {
+                        lockUntil = PasswordManager.lockedUntil(context)
+                        toast(it.message ?: "Password could not be changed.")
+                        if (lockUntil > System.currentTimeMillis()) lockVault()
+                    }
                 }
             }
         }
@@ -3323,6 +3349,7 @@ private fun TrashFileRow(
 
 @Composable
 private fun ChangePasswordDialog(
+    busy: Boolean,
     onDismiss: () -> Unit,
     onChange: (String, String) -> Unit
 ) {
@@ -3334,7 +3361,7 @@ private fun ChangePasswordDialog(
     var confirmationVisible by remember { mutableStateOf(false) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Change password", fontWeight = FontWeight.Bold)
@@ -3346,6 +3373,7 @@ private fun ChangePasswordDialog(
                     value = oldPassword,
                     onValueChange = { oldPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
                     label = { Text("Current password") },
                     visualTransformation = if (oldVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
@@ -3364,6 +3392,7 @@ private fun ChangePasswordDialog(
                     value = newPassword,
                     onValueChange = { newPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
                     label = { Text("New password") },
                     visualTransformation = if (newVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
@@ -3382,6 +3411,7 @@ private fun ChangePasswordDialog(
                     value = confirmation,
                     onValueChange = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
                     label = { Text("Confirm new password") },
                     visualTransformation = if (confirmationVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
@@ -3406,7 +3436,8 @@ private fun ChangePasswordDialog(
         },
         confirmButton = {
             Button(
-                enabled = oldPassword.isNotEmpty() &&
+                enabled = !busy &&
+                    oldPassword.isNotEmpty() &&
                     newPassword.length >= PasswordManager.MIN_PASSWORD_LENGTH &&
                     newPassword == confirmation,
                 onClick = { onChange(oldPassword, newPassword) },
@@ -3414,11 +3445,11 @@ private fun ChangePasswordDialog(
             ) {
                 Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("Save password")
+                Text(if (busy) "Saving…" else "Save password")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !busy) {
                 Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
                 Text("Cancel")

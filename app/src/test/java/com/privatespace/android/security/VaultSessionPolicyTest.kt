@@ -28,10 +28,9 @@ class VaultSessionPolicyTest {
     }
 
     @Test
-    fun switchingToAnotherAppDoesNotLockTheVault() {
-        assertFalse(
+    fun switchingToAnotherAppLocksTheVault() {
+        assertTrue(
             VaultSessionPolicy.shouldLockOnStop(
-                isFinishing = false,
                 isChangingConfigurations = false,
                 suppressAutoLockForPicker = false
             )
@@ -39,24 +38,15 @@ class VaultSessionPolicyTest {
     }
 
     @Test
-    fun closingTheAppLocksUnlessTheActivityIsChangingConfigurationOrLaunchingPicker() {
-        assertTrue(
-            VaultSessionPolicy.shouldLockOnStop(
-                isFinishing = true,
-                isChangingConfigurations = false,
-                suppressAutoLockForPicker = false
-            )
-        )
+    fun systemPickerAndConfigurationChangeDoNotLockTheVault() {
         assertFalse(
             VaultSessionPolicy.shouldLockOnStop(
-                isFinishing = true,
                 isChangingConfigurations = true,
                 suppressAutoLockForPicker = false
             )
         )
         assertFalse(
             VaultSessionPolicy.shouldLockOnStop(
-                isFinishing = true,
                 isChangingConfigurations = false,
                 suppressAutoLockForPicker = true
             )

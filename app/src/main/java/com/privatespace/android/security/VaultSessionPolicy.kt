@@ -19,11 +19,10 @@ internal object VaultSessionPolicy {
         isResumed: Boolean
     ): Boolean = isUnlocked && isResumed
 
-    /** Backgrounding to another app is not a close; finishing the task is. */
+    /** Lock when the vault is no longer visible; system pickers and configuration changes are exempt. */
     fun shouldLockOnStop(
-        isFinishing: Boolean,
         isChangingConfigurations: Boolean,
         suppressAutoLockForPicker: Boolean
     ): Boolean =
-        isFinishing && !isChangingConfigurations && !suppressAutoLockForPicker
+        !isChangingConfigurations && !suppressAutoLockForPicker
 }
