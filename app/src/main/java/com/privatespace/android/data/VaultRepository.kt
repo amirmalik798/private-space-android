@@ -1301,7 +1301,7 @@ class VaultRepository(context: Context) {
         fun reportProgress(progress: VaultRestoreProgress) {
             val now = System.nanoTime()
             if (
-                progress.completedBytes == 0L ||
+                lastProgressAtNanos == 0L ||
                 progress.completedFiles >= progress.totalFiles ||
                 now - lastProgressAtNanos >= 500_000_000L
             ) {
