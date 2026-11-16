@@ -34,7 +34,7 @@
 
 ## File fidelity
 
-Vault import, encryption, decryption, opening, sharing, and export use byte-stream copies rather than image or document conversion. The expected property is byte-for-byte equality: the decrypted/exported file has the same length and SHA-256 content digest as the selected source bytes. The encrypted container adds 36 bytes of framing/authentication overhead. Automated JVM tests exercise the shared AES-GCM stream implementation across file sizes and binary-format samples.
+Vault import, encryption, decryption, opening, sharing, and export use byte-stream copies rather than image or document conversion. The expected property is byte-for-byte equality: the decrypted/exported file has the same length and SHA-256 content digest as the selected source bytes. New chunked containers add an 8-byte format marker plus 32 bytes per authenticated 64 KiB frame and a final authentication frame; older containers remain readable. Automated JVM tests exercise the shared AES-GCM stream implementation across file sizes and binary-format samples.
 
 ## Storage reporting and format support
 
