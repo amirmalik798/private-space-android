@@ -122,24 +122,33 @@ object VaultCrypto {
 
         val nonce = cipher.iv
         require(nonce.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
-
         output.write(MAGIC)
         output.write(nonce)
 
         val buffer = ByteArray(BUFFER_SIZE)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            if (count == 0) continue
-            cipher.update(buffer, 0, count)?.let { encrypted ->
-                output.write(encrypted)
+        try {
+            while (true) {
+                val count = readChunkOrEof(input, buffer)
+                if (count < 0) break
+                try {
+                    val encrypted = cipher.update(buffer, 0, count)
+                    if (encrypted != null) {
+                        try { output.write(encrypted) } finally { encrypted.fill(0) }
+                    }
+                } finally {
+                    buffer.fill(0, 0, count)
+                }
             }
+            val finalBytes = cipher.doFinal()
+            try {
+                output.write(finalBytes)
+                output.flush()
+            } finally {
+                finalBytes.fill(0)
+            }
+        } finally {
+            buffer.fill(0)
         }
-
-        // GCM appends its authentication tag here. It does not pad, compress,
-        // or otherwise change the length of the original payload.
-        output.write(cipher.doFinal())
-        output.flush()
     }
 
     /**
@@ -155,13 +164,11 @@ object VaultCrypto {
     ) {
         val prefix = ByteArray(MAGIC.size)
         readExactly(input, prefix, 0, prefix.size)
-
         val versioned = prefix.contentEquals(MAGIC)
         val nonce = ByteArray(IV_BYTES)
         if (versioned) {
             readExactly(input, nonce, 0, nonce.size)
         } else {
-            // Backward compatibility with the original nonce || ciphertext format.
             prefix.copyInto(nonce, destinationOffset = 0)
             readExactly(input, nonce, MAGIC.size, IV_BYTES - MAGIC.size)
         }
@@ -171,33 +178,63 @@ object VaultCrypto {
         if (versioned) cipher.updateAAD(aad)
 
         val buffer = ByteArray(BUFFER_SIZE)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            if (count == 0) continue
-            cipher.update(buffer, 0, count)?.let { clear ->
-                output.write(clear)
-            }
-        }
-
         try {
-            output.write(cipher.doFinal())
-            output.flush()
-        } catch (badTag: AEADBadTagException) {
-            throw IOException(
-                "Vault integrity check failed. The encrypted data may be damaged or modified.",
-                badTag
-            )
+            while (true) {
+                val count = readChunkOrEof(input, buffer)
+                if (count < 0) break
+                try {
+                    val clear = cipher.update(buffer, 0, count)
+                    if (clear != null) {
+                        try { output.write(clear) } finally { clear.fill(0) }
+                    }
+                } finally {
+                    buffer.fill(0, 0, count)
+                }
+            }
+
+            val finalClear = try {
+                cipher.doFinal()
+            } catch (badTag: AEADBadTagException) {
+                throw IOException(
+                    "Vault integrity check failed. The encrypted data may be damaged or modified.",
+                    badTag
+                )
+            }
+            try {
+                output.write(finalClear)
+                output.flush()
+            } finally {
+                finalClear.fill(0)
+            }
+        } finally {
+            buffer.fill(0)
         }
+    }
+
+    /** Falls back to a single byte if a provider temporarily returns zero. */
+    private fun readChunkOrEof(input: InputStream, buffer: ByteArray): Int {
+        val count = input.read(buffer, 0, buffer.size)
+        if (count != 0) return count
+        val single = input.read()
+        if (single < 0) return -1
+        buffer[0] = single.toByte()
+        return 1
     }
 
     private fun readExactly(input: InputStream, target: ByteArray, offset: Int, length: Int) {
         var position = 0
         while (position < length) {
             val count = input.read(target, offset + position, length - position)
-            if (count < 0) throw EOFException("Encrypted record is truncated.")
-            if (count == 0) continue
-            position += count
+            when {
+                count < 0 -> throw EOFException("Encrypted record is truncated.")
+                count == 0 -> {
+                    val single = input.read()
+                    if (single < 0) throw EOFException("Encrypted record is truncated.")
+                    target[offset + position] = single.toByte()
+                    position++
+                }
+                else -> position += count
+            }
         }
     }
 }

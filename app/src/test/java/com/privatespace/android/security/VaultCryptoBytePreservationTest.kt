@@ -2,6 +2,8 @@ package com.privatespace.android.security
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.FilterInputStream
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Random
 import javax.crypto.Cipher
@@ -79,6 +81,26 @@ class VaultCryptoBytePreservationTest {
     }
 
     @Test
+    fun temporaryZeroLengthReadsDoNotTruncateOrCorruptPayloads() {
+        val original = payload(180_321)
+        val encryptedOutput = ByteArrayOutputStream()
+        VaultCrypto.encryptForTest(
+            ZeroOnceInputStream(ByteArrayInputStream(original)),
+            encryptedOutput,
+            aad,
+            key
+        )
+        val restored = ByteArrayOutputStream()
+        VaultCrypto.decryptForTest(
+            ZeroOnceInputStream(ByteArrayInputStream(encryptedOutput.toByteArray())),
+            restored,
+            aad,
+            key
+        )
+        assertArrayEquals(original, restored.toByteArray())
+    }
+
+    @Test
     fun encryptionUsesFreshRandomNonceForEachCopy() {
         val original = payload(1024)
         val (first, firstClear) = roundTrip(original)
@@ -142,6 +164,17 @@ class VaultCryptoBytePreservationTest {
 
         assertArrayEquals(original, restored.toByteArray())
         assertEquals(original.size, restored.size())
+    }
+
+    private class ZeroOnceInputStream(input: InputStream) : FilterInputStream(input) {
+        private var returnedZero = false
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (!returnedZero) {
+                returnedZero = true
+                return 0
+            }
+            return super.read(buffer, offset, length)
+        }
     }
 
     private fun roundTrip(original: ByteArray): Pair<ByteArray, ByteArray> {

@@ -14,11 +14,11 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.FilterInputStream
 import java.io.IOException
-import java.io.InputStream
 import java.util.Locale
 import java.util.UUID
+import android.system.Os
+import android.system.OsConstants
 
 data class PreparedVaultFile(
     val file: File,
@@ -30,32 +30,68 @@ private data class VaultIndex(
     val files: List<VaultFile> = emptyList()
 )
 
+private class BoundedWipingByteArrayOutputStream(
+    private val maximumBytes: Int
+) : ByteArrayOutputStream() {
+    override fun write(value: Int) {
+        requireCapacity(1)
+        super.write(value)
+    }
+
+    override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        requireCapacity(length)
+        super.write(bytes, offset, length)
+    }
+
+    private fun requireCapacity(additionalBytes: Int) {
+        if (additionalBytes < 0 || additionalBytes > maximumBytes - count) {
+            throw IOException("The encrypted vault index exceeds its supported size.")
+        }
+    }
+
+    fun wipe() {
+        buf.fill(0)
+        reset()
+    }
+}
+
 class VaultRepository(context: Context) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
-    private val root = File(appContext.filesDir, "vault").apply { mkdirs() }
-    private val staging = File(appContext.cacheDir, "private-space-staging").apply { mkdirs() }
-    private val outgoing = File(appContext.cacheDir, "outgoing").apply { mkdirs() }
+    private val root = File(appContext.filesDir, "vault")
+    private val staging = File(appContext.cacheDir, "private-space-staging")
+    private val outgoing = File(appContext.cacheDir, "outgoing")
     private val legacyPrefs = appContext.getSharedPreferences("private_space_vault", Context.MODE_PRIVATE)
     private val metadata = AtomicFile(File(root, "vault-index.enc"))
     private var initializationFailure: Throwable? = null
 
     companion object {
-        private const val MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
+        private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
+        private const val INCOMPLETE_IMPORT_TTL_MS = 7L * 24L * 60L * 60L * 1000L
         private const val METADATA_AAD = "private-space:metadata:v2"
+        private const val PRIVATE_DIRECTORY_MODE = 0x1C0 // 0700
+        private const val PRIVATE_FILE_MODE = 0x180 // 0600
+        private const val FILE_DELETE_SUFFIX = ".psv.delete"
     }
 
     init {
         try {
+            ensurePrivateDirectory(root)
+            ensurePrivateDirectory(staging)
+            ensurePrivateDirectory(outgoing)
             migrateLegacyMetadataIfNeeded()
-            removeAbandonedTemporaryFiles()
-            // Export staging is never needed after a process restart.
-            staging.listFiles()?.forEach { it.deleteRecursively() }
-        } catch (failure: Throwable) {
-            // Surface recovery guidance in the UI instead of crashing before
-            // the user can read it. Never overwrite the original index.
+
+            // Authenticate the committed index before recovering file operations.
+            val hasCommittedIndex = metadata.baseFile.exists() || File(metadata.baseFile.path + ".bak").exists()
+            val index = loadIndex()
+            recoverInterruptedFileOperations(index, hasCommittedIndex)
+
+            // Remove abandoned plaintext staging by age, not eagerly: a recreated
+            // activity/repository must not delete an export still in progress.
+            cleanupExpiredOutgoing()
+        } catch (failure: Exception) {
             initializationFailure = failure
         }
     }
@@ -108,29 +144,38 @@ class VaultRepository(context: Context) {
         val safeName = VaultInputValidation.displayName(displayName)
         val mime = resolveMimeType(uri, safeName)
         val reportedSize = readReportedSize(uri)
-        require(reportedSize == null || reportedSize <= MAX_FILE_BYTES) {
-            "Files larger than 2 GB cannot be added."
+
+        // No application-level file-size ceiling. Reject early only when the
+        // reported payload cannot fit in current private storage.
+        if (reportedSize != null) {
+            val available = root.usableSpace
+            val overhead = VaultCrypto.VERSIONED_CONTAINER_OVERHEAD_BYTES.toLong()
+            require(reportedSize <= available && available - reportedSize >= overhead) {
+                "There is not enough free storage for this file."
+            }
         }
-        val minimumSpace = (reportedSize ?: (1L shl 20)) + (1L shl 20)
-        require(root.usableSpace > minimumSpace) { "There is not enough free storage for this file." }
 
         val id = UUID.randomUUID().toString()
         val temporary = File(root, "$id.psv.tmp")
         val target = encryptedFile(id)
+        var finalized = false
 
         try {
-            val source = resolver.openInputStream(uri) ?: error("Android could not open the selected file.")
+            val source = resolver.openInputStream(uri)
+                ?: error("Android could not open the selected file.")
             var byteCount = 0L
             source.use { raw ->
-                val bounded = CountingInputStream(raw, MAX_FILE_BYTES)
+                val counted = UnboundedCountingInputStream(raw)
                 FileOutputStream(temporary).use { encrypted ->
-                    VaultCrypto.encrypt(bounded, encrypted, fileAad(id))
+                    restrictFilePermissions(temporary)
+                    VaultCrypto.encrypt(counted, encrypted, fileAad(id))
                     encrypted.fd.sync()
-                    byteCount = bounded.bytesRead
+                    byteCount = counted.bytesRead
                 }
             }
 
-            check(temporary.renameTo(target)) { "Could not finalize the encrypted file." }
+            atomicRename(temporary, target)
+            finalized = true
             val now = System.currentTimeMillis()
             val record = VaultFile(id, topicId, safeName, mime, byteCount, now)
             val changedTopics = index.topics.map {
@@ -140,12 +185,14 @@ class VaultRepository(context: Context) {
                 saveIndex(index.copy(topics = changedTopics, files = index.files + record))
             } catch (failure: Throwable) {
                 target.delete()
+                runCatching { syncDirectory(root) }
                 throw failure
             }
             return record
         } catch (failure: Throwable) {
             temporary.delete()
-            target.delete()
+            if (finalized) target.delete()
+            runCatching { syncDirectory(root) }
             throw failure
         }
     }
@@ -154,37 +201,56 @@ class VaultRepository(context: Context) {
     fun deleteFile(id: String) {
         val index = loadIndex()
         val record = index.files.firstOrNull { it.id == id } ?: return
+        val tombstone = stageEncryptedForDeletion(id)
         val now = System.currentTimeMillis()
         val updatedTopics = index.topics.map {
             if (it.id == record.topicId) it.copy(updatedAt = now) else it
         }
-        saveIndex(index.copy(topics = updatedTopics, files = index.files.filterNot { it.id == id }))
-        encryptedFile(id).delete()
+
+        try {
+            saveIndex(index.copy(
+                topics = updatedTopics,
+                files = index.files.filterNot { it.id == id }
+            ))
+        } catch (failure: Throwable) {
+            rollbackDeletion(id, tombstone, failure)
+            throw failure
+        }
+        tombstone?.let(::deleteStagedPayload)
     }
 
     @Synchronized
     fun deleteTopic(id: String) {
         val index = loadIndex()
         if (index.topics.none { it.id == id }) return
+
         val removedFiles = index.files.filter { it.topicId == id }
-        saveIndex(
-            index.copy(
+        val staged = mutableListOf<Pair<String, File>>()
+        try {
+            removedFiles.forEach { record ->
+                stageEncryptedForDeletion(record.id)?.let { staged += record.id to it }
+            }
+            saveIndex(index.copy(
                 topics = index.topics.filterNot { it.id == id },
                 files = index.files.filterNot { it.topicId == id }
-            )
-        )
-        removedFiles.forEach { encryptedFile(it.id).delete() }
+            ))
+        } catch (failure: Throwable) {
+            staged.asReversed().forEach { (fileId, tombstone) ->
+                rollbackDeletion(fileId, tombstone, failure)
+            }
+            throw failure
+        }
+        staged.forEach { (_, tombstone) -> deleteStagedPayload(tombstone) }
     }
 
     /**
      * Decrypts to a unique private cache file. The caller must keep it only as
      * long as needed; outgoing copies are removed automatically after 30 minutes.
      */
+    @Synchronized
     fun prepareDecryptedFile(id: String): PreparedVaultFile {
         val record = findFile(id)
-        val session = File(outgoing, UUID.randomUUID().toString()).apply {
-            check(mkdirs()) { "Could not create a temporary sharing folder." }
-        }
+        val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
         val destination = File(session, VaultInputValidation.displayName(record.displayName))
         try {
             decryptInto(record, destination)
@@ -196,15 +262,14 @@ class VaultRepository(context: Context) {
     }
 
     /** Prepares each topic file independently; a failure removes the whole temporary share set. */
+    @Synchronized
     fun prepareTopicShare(topicId: String): List<PreparedVaultFile> {
         val index = synchronized(this) { loadIndex() }
         val records = index.files.filter { it.topicId == topicId }
         require(index.topics.any { it.id == topicId }) { "Topic not found." }
         require(records.isNotEmpty()) { "This topic has no files to share." }
 
-        val session = File(outgoing, UUID.randomUUID().toString()).apply {
-            check(mkdirs()) { "Could not create a temporary sharing folder." }
-        }
+        val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
         try {
             val usedNames = mutableSetOf<String>()
             return records.map { record ->
@@ -230,6 +295,7 @@ class VaultRepository(context: Context) {
         }
     }
 
+    @Synchronized
     fun exportToUri(id: String, destination: Uri) {
         val record = findFile(id)
         val temporary = createAuthenticatedStagingCopy(record)
@@ -247,6 +313,7 @@ class VaultRepository(context: Context) {
         }
     }
 
+    @Synchronized
     fun exportToDocument(id: String, destination: DocumentFile) {
         val record = findFile(id)
         val temporary = createAuthenticatedStagingCopy(record)
@@ -264,6 +331,7 @@ class VaultRepository(context: Context) {
         }
     }
 
+    @Synchronized
     fun exportTopicToFolder(topicId: String, destination: DocumentFile) {
         val index = synchronized(this) { loadIndex() }
         val topic = index.topics.firstOrNull { it.id == topicId } ?: error("Topic not found.")
@@ -285,6 +353,7 @@ class VaultRepository(context: Context) {
      * The destination itself is never used as the export root, so the user
      * always gets one self-contained folder they can move or back up.
      */
+    @Synchronized
     fun exportAllToFolder(destination: DocumentFile) {
         val index = synchronized(this) { loadIndex() }
         val rootFolderName = VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
@@ -304,9 +373,10 @@ class VaultRepository(context: Context) {
     }
 
     /** Deletes stale decrypted staging files, but keeps recent share payloads available to receiving apps. */
+    @Synchronized
     fun cleanupExpiredOutgoing(now: Long = System.currentTimeMillis()) {
-        deleteExpiredChildren(outgoing, now)
-        deleteExpiredChildren(staging, now)
+        deleteExpiredChildren(outgoing, now, OUTGOING_TTL_MS)
+        deleteExpiredChildren(staging, now, STAGING_TTL_MS)
     }
 
     private fun createExactDirectory(parent: DocumentFile, folderName: String): DocumentFile {
@@ -367,6 +437,7 @@ class VaultRepository(context: Context) {
         try {
             FileInputStream(source).use { encrypted ->
                 FileOutputStream(target).use { clear ->
+                    restrictFilePermissions(target)
                     VaultCrypto.decrypt(encrypted, clear, fileAad(record.id))
                     clear.fd.sync()
                 }
@@ -400,49 +471,62 @@ class VaultRepository(context: Context) {
         val hasBackup = File(metadata.baseFile.path + ".bak").exists()
         if (!hasBase && !hasBackup) return VaultIndex()
 
-        val output = ByteArrayOutputStream()
-        metadata.openRead().use { encrypted ->
-            VaultCrypto.decrypt(encrypted, output, METADATA_AAD.toByteArray(Charsets.UTF_8))
-        }
-        val clear = output.toByteArray()
-        require(clear.size <= MAX_METADATA_BYTES) { "Vault index is larger than the supported limit." }
-        val json = JSONObject(String(clear, Charsets.UTF_8))
-        require(json.optInt("version") == 2) { "Unsupported vault index version." }
+        val output = BoundedWipingByteArrayOutputStream(MAX_METADATA_BYTES)
+        try {
+            metadata.openRead().use { encrypted ->
+                VaultCrypto.decrypt(encrypted, output, METADATA_AAD.toByteArray(Charsets.UTF_8))
+            }
+            val clear = output.toByteArray()
+            try {
+                val json = JSONObject(String(clear, Charsets.UTF_8))
+                require(json.optInt("version") == 2) { "Unsupported vault index version." }
 
-        val topicArray = json.getJSONArray("topics")
-        val topics = (0 until topicArray.length()).map { index ->
-            val item = topicArray.getJSONObject(index)
-            val id = item.getString("id")
-            UUID.fromString(id)
-            VaultTopic(
-                id = id,
-                name = VaultInputValidation.topicName(item.getString("name")),
-                createdAt = item.getLong("created"),
-                updatedAt = item.getLong("updated")
-            )
-        }
+                val topicArray = json.getJSONArray("topics")
+                val topics = (0 until topicArray.length()).map { index ->
+                    val item = topicArray.getJSONObject(index)
+                    val id = item.getString("id")
+                    UUID.fromString(id)
+                    VaultTopic(
+                        id = id,
+                        name = VaultInputValidation.topicName(item.getString("name")),
+                        createdAt = item.getLong("created"),
+                        updatedAt = item.getLong("updated")
+                    )
+                }
+                require(topics.map { it.id }.distinct().size == topics.size) {
+                    "Vault index contains duplicate topic identifiers."
+                }
 
-        val topicIds = topics.map { it.id }.toSet()
-        val fileArray = json.getJSONArray("files")
-        val files = (0 until fileArray.length()).map { index ->
-            val item = fileArray.getJSONObject(index)
-            val id = item.getString("id")
-            val topicId = item.getString("topic")
-            UUID.fromString(id)
-            UUID.fromString(topicId)
-            require(topicId in topicIds) { "Vault index contains a file with no topic." }
-            val size = item.getLong("size")
-            require(size >= 0L) { "Vault index contains an invalid file size." }
-            VaultFile(
-                id = id,
-                topicId = topicId,
-                displayName = VaultInputValidation.displayName(item.getString("name")),
-                mimeType = VaultInputValidation.mimeType(item.getString("mime")),
-                sizeBytes = size,
-                addedAt = item.getLong("added")
-            )
+                val topicIds = topics.map { it.id }.toSet()
+                val fileArray = json.getJSONArray("files")
+                val files = (0 until fileArray.length()).map { index ->
+                    val item = fileArray.getJSONObject(index)
+                    val id = item.getString("id")
+                    val topicId = item.getString("topic")
+                    UUID.fromString(id)
+                    UUID.fromString(topicId)
+                    require(topicId in topicIds) { "Vault index contains a file with no topic." }
+                    val size = item.getLong("size")
+                    require(size >= 0L) { "Vault index contains an invalid file size." }
+                    VaultFile(
+                        id = id,
+                        topicId = topicId,
+                        displayName = VaultInputValidation.displayName(item.getString("name")),
+                        mimeType = VaultInputValidation.mimeType(item.getString("mime")),
+                        sizeBytes = size,
+                        addedAt = item.getLong("added")
+                    )
+                }
+                require(files.map { it.id }.distinct().size == files.size) {
+                    "Vault index contains duplicate file identifiers."
+                }
+                return VaultIndex(topics, files)
+            } finally {
+                clear.fill(0)
+            }
+        } finally {
+            output.wipe()
         }
-        return VaultIndex(topics, files)
     }
 
     @Synchronized
@@ -608,41 +692,124 @@ class VaultRepository(context: Context) {
         return VaultInputValidation.mimeType(resolver.getType(uri), fallback)
     }
 
-    private fun removeAbandonedTemporaryFiles() {
-        root.listFiles()?.filter { it.name.endsWith(".tmp") }?.forEach { file ->
-            if (System.currentTimeMillis() - file.lastModified() > OUTGOING_TTL_MS) file.delete()
+    private fun ensurePrivateDirectory(directory: File) {
+        check(directory.exists() || directory.mkdirs()) { "Could not create private vault storage." }
+        check(directory.isDirectory) { "Private vault storage is not a directory." }
+        Os.chmod(directory.absolutePath, PRIVATE_DIRECTORY_MODE)
+    }
+
+    private fun createPrivateDirectory(parent: File, name: String): File {
+        val directory = File(parent, name)
+        check(directory.mkdir()) { "Could not create a temporary sharing folder." }
+        Os.chmod(directory.absolutePath, PRIVATE_DIRECTORY_MODE)
+        return directory
+    }
+
+    private fun restrictFilePermissions(file: File) {
+        Os.chmod(file.absolutePath, PRIVATE_FILE_MODE)
+    }
+
+    /** Same-filesystem atomic rename followed by a directory sync. */
+    private fun atomicRename(source: File, destination: File) {
+        check(source.parentFile?.canonicalPath == destination.parentFile?.canonicalPath) {
+            "Vault file operations must stay inside private storage."
+        }
+        check(source.exists()) { "The encrypted vault file is missing." }
+        check(!destination.exists()) { "A vault recovery file already exists." }
+        Os.rename(source.absolutePath, destination.absolutePath)
+        try {
+            syncDirectory(source.parentFile ?: root)
+        } catch (failure: Exception) {
+            runCatching {
+                if (destination.exists() && !source.exists()) {
+                    Os.rename(destination.absolutePath, source.absolutePath)
+                    syncDirectory(source.parentFile ?: root)
+                }
+            }.onFailure(failure::addSuppressed)
+            throw failure
         }
     }
 
-    private fun deleteExpiredChildren(directory: File, now: Long) {
+    private fun syncDirectory(directory: File) {
+        val descriptor = Os.open(directory.absolutePath, OsConstants.O_RDONLY, 0)
+        try {
+            Os.fsync(descriptor)
+        } finally {
+            Os.close(descriptor)
+        }
+    }
+
+    private fun stageEncryptedForDeletion(id: String): File? {
+        val source = encryptedFile(id)
+        if (!source.exists()) return null
+        val tombstone = File(root, "$id$FILE_DELETE_SUFFIX")
+        check(!tombstone.exists()) { "A previous deletion is awaiting recovery." }
+        atomicRename(source, tombstone)
+        return tombstone
+    }
+
+    private fun rollbackDeletion(id: String, tombstone: File?, failure: Throwable) {
+        if (tombstone == null || !tombstone.exists()) return
+        val original = encryptedFile(id)
+        if (original.exists()) return
+        runCatching { atomicRename(tombstone, original) }.onFailure(failure::addSuppressed)
+    }
+
+    private fun deleteStagedPayload(file: File) {
+        runCatching {
+            if (file.exists() && file.delete()) syncDirectory(root)
+        }
+    }
+
+    /**
+     * Recovers interrupted import/deletion transactions from the authenticated
+     * index. Without a committed index, encrypted payloads are preserved.
+     */
+    private fun recoverInterruptedFileOperations(index: VaultIndex, hasCommittedIndex: Boolean) {
+        val referencedIds = index.files.mapTo(mutableSetOf()) { it.id }
+        root.listFiles()?.filter { it.name.endsWith(FILE_DELETE_SUFFIX) }?.forEach { tombstone ->
+            val id = tombstone.name.removeSuffix(FILE_DELETE_SUFFIX)
+            if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
+            val original = encryptedFile(id)
+            if (!hasCommittedIndex || id in referencedIds) {
+                if (!original.exists()) atomicRename(tombstone, original)
+                else deleteStagedPayload(tombstone)
+            } else {
+                deleteStagedPayload(tombstone)
+            }
+        }
+
+        removeAbandonedTemporaryFiles()
+        if (hasCommittedIndex) {
+            root.listFiles()?.filter { it.name.endsWith(".psv") }?.forEach { payload ->
+                val id = payload.name.removeSuffix(".psv")
+                if (runCatching { UUID.fromString(id) }.isSuccess && id !in referencedIds) {
+                    // Import crashed after payload rename but before index commit.
+                    deleteStagedPayload(payload)
+                }
+            }
+        }
+    }
+
+    private fun removeAbandonedTemporaryFiles(now: Long = System.currentTimeMillis()) {
+        // Keep any active/slow import temp file. Interrupted imports are
+        // encrypted and reclaimed after a conservative age threshold.
+        root.listFiles()?.filter { it.name.endsWith(".psv.tmp") }?.forEach { file ->
+            val modified = file.lastModified()
+            if (modified > 0L && now >= modified && now - modified > INCOMPLETE_IMPORT_TTL_MS) {
+                file.delete()
+            }
+        }
+    }
+
+    private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
         directory.listFiles()?.forEach { child ->
-            if (now - child.lastModified() > OUTGOING_TTL_MS) child.deleteRecursively()
+            val modified = child.lastModified()
+            if (modified > 0L && now >= modified && now - modified > ttlMs) {
+                child.deleteRecursively()
+            }
         }
     }
 
-    private class CountingInputStream(
-        input: InputStream,
-        private val maxBytes: Long
-    ) : FilterInputStream(input) {
-        var bytesRead: Long = 0L
-            private set
 
-        private fun add(count: Int) {
-            if (count <= 0) return
-            bytesRead += count.toLong()
-            if (bytesRead > maxBytes) throw IOException("Files larger than 2 GB cannot be added.")
-        }
-
-        override fun read(): Int {
-            val result = super.read()
-            if (result >= 0) add(1)
-            return result
-        }
-
-        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-            val count = super.read(buffer, offset, length)
-            add(count)
-            return count
-        }
-    }
 }
