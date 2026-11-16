@@ -19,10 +19,12 @@
 ## Crash recovery and file-size handling
 
 - Imports stream to a temporary encrypted file, sync it, atomically rename it, and only then commit the encrypted index. Startup recovery removes interrupted temporary imports and unindexed payloads only after an authenticated index is available.
-- File/topic deletion first moves encrypted payloads to recoverable tombstones, commits the index, then removes the tombstones. Startup restores tombstones still referenced by the index and completes deletions no longer referenced.
+- Logical file deletion and topic deletion atomically move file records into the encrypted Recycle Bin in the authenticated index. The original encrypted payload remains in app-private storage; original topic metadata is retained so a restored file can recreate its topic if needed.
+- Restoring a Trash item changes only the authenticated index. It does not decrypt, re-encrypt, or rewrite the original file bytes.
+- Permanent deletion from Trash stages the encrypted payload under a recoverable tombstone, commits the authenticated index removal, and only then purges the staged payload. Startup restores a tombstone if the authenticated index still references the item (including Trash) and completes permanent deletion when it does not.
 - Metadata decryption is bounded before JSON parsing. Transient plaintext metadata and cipher working buffers are cleared where the runtime permits.
 - There is no application-defined per-file byte ceiling. Data is processed with bounded-memory streams and a 64-bit counter. The practical maximum is limited by available storage, filesystem/provider behavior and Android's cryptographic implementation.
-- Deleting a file removes it from the vault and deletes its encrypted container where the filesystem allows; it is not a forensic secure-erase guarantee on flash storage.
+- Permanent deletion removes an encrypted container where the filesystem allows; it is not a forensic secure-erase guarantee on flash storage.
 
 ## File fidelity
 
