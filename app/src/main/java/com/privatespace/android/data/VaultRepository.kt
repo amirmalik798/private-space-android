@@ -1292,10 +1292,29 @@ class VaultRepository(context: Context) {
                 throw IOException("Recovery backup storage requirement exceeds the supported range.", failure)
             }
         }
-        if (root.usableSpace < requiredLocalBytes) {
+        // Staging needs the complete encrypted payload set while the previous
+        // working copy remains untouched. Reserve space for the encrypted index,
+        // the rollback journal, and filesystem/index commit overhead as well.
+        val serializedIndexForCapacity = serializeIndex(index)
+        val requiredCommitBytes = try {
+            val encryptedIndexBytes = VaultCrypto.encryptedContainerLength(serializedIndexForCapacity.size.toLong())
+            val journalBytes = Math.addExact(192L, Math.multiplyExact(records.size.toLong(), 64L))
+            Math.addExact(Math.addExact(encryptedIndexBytes, journalBytes), 1024L * 1024L)
+        } catch (failure: ArithmeticException) {
+            throw IOException("Recovery backup storage requirement exceeds the supported range.", failure)
+        } finally {
+            serializedIndexForCapacity.fill(0)
+        }
+        val totalRequiredBytes = try {
+            Math.addExact(requiredLocalBytes, requiredCommitBytes)
+        } catch (failure: ArithmeticException) {
+            throw IOException("Recovery backup storage requirement exceeds the supported range.", failure)
+        }
+        if (root.usableSpace < totalRequiredBytes) {
             throw IOException(
-                "There is not enough free device storage to restore this encrypted vault. " +
-                    "Free at least the required space and try again. Your recovery backup has not been changed."
+                "There is not enough free device storage to restore this encrypted vault safely. " +
+                    "The restore needs space for the encrypted files and its commit records. " +
+                    "Free additional device storage and try again. Your recovery backup has not been changed."
             )
         }
         val incomingFiles = mutableMapOf<String, File>()
@@ -1558,7 +1577,8 @@ class VaultRepository(context: Context) {
                     currentIndex.fill(0)
                 }
             }.getOrNull()
-            val committed = readRestoreCommitTransactionId() == transactionId && currentDigest == targetDigest
+            val committed = runCatching { readRestoreCommitTransactionId() }.getOrNull() == transactionId &&
+                currentDigest == targetDigest
 
             if (committed) {
                 // The new authenticated index is durable: keep the new payloads
