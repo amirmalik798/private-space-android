@@ -1038,7 +1038,7 @@ class VaultRepository(context: Context) {
         if (!hasBase && !hasBackup) return VaultIndex()
 
         val output = BoundedWipingByteArrayOutputStream(MAX_METADATA_BYTES)
-        return try {
+        try {
             metadata.openRead().use { encrypted ->
                 VaultCrypto.decrypt(encrypted, output, METADATA_AAD.toByteArray(Charsets.UTF_8))
             }
@@ -1508,7 +1508,7 @@ class VaultRepository(context: Context) {
         val hasBackup = File(metadata.baseFile.path + ".bak").isFile
         if (!hasBase && !hasBackup) return null
         val output = BoundedWipingByteArrayOutputStream(MAX_METADATA_BYTES)
-        try {
+        return try {
             metadata.openRead().use { encrypted ->
                 VaultCrypto.decrypt(encrypted, output, METADATA_AAD.toByteArray(Charsets.UTF_8))
             }
