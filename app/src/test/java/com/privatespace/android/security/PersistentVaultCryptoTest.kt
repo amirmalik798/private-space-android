@@ -78,7 +78,7 @@ class PersistentVaultCryptoTest {
         val restored = ByteArrayOutputStream()
         PersistentVaultCrypto.decrypt(ByteArrayInputStream(encrypted.toByteArray()), restored, aad, dataKey)
         assertArrayEquals(input, restored.toByteArray())
-        assertEquals(input.size + 36, encrypted.size())
+        assertEquals(PersistentVaultCrypto.encryptedContainerLength(input.size.toLong()).toInt(), encrypted.size())
         dataKey.fill(0)
     }
 
@@ -95,7 +95,7 @@ class PersistentVaultCryptoTest {
         PersistentVaultCrypto.decrypt(ByteArrayInputStream(encrypted.toByteArray()), restored, aad, dataKey)
 
         assertArrayEquals(input, restored.toByteArray())
-        assertEquals(input.size + 36, encrypted.size())
+        assertEquals(PersistentVaultCrypto.encryptedContainerLength(input.size.toLong()).toInt(), encrypted.size())
         dataKey.fill(0)
     }
 
@@ -115,8 +115,8 @@ class PersistentVaultCryptoTest {
         val secondBytes = second.toByteArray()
         // Container format: 8-byte magic followed by the 12-byte GCM nonce.
         assertNotEquals(
-            firstBytes.copyOfRange(8, 20).toList(),
-            secondBytes.copyOfRange(8, 20).toList()
+            firstBytes.copyOfRange(12, 24).toList(),
+            secondBytes.copyOfRange(12, 24).toList()
         )
         assertArrayEquals(originalKey, dataKey)
 
