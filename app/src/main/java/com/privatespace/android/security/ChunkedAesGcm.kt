@@ -100,8 +100,8 @@ internal object ChunkedAesGcm {
                 nonce.copyInto(frameHeaderBuffer, LENGTH_BYTES)
                 output.write(frameHeaderBuffer)
                 output.write(encryptedBuffer, 0, length + TAG_BYTES)
-                frameHeaderBuffer.fill(0)
             } finally {
+                frameHeaderBuffer.fill(0)
                 nonce.fill(0)
                 encryptedBuffer.fill(0, 0, length + TAG_BYTES)
             }
