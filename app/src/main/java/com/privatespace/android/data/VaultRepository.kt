@@ -706,6 +706,15 @@ class VaultRepository(context: Context) {
         val isVideo = kind == VaultFormatSupport.FileKind.VIDEO
         if (!isImage && !isVideo) return null
 
+        // Thumbnail generation decrypts the complete source before it can
+        // authenticate and decode it. Do not repeatedly decrypt large videos
+        // or photos just to populate a 46dp list thumbnail; this work can
+        // overwhelm storage I/O and CPU on mobile devices after bulk imports.
+        // The original encrypted file remains intact and fully usable.
+        if (!VaultThumbnailPolicy.shouldGeneratePreview(record.sizeBytes)) {
+            return VaultMediaPreview(null)
+        }
+
         val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))
         var previewBitmap: Bitmap? = null
         try {
