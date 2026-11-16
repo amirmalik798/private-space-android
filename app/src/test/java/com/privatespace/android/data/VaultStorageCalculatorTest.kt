@@ -1,6 +1,7 @@
 package com.privatespace.android.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class VaultStorageCalculatorTest {
@@ -34,6 +35,41 @@ class VaultStorageCalculatorTest {
         assertEquals(0L, usage.totalBytes)
         assertEquals(0L, usage.topicBytes[topicA.id])
         assertEquals(0L, usage.topicBytes[topicB.id])
+    }
+
+    @Test
+    fun encryptedFilesInTrashRemainIncludedInTotalStorage() {
+        val deletedFile = VaultFile(
+            "deleted-file",
+            topicA.id,
+            "passport.pdf",
+            "application/pdf",
+            900L,
+            10L
+        )
+        val activeFile = VaultFile(
+            "active-file",
+            topicB.id,
+            "ticket.png",
+            "image/png",
+            1_000L,
+            11L
+        )
+        val trash = listOf(VaultTrashEntry(deletedFile, 20L, topicA))
+        val usage = VaultStorageCalculator.calculate(
+            topics = listOf(topicB),
+            files = listOf(activeFile),
+            encryptedLengthsByFileId = mapOf(
+                "deleted-file" to 936L,
+                "active-file" to 1_036L
+            ),
+            trash = trash
+        )
+
+        assertEquals(1_972L, usage.totalBytes)
+        assertEquals(1_036L, usage.topicBytes[topicB.id])
+        assertEquals(936L, usage.trashBytes)
+        assertNull(usage.topicBytes[topicA.id])
     }
 
     @Test

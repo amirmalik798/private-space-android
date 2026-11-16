@@ -27,7 +27,8 @@ data class PreparedVaultFile(
 
 private data class VaultIndex(
     val topics: List<VaultTopic> = emptyList(),
-    val files: List<VaultFile> = emptyList()
+    val files: List<VaultFile> = emptyList(),
+    val trash: List<VaultTrashEntry> = emptyList()
 )
 
 private class BoundedWipingByteArrayOutputStream(
@@ -101,7 +102,8 @@ class VaultRepository(context: Context) {
         val index = loadIndex()
         // Count the physical encrypted containers, not the original source sizes.
         // This is the storage occupied by every saved document/photo in the vault.
-        val encryptedLengths = index.files.associate { record ->
+        val storedRecords = index.files + index.trash.map { it.file }
+        val encryptedLengths = storedRecords.associate { record ->
             val file = encryptedFile(record.id)
             record.id to if (file.isFile) file.length() else 0L
         }
@@ -111,8 +113,10 @@ class VaultRepository(context: Context) {
             storageUsage = VaultStorageCalculator.calculate(
                 index.topics,
                 index.files,
-                encryptedLengths
-            )
+                encryptedLengths,
+                index.trash
+            ),
+            trash = index.trash.sortedByDescending { it.deletedAt }
         )
     }
 
@@ -197,50 +201,86 @@ class VaultRepository(context: Context) {
         }
     }
 
+    /**
+     * Moves a file into the encrypted Recycle Bin. The authenticated index
+     * transition is atomic; the encrypted payload remains in private storage.
+     */
     @Synchronized
     fun deleteFile(id: String) {
         val index = loadIndex()
         val record = index.files.firstOrNull { it.id == id } ?: return
-        val tombstone = stageEncryptedForDeletion(id)
+        val originalTopic = index.topics.firstOrNull { it.id == record.topicId }
+            ?: error("The file's original topic is unavailable.")
         val now = System.currentTimeMillis()
         val updatedTopics = index.topics.map {
             if (it.id == record.topicId) it.copy(updatedAt = now) else it
         }
+        saveIndex(index.copy(
+            topics = updatedTopics,
+            files = index.files.filterNot { it.id == id },
+            trash = index.trash + VaultTrashEntry(record, now, originalTopic)
+        ))
+    }
 
+    /**
+     * Deleting a topic removes it from the active topic list and moves each
+     * contained file to Trash. Original topic metadata travels with each item
+     * so an individual restore can safely recreate the topic.
+     */
+    @Synchronized
+    fun deleteTopic(id: String) {
+        val index = loadIndex()
+        val topic = index.topics.firstOrNull { it.id == id } ?: return
+        val removedFiles = index.files.filter { it.topicId == id }
+        val now = System.currentTimeMillis()
+        val trashed = removedFiles.map { VaultTrashEntry(it, now, topic) }
+        saveIndex(index.copy(
+            topics = index.topics.filterNot { it.id == id },
+            files = index.files.filterNot { it.topicId == id },
+            trash = index.trash + trashed
+        ))
+    }
+
+    /** Restores one encrypted Trash item without decrypting or rewriting its payload. */
+    @Synchronized
+    fun restoreTrashFile(id: String) {
+        val index = loadIndex()
+        val entry = index.trash.firstOrNull { it.file.id == id } ?: return
+        require(index.files.none { it.id == id }) { "This file is already in an active topic." }
+        check(encryptedFile(id).isFile) { "The encrypted file is missing from the vault; it cannot be restored safely." }
+
+        val now = System.currentTimeMillis()
+        val destinationTopic = VaultTrashRestoration.topicFor(entry, index.topics, now)
+        val topics = if (index.topics.any { it.id == destinationTopic.id }) {
+            index.topics.map {
+                if (it.id == destinationTopic.id) it.copy(updatedAt = now) else it
+            }
+        } else {
+            index.topics + destinationTopic
+        }
+        saveIndex(index.copy(
+            topics = topics,
+            files = index.files + entry.file.copy(topicId = destinationTopic.id),
+            trash = index.trash.filterNot { it.file.id == id }
+        ))
+    }
+
+    /**
+     * Permanently removes one Trash item. The encrypted payload is renamed to
+     * a tombstone before the index commit, preserving crash recovery semantics.
+     */
+    @Synchronized
+    fun permanentlyDeleteTrashFile(id: String) {
+        val index = loadIndex()
+        if (index.trash.none { it.file.id == id }) return
+        val tombstone = stageEncryptedForDeletion(id)
         try {
-            saveIndex(index.copy(
-                topics = updatedTopics,
-                files = index.files.filterNot { it.id == id }
-            ))
+            saveIndex(index.copy(trash = index.trash.filterNot { it.file.id == id }))
         } catch (failure: Throwable) {
             rollbackDeletion(id, tombstone, failure)
             throw failure
         }
         tombstone?.let(::deleteStagedPayload)
-    }
-
-    @Synchronized
-    fun deleteTopic(id: String) {
-        val index = loadIndex()
-        if (index.topics.none { it.id == id }) return
-
-        val removedFiles = index.files.filter { it.topicId == id }
-        val staged = mutableListOf<Pair<String, File>>()
-        try {
-            removedFiles.forEach { record ->
-                stageEncryptedForDeletion(record.id)?.let { staged += record.id to it }
-            }
-            saveIndex(index.copy(
-                topics = index.topics.filterNot { it.id == id },
-                files = index.files.filterNot { it.topicId == id }
-            ))
-        } catch (failure: Throwable) {
-            staged.asReversed().forEach { (fileId, tombstone) ->
-                rollbackDeletion(fileId, tombstone, failure)
-            }
-            throw failure
-        }
-        staged.forEach { (_, tombstone) -> deleteStagedPayload(tombstone) }
     }
 
     /**
@@ -498,17 +538,17 @@ class VaultRepository(context: Context) {
                 }
 
                 val topicIds = topics.map { it.id }.toSet()
-                val fileArray = json.getJSONArray("files")
-                val files = (0 until fileArray.length()).map { index ->
-                    val item = fileArray.getJSONObject(index)
+                fun readFile(item: JSONObject, requireActiveTopic: Boolean): VaultFile {
                     val id = item.getString("id")
                     val topicId = item.getString("topic")
                     UUID.fromString(id)
                     UUID.fromString(topicId)
-                    require(topicId in topicIds) { "Vault index contains a file with no topic." }
+                    if (requireActiveTopic) {
+                        require(topicId in topicIds) { "Vault index contains a file with no topic." }
+                    }
                     val size = item.getLong("size")
                     require(size >= 0L) { "Vault index contains an invalid file size." }
-                    VaultFile(
+                    return VaultFile(
                         id = id,
                         topicId = topicId,
                         displayName = VaultInputValidation.displayName(item.getString("name")),
@@ -517,10 +557,40 @@ class VaultRepository(context: Context) {
                         addedAt = item.getLong("added")
                     )
                 }
-                require(files.map { it.id }.distinct().size == files.size) {
-                    "Vault index contains duplicate file identifiers."
+
+                val fileArray = json.getJSONArray("files")
+                val files = (0 until fileArray.length()).map { index ->
+                    readFile(fileArray.getJSONObject(index), requireActiveTopic = true)
                 }
-                return VaultIndex(topics, files)
+
+                // Version 2 indexes created before Trash existed have no "trash"
+                // property. Treat that as an empty Recycle Bin during upgrade.
+                val trashArray = json.optJSONArray("trash") ?: JSONArray()
+                val trash = (0 until trashArray.length()).map { index ->
+                    val item = trashArray.getJSONObject(index)
+                    val deletedAt = item.getLong("deleted")
+                    require(deletedAt >= 0L) { "Vault index contains an invalid Trash date." }
+                    val file = readFile(item.getJSONObject("file"), requireActiveTopic = false)
+                    val topicItem = item.getJSONObject("topic")
+                    val topicId = topicItem.getString("id")
+                    UUID.fromString(topicId)
+                    val originalTopic = VaultTopic(
+                        id = topicId,
+                        name = VaultInputValidation.topicName(topicItem.getString("name")),
+                        createdAt = topicItem.getLong("created"),
+                        updatedAt = topicItem.getLong("updated")
+                    )
+                    require(file.topicId == originalTopic.id) {
+                        "Vault Trash entry does not match its original topic."
+                    }
+                    VaultTrashEntry(file, deletedAt, originalTopic)
+                }
+
+                val allFileIds = files.map { it.id } + trash.map { it.file.id }
+                require(allFileIds.distinct().size == allFileIds.size) {
+                    "Vault index contains duplicate active or trashed file identifiers."
+                }
+                return VaultIndex(topics, files, trash)
             } finally {
                 clear.fill(0)
             }
@@ -533,31 +603,51 @@ class VaultRepository(context: Context) {
     private fun saveIndex(index: VaultIndex) {
         val topicIds = index.topics.map { it.id }.toSet()
         require(index.files.all { it.topicId in topicIds }) { "Cannot save a file without a valid topic." }
+        require(index.files.map { it.id }.distinct().size == index.files.size) {
+            "Cannot save duplicate active file identifiers."
+        }
+        require(index.trash.all { it.file.topicId == it.originalTopic.id && it.deletedAt >= 0L }) {
+            "Cannot save an invalid Trash entry."
+        }
+        val allFileIds = index.files.map { it.id } + index.trash.map { it.file.id }
+        require(allFileIds.distinct().size == allFileIds.size) {
+            "Cannot save duplicate active or trashed file identifiers."
+        }
+
+        fun topicObject(topic: VaultTopic) = JSONObject()
+            .put("id", topic.id)
+            .put("name", topic.name)
+            .put("created", topic.createdAt)
+            .put("updated", topic.updatedAt)
+
+        fun fileObject(file: VaultFile) = JSONObject()
+            .put("id", file.id)
+            .put("topic", file.topicId)
+            .put("name", file.displayName)
+            .put("mime", file.mimeType)
+            .put("size", file.sizeBytes)
+            .put("added", file.addedAt)
 
         val json = JSONObject().put("version", 2)
         val topicArray = JSONArray()
-        index.topics.forEach { topic ->
-            topicArray.put(
-                JSONObject()
-                    .put("id", topic.id)
-                    .put("name", topic.name)
-                    .put("created", topic.createdAt)
-                    .put("updated", topic.updatedAt)
-            )
-        }
+        index.topics.forEach { topic -> topicArray.put(topicObject(topic)) }
+
         val fileArray = JSONArray()
-        index.files.forEach { file ->
-            fileArray.put(
+        index.files.forEach { file -> fileArray.put(fileObject(file)) }
+
+        val trashArray = JSONArray()
+        index.trash.forEach { entry ->
+            trashArray.put(
                 JSONObject()
-                    .put("id", file.id)
-                    .put("topic", file.topicId)
-                    .put("name", file.displayName)
-                    .put("mime", file.mimeType)
-                    .put("size", file.sizeBytes)
-                    .put("added", file.addedAt)
+                    .put("deleted", entry.deletedAt)
+                    .put("file", fileObject(entry.file))
+                    .put("topic", topicObject(entry.originalTopic))
             )
         }
-        json.put("topics", topicArray).put("files", fileArray)
+
+        json.put("topics", topicArray)
+            .put("files", fileArray)
+            .put("trash", trashArray)
         val bytes = json.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= MAX_METADATA_BYTES) { "Vault index has reached its supported size limit." }
 
@@ -762,11 +852,13 @@ class VaultRepository(context: Context) {
     }
 
     /**
-     * Recovers interrupted import/deletion transactions from the authenticated
-     * index. Without a committed index, encrypted payloads are preserved.
+     * Recovers interrupted import/permanent-deletion transactions from the
+     * authenticated index. Both active files and Trash entries reference
+     * encrypted payloads. Without a committed index, payloads are preserved.
      */
     private fun recoverInterruptedFileOperations(index: VaultIndex, hasCommittedIndex: Boolean) {
-        val referencedIds = index.files.mapTo(mutableSetOf()) { it.id }
+        val referencedIds = (index.files.map { it.id } + index.trash.map { it.file.id })
+            .toMutableSet()
         root.listFiles()?.filter { it.name.endsWith(FILE_DELETE_SUFFIX) }?.forEach { tombstone ->
             val id = tombstone.name.removeSuffix(FILE_DELETE_SUFFIX)
             if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
