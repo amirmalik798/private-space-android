@@ -604,8 +604,9 @@ class VaultRepository(context: Context) {
             ?: index.trash.firstOrNull { it.file.id == id }?.file
             ?: return null
 
-        val isImage = VaultFormatSupport.isImageMimeType(record.mimeType)
-        val isVideo = VaultFormatSupport.isVideoMimeType(record.mimeType)
+        val kind = VaultFormatSupport.kindForFile(record.displayName, record.mimeType)
+        val isImage = kind == VaultFormatSupport.FileKind.PHOTO
+        val isVideo = kind == VaultFormatSupport.FileKind.VIDEO
         if (!isImage && !isVideo) return null
 
         val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))

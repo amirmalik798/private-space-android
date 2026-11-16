@@ -781,7 +781,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun openExternalVaultFile(file: VaultFile, preferSamsungVideoPlayer: Boolean = false) {
+    fun openExternalVaultFile(
+        file: VaultFile,
+        preferredSamsungPackages: List<String> = emptyList(),
+        mimeTypeOverride: String? = null
+    ) {
         scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) {
@@ -801,28 +805,24 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     val uri = FileProvider.getUriForFile(
                         context, "com.privatespace.android.fileprovider", prepared.file
                     )
-                    val videoMimeType = prepared.mimeType.takeIf { it.startsWith("video/") } ?: "video/*"
-                    val requestedMimeType = if (preferSamsungVideoPlayer) videoMimeType else prepared.mimeType
+                    val requestedMimeType = mimeTypeOverride ?: prepared.mimeType
                     val baseIntent = Intent(Intent.ACTION_VIEW)
                         .setDataAndType(uri, requestedMimeType)
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     baseIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
 
-                    val samsungPackages = if (
-                        preferSamsungVideoPlayer &&
+                    val samsungIntents = if (
                         Build.MANUFACTURER.equals("samsung", ignoreCase = true)
                     ) {
-                        listOf(
-                            SAMSUNG_GALLERY_PACKAGE,
-                            SAMSUNG_VIDEO_PLAYER_PACKAGE,
-                            LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE
-                        )
+                        preferredSamsungPackages.map { packageName ->
+                            Intent(baseIntent).setPackage(packageName)
+                        }
                     } else {
                         emptyList()
                     }
-                    val samsungIntents = samsungPackages
-                        .map { packageName -> Intent(baseIntent).setPackage(packageName) }
-                        .filter { it.resolveActivity(context.packageManager) != null }
+                    // Try Samsung targets directly before Android's generic resolver.
+                    // Avoid resolveActivity pre-filtering on OEM builds: some resolver
+                    // combinations hide installed handlers even though launch succeeds.
                     val launchCandidates = samsungIntents + baseIntent
                     var launchFailure: Exception? = null
                     var launched = false
@@ -836,7 +836,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }
                     }
                     if (!launched) {
-                        throw launchFailure ?: IllegalStateException("No compatible video player is installed.")
+                        throw launchFailure ?: IllegalStateException("No compatible media viewer is installed.")
                     }
                 } catch (failure: Exception) {
                     runCatching { prepared.file.parentFile?.deleteRecursively() }
@@ -850,11 +850,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
 
     fun openVaultFile(file: VaultFile) {
-        val isImage = VaultFormatSupport.isImageMimeType(file.mimeType)
-        val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
-        if (!isImage && !isVideo) {
-            // Documents need a separate, explicit consent step before plaintext
-            // is handed to another app through FileProvider.
+        val kind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
+        if (kind == VaultFormatSupport.FileKind.DOCUMENT) {
+            // Documents retain the explicit confirmation before an external app
+            // receives access to a temporary decrypted copy.
             pendingOpenFile = file
             return
         }
@@ -863,55 +862,38 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             toast("This media item is no longer available in the open topic.")
             return
         }
-        if (isVideo) {
-            // Opening a video directly hands a temporary decrypted copy to the
-            // device video player. The user requested playback, so no extra
-            // confirmation dialog is needed here.
-            openExternalVaultFile(file, preferSamsungVideoPlayer = true)
-            return
+
+        val extensionMimeType = VaultFormatSupport.mimeTypeForName(file.displayName)
+        val targetMimeType = when (kind) {
+            VaultFormatSupport.FileKind.PHOTO ->
+                extensionMimeType?.takeIf(VaultFormatSupport::isImageMimeType)
+                    ?: file.mimeType.takeIf(VaultFormatSupport::isImageMimeType)
+                    ?: "image/*"
+            VaultFormatSupport.FileKind.VIDEO ->
+                extensionMimeType?.takeIf(VaultFormatSupport::isVideoMimeType)
+                    ?: file.mimeType.takeIf(VaultFormatSupport::isVideoMimeType)
+                    ?: "video/*"
+            VaultFormatSupport.FileKind.DOCUMENT -> file.mimeType
         }
-
-        mediaRequestToken += 1L
-        val requestToken = mediaRequestToken
-        discardViewerFile(activeMediaFile)
-        activeMediaFile = null
-        activeMediaId = file.id
-        mediaViewerLoading = true
-
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repository.prepareMediaForViewing(file.id) }
-            }
-
-            if (requestToken != mediaRequestToken) {
-                result.getOrNull()?.let(::discardViewerFile)
-                return@launch
-            }
-
-            mediaViewerLoading = false
-            result.fold(
-                onSuccess = { prepared ->
-                    val stillAvailable = unlocked &&
-                        activeTopicId == file.topicId &&
-                        vaultFiles.any { it.id == file.id } &&
-                        VaultSessionPolicy.mayReleasePlaintext(
-                            unlocked,
-                            activity?.isResumedForVault == true
-                        )
-                    if (stillAvailable) {
-                        activeMediaFile = prepared
-                    } else {
-                        discardViewerFile(prepared)
-                        activeMediaId = null
-                    }
-                },
-                onFailure = {
-                    activeMediaId = null
-                    toast(it.message ?: "The media could not be decrypted for viewing.")
-                }
+        val samsungTargets = when (kind) {
+            VaultFormatSupport.FileKind.PHOTO -> listOf(SAMSUNG_GALLERY_PACKAGE)
+            VaultFormatSupport.FileKind.VIDEO -> listOf(
+                SAMSUNG_GALLERY_PACKAGE,
+                SAMSUNG_VIDEO_PLAYER_PACKAGE,
+                LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE
             )
+            VaultFormatSupport.FileKind.DOCUMENT -> emptyList()
         }
+
+        // Full-screen in-app images are downsampled to a bounded bitmap. Hand
+        // the original decrypted bytes to Samsung Gallery to preserve detail.
+        openExternalVaultFile(
+            file = file,
+            preferredSamsungPackages = samsungTargets,
+            mimeTypeOverride = targetMimeType
+        )
     }
+
     fun shareVaultFile(file: VaultFile) {
         scope.launch {
             busy = true
@@ -2587,8 +2569,13 @@ private fun TopicScreen(
 ) {
     var selectionMode by remember(topic.id) { mutableStateOf(false) }
     var selectedFileIds by remember(topic.id) { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedFilter by remember(topic.id) { mutableStateOf(VaultFormatSupport.TopicFilter.ALL) }
     var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     val selectedFiles = files.filter { it.id in selectedFileIds }
+    val filteredFiles = files.filter(selectedFilter::matches)
+    val visibleFileIds = filteredFiles.map { it.id }.toSet()
+    val allVisibleFilesSelected = visibleFileIds.isNotEmpty() &&
+        visibleFileIds.all { it in selectedFileIds }
 
     LaunchedEffect(files) {
         val currentIds = files.map { it.id }.toSet()
@@ -2782,6 +2769,35 @@ private fun TopicScreen(
                 }
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                VaultFormatSupport.TopicFilter.values().forEach { filter ->
+                    val selected = selectedFilter == filter
+                    Surface(
+                        modifier = Modifier.clickable { selectedFilter = filter },
+                        color = if (selected) Blue.copy(alpha = 0.22f) else Panel,
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(
+                            if (selected) 1.4.dp else 1.dp,
+                            if (selected) Cyan.copy(alpha = 0.8f) else Line
+                        )
+                    ) {
+                        Text(
+                            "${filter.title} (${filter.count(files)})",
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                            color = if (selected) White else Muted,
+                            fontSize = 12.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
+
             if (selectionMode) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -2805,17 +2821,17 @@ private fun TopicScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             TextButton(
-                                enabled = !busy && files.isNotEmpty(),
+                                enabled = !busy && filteredFiles.isNotEmpty(),
                                 onClick = {
-                                    selectedFileIds = if (selectedFileIds.size == files.size) {
-                                        emptySet()
+                                    selectedFileIds = if (allVisibleFilesSelected) {
+                                        selectedFileIds - visibleFileIds
                                     } else {
-                                        files.map { it.id }.toSet()
+                                        selectedFileIds + visibleFileIds
                                     }
                                 },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
-                                Text(if (selectedFileIds.size == files.size && files.isNotEmpty()) "Clear all" else "Select all")
+                                Text(if (allVisibleFilesSelected) "Clear shown" else "Select shown")
                             }
                         }
                         Row(
@@ -2850,7 +2866,7 @@ private fun TopicScreen(
             }
 
             HorizontalDivider(color = Line.copy(alpha = 0.8f))
-            if (files.isEmpty()) {
+            if (files.isEmpty() || filteredFiles.isEmpty()) {
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
@@ -2868,8 +2884,18 @@ private fun TopicScreen(
                                 Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Cyan, modifier = Modifier.size(34.dp))
                             }
                         }
-                        Text("Nothing here yet", color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Add documents, photos or videos to this topic.", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                        Text(
+                            if (files.isEmpty()) "Nothing here yet" else "No ${selectedFilter.title.lowercase()}",
+                            color = White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            if (files.isEmpty()) "Add documents, photos or videos to this topic." else "This topic has no files in the selected filter.",
+                            color = Muted,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             } else {
@@ -2878,7 +2904,7 @@ private fun TopicScreen(
                     contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
-                    items(files, key = { it.id }) { file ->
+                    items(filteredFiles, key = { it.id }) { file ->
                         VaultFileRow(
                             file = file,
                             repository = repository,
@@ -3092,8 +3118,8 @@ private fun rememberVaultMediaPreview(
     repository: VaultRepository
 ): VaultMediaPreview? {
     val targetSizePx = with(LocalDensity.current) { 128.dp.roundToPx().coerceAtLeast(64) }
-    val isPreviewable = VaultFormatSupport.isImageMimeType(file.mimeType) ||
-        VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val isPreviewable =
+        VaultFormatSupport.kindForFile(file.displayName, file.mimeType) != VaultFormatSupport.FileKind.DOCUMENT
     val preview by produceState<VaultMediaPreview?>(null, file.id, file.mimeType, targetSizePx) {
         value = if (isPreviewable) {
             try {
@@ -3186,8 +3212,9 @@ private fun VaultFileRow(
     onToggleSelection: () -> Unit = {}
 ) {
     var menuExpanded by remember(file.id) { mutableStateOf(false) }
-    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
-    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val fileKind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
+    val isPhoto = fileKind == VaultFormatSupport.FileKind.PHOTO
+    val isVideo = fileKind == VaultFormatSupport.FileKind.VIDEO
     val mediaPreview = rememberVaultMediaPreview(file, repository)
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     val fileIcon = when {

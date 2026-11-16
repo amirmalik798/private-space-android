@@ -77,4 +77,61 @@ class VaultFormatSupportTest {
         assertFalse(VaultFormatSupport.isKnownMajorFormat("custom.xyz"))
         assertEquals(null, VaultFormatSupport.mimeTypeForName("extensionless"))
     }
+    @Test
+    fun routesMediaByKnownExtensionWhenProviderMimeIsGenericOrWrong() {
+        assertEquals(
+            VaultFormatSupport.FileKind.VIDEO,
+            VaultFormatSupport.kindForFile("clip.MP4", "application/octet-stream")
+        )
+        assertEquals(
+            VaultFormatSupport.FileKind.VIDEO,
+            VaultFormatSupport.kindForFile("clip.mp4", "image/jpeg")
+        )
+        assertEquals(
+            VaultFormatSupport.FileKind.PHOTO,
+            VaultFormatSupport.kindForFile("photo.JPG", "application/octet-stream")
+        )
+        assertEquals(
+            VaultFormatSupport.FileKind.DOCUMENT,
+            VaultFormatSupport.kindForFile("report.pdf", "video/mp4")
+        )
+    }
+
+    @Test
+    fun fallsBackToMimeTypeWhenExtensionIsUnknown() {
+        assertEquals(
+            VaultFormatSupport.FileKind.VIDEO,
+            VaultFormatSupport.kindForFile("clip.custom", "video/mp4")
+        )
+        assertEquals(
+            VaultFormatSupport.FileKind.PHOTO,
+            VaultFormatSupport.kindForFile("photo.custom", "image/jpeg")
+        )
+        assertEquals(
+            VaultFormatSupport.FileKind.DOCUMENT,
+            VaultFormatSupport.kindForFile("unknown.custom", "application/octet-stream")
+        )
+    }
+
+    @Test
+    fun topicFiltersCountAndSelectEachFileCategory() {
+        val files = listOf(
+            VaultFile("d1", "t", "report.pdf", "application/pdf", 1, 1),
+            VaultFile("p1", "t", "one.jpg", "image/jpeg", 1, 1),
+            VaultFile("p2", "t", "two.png", "image/png", 1, 1),
+            VaultFile("p3", "t", "three.heic", "image/heic", 1, 1),
+            VaultFile("v1", "t", "one.mp4", "application/octet-stream", 1, 1),
+            VaultFile("v2", "t", "two.mkv", "video/x-matroska", 1, 1)
+        )
+
+        assertEquals(6, VaultFormatSupport.TopicFilter.ALL.count(files))
+        assertEquals(1, VaultFormatSupport.TopicFilter.DOCUMENTS.count(files))
+        assertEquals(3, VaultFormatSupport.TopicFilter.PHOTOS.count(files))
+        assertEquals(2, VaultFormatSupport.TopicFilter.VIDEOS.count(files))
+        assertEquals(
+            listOf("v1", "v2"),
+            files.filter(VaultFormatSupport.TopicFilter.VIDEOS::matches).map { it.id }
+        )
+    }
+
 }

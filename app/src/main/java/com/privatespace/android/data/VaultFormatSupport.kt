@@ -98,6 +98,39 @@ object VaultFormatSupport {
     fun isVideoMimeType(mimeType: String): Boolean =
         mimeType.startsWith("video/", ignoreCase = true)
 
+    enum class FileKind {
+        DOCUMENT,
+        PHOTO,
+        VIDEO
+    }
+
+    fun kindForFile(fileName: String, mimeType: String): FileKind {
+        // Prefer a known extension over a generic/incorrect provider MIME hint.
+        val effectiveMimeType = mimeTypeForName(fileName) ?: mimeType
+        return when {
+            isVideoMimeType(effectiveMimeType) -> FileKind.VIDEO
+            isImageMimeType(effectiveMimeType) -> FileKind.PHOTO
+            else -> FileKind.DOCUMENT
+        }
+    }
+
+    enum class TopicFilter(val title: String) {
+        ALL("All"),
+        DOCUMENTS("Documents"),
+        PHOTOS("Photos"),
+        VIDEOS("Videos");
+
+        fun matches(file: VaultFile): Boolean =
+            when (this) {
+                ALL -> true
+                DOCUMENTS -> kindForFile(file.displayName, file.mimeType) == FileKind.DOCUMENT
+                PHOTOS -> kindForFile(file.displayName, file.mimeType) == FileKind.PHOTO
+                VIDEOS -> kindForFile(file.displayName, file.mimeType) == FileKind.VIDEO
+            }
+
+        fun count(files: List<VaultFile>): Int = files.count(::matches)
+    }
+
     val commonFormatSummary: String =
         "Photos: JPG, PNG, WebP, GIF, BMP, HEIC/HEIF, AVIF, TIFF and RAW · " +
             "Video: MP4, M4V, MOV, 3GP, MKV, WebM, AVI, MPEG, TS, OGV, WMV and FLV · " +
