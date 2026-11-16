@@ -13,4 +13,7 @@ object VaultIndexSchema {
 
     fun isSupported(version: Int): Boolean =
         version == LEGACY_VERSION || version == CURRENT_VERSION
+
+    fun needsUpgrade(version: Int): Boolean =
+        version == LEGACY_VERSION
 }
