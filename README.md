@@ -1,8 +1,17 @@
 # Private Space
 
+## Recycle Bin and recoverable deletion (0.9.0)
+
+- Deleting an individual photo/document moves its encrypted record into the in-app Recycle Bin instead of immediately removing its encrypted payload.
+- Deleting a topic removes it from the active topic list and moves all of its files into the Recycle Bin. Empty topics are removed immediately.
+- Restore returns a file to its original topic. If that topic was deleted, it is recreated; if a topic with the same name already exists, the file is restored there instead of creating a duplicate.
+- Items in the Recycle Bin can be permanently deleted individually after a separate confirmation. Permanent deletion uses the same crash-safe encrypted-payload tombstone and authenticated-index commit process.
+- Trash metadata remains inside the authenticated encrypted vault index, and the files remain encrypted in app-private storage. Moving to or restoring from Trash does not decrypt, recompress, convert, resize, or rewrite file contents.
+- Encrypted files in Trash continue to count toward storage usage until permanently deleted.
+
 ## Topic and file actions (0.8.0)
 
-- Create named topics and permanently delete a topic together with every encrypted file inside it.
+- Create named topics and move a topic and its files into the Recycle Bin; restore its files later or permanently delete them from Trash.
 - Add multiple photos and documents to a topic using the selected Android file manager; remove an individual file from its topic.
 - Share one file, or share every file in a topic through Android's share sheet.
 - Export one topic into a newly created folder with the same name as the topic.
