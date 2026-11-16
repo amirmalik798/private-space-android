@@ -2,6 +2,12 @@
 
 Private Space is a local-only Android vault for organizing documents and photos into topics. The project uses Kotlin, Jetpack Compose, Android Keystore, Gradle 8.13, a Windows PowerShell APK script, and GitHub Actions.
 
+## Storage reporting and file format support (0.4.0)
+
+The vault dashboard displays the combined encrypted storage used by saved documents and photos. Each topic shows the combined encrypted size of its files. Values are calculated from the actual encrypted container lengths under app-private vault storage, including encryption framing. They exclude the APK, encrypted index, and temporary cache. New AES-GCM containers add 36 bytes per file.
+
+Private Space accepts all file types through Android's unrestricted document picker. MIME mappings cover common raster/photo formats (JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF, AVIF, SVG, JPEG 2000 and popular camera RAW types), document/text formats (PDF, TXT, RTF, Markdown, CSV, TSV, HTML, XML, JSON, YAML and EPUB), Microsoft Office formats (DOC/DOCX, XLS/XLSX and PPT/PPTX including common macro-enabled variants), OpenDocument formats (ODT, ODS, ODP and related templates), and Apple iWork formats. Unknown extensions are stored as generic binary files. MIME mappings help Android select an external viewer; opening depends on compatible apps installed on the device. Storage, encryption, decryption, sharing and export do not convert or recompress file contents.
+
 ## File integrity and fidelity (0.3.0)
 
 Private Space treats imported documents and photos as opaque byte streams. It does not decode, resize, recompress, rotate, strip metadata from, or convert an imported image/document. AES-GCM encryption and decryption operate on the original bytes. After successful decryption, opening/sharing/export passes those recovered bytes through unchanged. The versioned encrypted container adds exactly 36 bytes (8-byte format marker, 12-byte random nonce, and 16-byte authentication tag); this is storage overhead, not a change to the original file. The exported/decrypted file length and SHA-256 digest should match the imported source bytes.

@@ -12,6 +12,10 @@
 
 Vault import, encryption, decryption, opening, sharing, and export use byte-stream copies rather than image or document conversion. The expected property is byte-for-byte equality: the decrypted/exported file has the same length and SHA-256 content digest as the selected source bytes. The encrypted container adds 36 bytes of framing/authentication overhead. Automated JVM tests exercise the shared AES-GCM stream implementation across file sizes and binary-format samples.
 
+## Storage reporting and format support
+
+Displayed storage values are the actual encrypted document/photo container lengths, grouped by topic. They exclude the APK, encrypted metadata index and temporary cache. Unknown file extensions remain accepted and are stored as opaque bytes. Common extension-to-MIME mappings help Android select an external viewer; a compatible viewer must be installed to open a particular format.
+
 ## Explicit limitations
 
 - Opening, sharing, or exporting requires plaintext to exist temporarily or at the destination.

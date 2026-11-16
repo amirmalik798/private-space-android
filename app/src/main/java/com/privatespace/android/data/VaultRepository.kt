@@ -20,11 +20,6 @@ import java.io.InputStream
 import java.util.Locale
 import java.util.UUID
 
-data class VaultSnapshot(
-    val topics: List<VaultTopic>,
-    val files: List<VaultFile>
-)
-
 data class PreparedVaultFile(
     val file: File,
     val mimeType: String
@@ -68,7 +63,21 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun snapshot(): VaultSnapshot {
         val index = loadIndex()
-        return VaultSnapshot(index.topics, index.files)
+        // Count the physical encrypted containers, not the original source sizes.
+        // This is the storage occupied by every saved document/photo in the vault.
+        val encryptedLengths = index.files.associate { record ->
+            val file = encryptedFile(record.id)
+            record.id to if (file.isFile) file.length() else 0L
+        }
+        return VaultSnapshot(
+            topics = index.topics,
+            files = index.files,
+            storageUsage = VaultStorageCalculator.calculate(
+                index.topics,
+                index.files,
+                encryptedLengths
+            )
+        )
     }
 
     @Synchronized
@@ -558,6 +567,11 @@ class VaultRepository(context: Context) {
     }
 
     private fun resolveMimeType(uri: Uri, name: String): String {
+        // Prefer a known extension mapping when a document provider reports a
+        // generic MIME type. No content conversion is performed: this value is
+        // only used by Android to select a compatible external viewer.
+        VaultFormatSupport.mimeTypeForName(name)?.let { return it }
+
         val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
         val fallback = MimeTypeMap.getSingleton()
             .getMimeTypeFromExtension(extension)
