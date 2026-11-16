@@ -35,6 +35,7 @@ object PersistentVaultCrypto {
     private const val SALT_BYTES = 16
     private const val NONCE_BYTES = 12
     private const val TAG_BITS = 128
+    private const val TAG_BYTES = TAG_BITS / 8
     private const val BUFFER_BYTES = 64 * 1024
 
     private val ENVELOPE_MAGIC = "PSKEY001".toByteArray(Charsets.US_ASCII)
