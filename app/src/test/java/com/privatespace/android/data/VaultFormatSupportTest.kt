@@ -42,6 +42,37 @@ class VaultFormatSupportTest {
     }
 
     @Test
+    fun recognizesCommonVideoContainerFormatsCaseInsensitively() {
+        val videoTypes = mapOf(
+            "clip.mp4" to "video/mp4",
+            "clip.M4V" to "video/x-m4v",
+            "clip.mov" to "video/quicktime",
+            "clip.3gp" to "video/3gpp",
+            "clip.3g2" to "video/3gpp2",
+            "clip.mkv" to "video/x-matroska",
+            "clip.webm" to "video/webm",
+            "clip.avi" to "video/x-msvideo",
+            "clip.mpeg" to "video/mpeg",
+            "clip.m2ts" to "video/mp2t",
+            "clip.ogv" to "video/ogg",
+            "clip.wmv" to "video/x-ms-wmv",
+            "clip.flv" to "video/x-flv"
+        )
+        videoTypes.forEach { (name, mime) ->
+            assertEquals(mime, VaultFormatSupport.mimeTypeForName(name))
+            assertTrue("$name should be detected as video", VaultFormatSupport.isVideoMimeType(mime))
+        }
+    }
+
+    @Test
+    fun imageAndVideoClassificationDoesNotConfuseDocuments() {
+        assertTrue(VaultFormatSupport.isImageMimeType("image/jpeg"))
+        assertTrue(VaultFormatSupport.isVideoMimeType("video/mp4"))
+        assertFalse(VaultFormatSupport.isImageMimeType("application/pdf"))
+        assertFalse(VaultFormatSupport.isVideoMimeType("application/pdf"))
+    }
+
+    @Test
     fun unknownExtensionsRemainAcceptableAsOpaqueBinaryFiles() {
         assertFalse(VaultFormatSupport.isKnownMajorFormat("custom.xyz"))
         assertEquals(null, VaultFormatSupport.mimeTypeForName("extensionless"))

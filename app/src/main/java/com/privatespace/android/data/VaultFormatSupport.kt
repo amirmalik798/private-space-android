@@ -17,6 +17,18 @@ object VaultFormatSupport {
         "jp2" to "image/jp2", "j2k" to "image/jp2", "jpf" to "image/jp2", "jpx" to "image/jp2",
         "psd" to "image/vnd.adobe.photoshop", "ai" to "application/postscript", "eps" to "application/postscript",
 
+        // Common video containers. Codec playback still depends on the Android device/viewer.
+        "mp4" to "video/mp4", "m4v" to "video/x-m4v", "mov" to "video/quicktime",
+        "3gp" to "video/3gpp", "3gpp" to "video/3gpp", "3g2" to "video/3gpp2",
+        "mkv" to "video/x-matroska", "webm" to "video/webm",
+        "avi" to "video/x-msvideo", "mpg" to "video/mpeg", "mpeg" to "video/mpeg",
+        "mpe" to "video/mpeg", "m2v" to "video/mpeg", "vob" to "video/mpeg",
+        "ts" to "video/mp2t", "mts" to "video/mp2t", "m2ts" to "video/mp2t",
+        "ogv" to "video/ogg", "ogg" to "video/ogg",
+        "wmv" to "video/x-ms-wmv", "asf" to "video/x-ms-asf",
+        "flv" to "video/x-flv", "f4v" to "video/mp4",
+        "dv" to "video/x-dv", "mxf" to "application/mxf",
+
         // Popular camera RAW formats; opening them depends on an installed viewer.
         "dng" to "image/x-adobe-dng", "cr2" to "image/x-canon-cr2", "cr3" to "image/x-canon-cr3",
         "nef" to "image/x-nikon-nef", "nrw" to "image/x-nikon-nrw", "arw" to "image/x-sony-arw",
@@ -80,7 +92,14 @@ object VaultFormatSupport {
 
     fun isKnownMajorFormat(fileName: String): Boolean = mimeTypeForName(fileName) != null
 
+    fun isImageMimeType(mimeType: String): Boolean =
+        mimeType.startsWith("image/", ignoreCase = true)
+
+    fun isVideoMimeType(mimeType: String): Boolean =
+        mimeType.startsWith("video/", ignoreCase = true)
+
     val commonFormatSummary: String =
         "Photos: JPG, PNG, WebP, GIF, BMP, HEIC/HEIF, AVIF, TIFF and RAW · " +
+            "Video: MP4, M4V, MOV, 3GP, MKV, WebM, AVI, MPEG, TS, OGV, WMV and FLV · " +
             "Documents: PDF, Word, Excel, PowerPoint, OpenDocument, RTF, TXT, CSV, HTML and EPUB"
 }
