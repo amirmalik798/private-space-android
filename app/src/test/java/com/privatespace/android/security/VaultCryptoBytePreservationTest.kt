@@ -141,6 +141,30 @@ class VaultCryptoBytePreservationTest {
     }
 
     @Test
+    fun chunkedFramesRejectCiphertextTamperingTruncationAndTrailingData() {
+        val original = payload(150_321)
+        val (encrypted, _) = roundTrip(original)
+
+        val damagedFrame = encrypted.copyOf().also {
+            // Eight-byte container marker, four-byte frame length, twelve-byte nonce.
+            it[24] = (it[24].toInt() xor 0x01).toByte()
+        }
+        val truncated = encrypted.copyOf(encrypted.size - 1)
+        val trailing = encrypted + byteArrayOf(0x55)
+
+        listOf(damagedFrame, truncated, trailing).forEach { candidate ->
+            assertThrows(Exception::class.java) {
+                VaultCrypto.decryptForTest(
+                    ByteArrayInputStream(candidate),
+                    ByteArrayOutputStream(),
+                    aad,
+                    key
+                )
+            }
+        }
+    }
+
+    @Test
     fun wrongRecordAadIsRejected() {
         val original = payload(2048)
         val (encrypted, _) = roundTrip(original)
