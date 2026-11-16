@@ -19,10 +19,6 @@ internal object VaultSessionPolicy {
         isResumed: Boolean
     ): Boolean = isUnlocked && isResumed
 
-    /** Lock when the vault is no longer visible; system pickers and configuration changes are exempt. */
-    fun shouldLockOnStop(
-        isChangingConfigurations: Boolean,
-        suppressAutoLockForPicker: Boolean
-    ): Boolean =
-        !isChangingConfigurations && !suppressAutoLockForPicker
+    /** Backgrounding never locks the vault; an actual Android keyguard lock does. */
+    fun shouldLockForScreenLock(isKeyguardLocked: Boolean): Boolean = isKeyguardLocked
 }

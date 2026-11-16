@@ -100,6 +100,37 @@ class PersistentVaultCryptoTest {
     }
 
     @Test
+    fun recoveryPayloadEncryptionUsesFreshExplicitNoncesAndRoundTrips() {
+        val input = """{"version":3,"topics":[],"files":[],"trash":[]}""".toByteArray()
+        val aad = "private-space:metadata:v2".toByteArray()
+        val dataKey = PersistentVaultCrypto.newDataKey()
+        val originalKey = dataKey.copyOf()
+        val first = ByteArrayOutputStream()
+        val second = ByteArrayOutputStream()
+
+        PersistentVaultCrypto.encrypt(ByteArrayInputStream(input), first, aad, dataKey)
+        PersistentVaultCrypto.encrypt(ByteArrayInputStream(input), second, aad, dataKey)
+
+        val firstBytes = first.toByteArray()
+        val secondBytes = second.toByteArray()
+        // Container format: 8-byte magic followed by the 12-byte GCM nonce.
+        assertNotEquals(
+            firstBytes.copyOfRange(8, 20).toList(),
+            secondBytes.copyOfRange(8, 20).toList()
+        )
+        assertArrayEquals(originalKey, dataKey)
+
+        for (encrypted in listOf(firstBytes, secondBytes)) {
+            val restored = ByteArrayOutputStream()
+            PersistentVaultCrypto.decrypt(ByteArrayInputStream(encrypted), restored, aad, dataKey)
+            assertArrayEquals(input, restored.toByteArray())
+            encrypted.fill(0)
+        }
+        dataKey.fill(0)
+        originalKey.fill(0)
+    }
+
+    @Test
     fun modifiedAuthenticationContextIsRejected() {
         val input = "private content".toByteArray()
         val dataKey = PersistentVaultCrypto.newDataKey()

@@ -198,16 +198,25 @@ object PersistentVaultCrypto {
         dataKey: ByteArray
     ): EncryptingOutputStream {
         require(dataKey.size == KEY_BYTES) { "Invalid recovery key size." }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(dataKey, "AES"))
-        cipher.updateAAD(aad)
-        val nonce = cipher.iv
-        require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
+
+        // Supply the nonce explicitly rather than retrieving Cipher.iv after
+        // initialization. This matches the proven recovery-key envelope path
+        // and keeps the exact serialized nonce under our control on OEM JCA providers.
+        val keyMaterial = dataKey.copyOf()
+        val nonce = ByteArray(NONCE_BYTES).also(SecureRandom()::nextBytes)
         try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.ENCRYPT_MODE,
+                SecretKeySpec(keyMaterial, "AES"),
+                GCMParameterSpec(TAG_BITS, nonce)
+            )
+            cipher.updateAAD(aad)
             output.write(PAYLOAD_MAGIC)
             output.write(nonce)
             return EncryptingOutputStream(output, cipher)
         } finally {
+            keyMaterial.fill(0)
             nonce.fill(0)
         }
     }
@@ -248,13 +257,18 @@ object PersistentVaultCrypto {
         val nonce = ByteArray(NONCE_BYTES)
         readExactly(input, nonce, 0, nonce.size)
 
+        val keyMaterial = dataKey.copyOf()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            SecretKeySpec(dataKey, "AES"),
-            GCMParameterSpec(TAG_BITS, nonce)
-        )
-        cipher.updateAAD(aad)
+        try {
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                SecretKeySpec(keyMaterial, "AES"),
+                GCMParameterSpec(TAG_BITS, nonce)
+            )
+            cipher.updateAAD(aad)
+        } finally {
+            keyMaterial.fill(0)
+        }
 
         val buffer = ByteArray(BUFFER_BYTES)
         try {

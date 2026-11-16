@@ -28,28 +28,12 @@ class VaultSessionPolicyTest {
     }
 
     @Test
-    fun switchingToAnotherAppLocksTheVault() {
-        assertTrue(
-            VaultSessionPolicy.shouldLockOnStop(
-                isChangingConfigurations = false,
-                suppressAutoLockForPicker = false
-            )
-        )
+    fun ordinaryBackgroundingDoesNotLockTheVault() {
+        assertFalse(VaultSessionPolicy.shouldLockForScreenLock(isKeyguardLocked = false))
     }
 
     @Test
-    fun systemPickerAndConfigurationChangeDoNotLockTheVault() {
-        assertFalse(
-            VaultSessionPolicy.shouldLockOnStop(
-                isChangingConfigurations = true,
-                suppressAutoLockForPicker = false
-            )
-        )
-        assertFalse(
-            VaultSessionPolicy.shouldLockOnStop(
-                isChangingConfigurations = false,
-                suppressAutoLockForPicker = true
-            )
-        )
+    fun actualScreenLockLocksTheVault() {
+        assertTrue(VaultSessionPolicy.shouldLockForScreenLock(isKeyguardLocked = true))
     }
 }
