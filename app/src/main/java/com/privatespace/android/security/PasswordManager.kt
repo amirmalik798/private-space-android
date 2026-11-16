@@ -11,6 +11,8 @@ object PasswordManager {
     private const val PREFS = "private_space_auth"
     private const val CURRENT_ROUNDS = 600_000
     private const val LEGACY_ROUNDS = 310_000
+    private const val CORRUPT_LOCKOUT_MS = 600_000L
+    private const val MISSING_LOCK_VALUE = Long.MIN_VALUE
     const val MIN_PASSWORD_LENGTH = 10
     const val MAX_PASSWORD_LENGTH = 128
 
@@ -90,13 +92,29 @@ object PasswordManager {
 
     fun lockedUntil(context: Context): Long {
         val store = prefs(context)
-        return store.getLong("lock_until", store.getLong("lock", 0L))
+        val current = runCatching {
+            store.getLong("lock_until", MISSING_LOCK_VALUE)
+        }.getOrNull() ?: return System.currentTimeMillis() + CORRUPT_LOCKOUT_MS
+        if (current != MISSING_LOCK_VALUE) return current.coerceAtLeast(0L)
+
+        val legacy = runCatching {
+            store.getLong("lock", MISSING_LOCK_VALUE)
+        }.getOrNull() ?: return System.currentTimeMillis() + CORRUPT_LOCKOUT_MS
+        return if (legacy == MISSING_LOCK_VALUE) 0L else legacy.coerceAtLeast(0L)
+    }
+
+    internal fun nextFailureCount(storedCount: Int?): Int {
+        // If the stored type/value is corrupted, assume the most restrictive
+        // prior count instead of resetting the persisted brute-force backoff.
+        val previous = storedCount?.takeIf { it >= 0 }?.coerceAtMost(999_999) ?: 10
+        return (previous + 1).coerceAtMost(1_000_000)
     }
 
     /** Persisted lockout: 30 seconds after attempt 5, 2 minutes after 8, 10 minutes after 11. */
     fun recordFailure(context: Context): Long {
         val store = prefs(context)
-        val count = (store.getInt("failures", 0) + 1).coerceAtMost(1_000_000)
+        val storedCount = runCatching { store.getInt("failures", 0) }.getOrNull()
+        val count = nextFailureCount(storedCount)
         val delay = when {
             count < 5 -> 0L
             count < 8 -> 30_000L

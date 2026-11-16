@@ -9,7 +9,6 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
@@ -3037,12 +3036,17 @@ private fun VaultMediaViewer(
                             }
                         }
                         else -> {
-                            Image(
-                                bitmap = imageState.bitmap!!.asImageBitmap(),
-                                contentDescription = file.displayName,
-                                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
-                                contentScale = ContentScale.Fit
-                            )
+                            val bitmap = imageState.bitmap
+                            if (bitmap != null && !bitmap.isRecycled) {
+                                Image(
+                                    bitmap = bitmap.asImageBitmap(),
+                                    contentDescription = file.displayName,
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            } else {
+                                Text("This photo is no longer available in the viewer.", color = Muted)
+                            }
                         }
                     }
                 }
@@ -3076,27 +3080,11 @@ private fun VaultMediaViewer(
     }
 }
 
-private fun decodeViewerImage(source: File, targetMaxDimension: Int): Bitmap? {
-    if (!source.isFile || source.length() <= 0L) return null
-    val bounds = BitmapFactory.Options().apply {
-        inJustDecodeBounds = true
-        inScaled = false
-    }
-    BitmapFactory.decodeFile(source.absolutePath, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-    val largestDimension = maxOf(bounds.outWidth, bounds.outHeight)
-    var sampleSize = 1
-    while (largestDimension / sampleSize > targetMaxDimension && sampleSize < (1 shl 29)) {
-        sampleSize *= 2
-    }
-    val options = BitmapFactory.Options().apply {
-        inJustDecodeBounds = false
-        inSampleSize = sampleSize
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
-    return BitmapFactory.decodeFile(source.absolutePath, options)
-}
+private fun decodeViewerImage(source: File, targetMaxDimension: Int): Bitmap? =
+    VaultThumbnailPolicy.decodeSampledBitmap(
+        source = source,
+        targetSizePx = targetMaxDimension.coerceIn(1024, 2048)
+    )
 
 @Composable
 private fun rememberVaultMediaPreview(

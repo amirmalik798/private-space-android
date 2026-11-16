@@ -2,7 +2,6 @@ package com.privatespace.android.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.net.Uri
@@ -610,46 +609,46 @@ class VaultRepository(context: Context) {
         if (!isImage && !isVideo) return null
 
         val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))
+        var previewBitmap: Bitmap? = null
         try {
             // decryptInto returns only after the AES-GCM authentication tag is verified.
             decryptInto(record, target)
-            return if (isImage) {
+            val preview = if (isImage) {
                 VaultMediaPreview(decodeImageThumbnail(target, maxDimensionPx))
             } else {
                 decodeVideoPreview(target, maxDimensionPx)
             }
+            previewBitmap = preview.bitmap
+            return preview
         } finally {
-            deleteTemporaryEntry(target)
+            try {
+                deleteTemporaryEntry(target)
+            } catch (cleanupFailure: Throwable) {
+                previewBitmap?.takeIf { !it.isRecycled }?.recycle()
+                throw cleanupFailure
+            }
         }
     }
 
     private fun decodeImageThumbnail(source: File, maxDimensionPx: Int): Bitmap? {
-        val bounds = BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-            inScaled = false
-        }
-        BitmapFactory.decodeFile(source.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-        val options = BitmapFactory.Options().apply {
-            inJustDecodeBounds = false
-            inScaled = false
-            inDither = false
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-            inSampleSize = VaultThumbnailPolicy.calculateSampleSize(
-                bounds.outWidth,
-                bounds.outHeight,
-                maxDimensionPx.coerceIn(32, 512)
-            )
-        }
-        return BitmapFactory.decodeFile(source.absolutePath, options)
+        val safeTarget = maxDimensionPx.coerceIn(32, 512)
+        return VaultThumbnailPolicy.decodeSampledBitmap(
+            source = source,
+            targetSizePx = safeTarget,
+            maximumPixels = safeTarget.toLong() * safeTarget.toLong()
+        )
     }
 
     private fun decodeVideoPreview(source: File, maxDimensionPx: Int): VaultMediaPreview {
-        val retriever = MediaMetadataRetriever()
+        val retriever = try {
+            MediaMetadataRetriever()
+        } catch (_: OutOfMemoryError) {
+            return VaultMediaPreview(null)
+        }
+        var durationMs: Long? = null
         try {
             retriever.setDataSource(source.absolutePath)
-            val durationMs = retriever.extractMetadata(
+            durationMs = retriever.extractMetadata(
                 MediaMetadataRetriever.METADATA_KEY_DURATION
             )?.toLongOrNull()?.takeIf { it >= 0L }
 
@@ -679,14 +678,20 @@ class VaultRepository(context: Context) {
                         -1L,
                         MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                     ) ?: return@runCatching null
-                    val target = VaultThumbnailPolicy.fitWithin(fullFrame.width, fullFrame.height, safeTarget)
-                    val scaled = Bitmap.createScaledBitmap(fullFrame, target.first, target.second, true)
-                    if (scaled !== fullFrame && !fullFrame.isRecycled) fullFrame.recycle()
-                    scaled
+                    var scaled: Bitmap? = null
+                    try {
+                        val target = VaultThumbnailPolicy.fitWithin(fullFrame.width, fullFrame.height, safeTarget)
+                        scaled = Bitmap.createScaledBitmap(fullFrame, target.first, target.second, true)
+                        scaled
+                    } finally {
+                        if (scaled !== fullFrame && !fullFrame.isRecycled) fullFrame.recycle()
+                    }
                 }
             }.getOrNull()
 
             return VaultMediaPreview(bitmap, durationMs)
+        } catch (_: OutOfMemoryError) {
+            return VaultMediaPreview(null, durationMs)
         } finally {
             runCatching { retriever.release() }
         }
