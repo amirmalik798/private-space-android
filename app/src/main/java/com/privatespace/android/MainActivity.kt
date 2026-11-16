@@ -113,6 +113,7 @@ private fun PrivateSpaceRoot() {
 
     var topics by remember { mutableStateOf<List<VaultTopic>>(emptyList()) }
     var vaultFiles by remember { mutableStateOf<List<VaultFile>>(emptyList()) }
+    var storageUsage by remember { mutableStateOf(VaultStorageUsage()) }
     var activeTopicId by remember { mutableStateOf<String?>(null) }
     var showCreateTopic by remember { mutableStateOf(false) }
     var topicName by remember { mutableStateOf("") }
@@ -137,6 +138,7 @@ private fun PrivateSpaceRoot() {
         activeTopicId = null
         topics = emptyList()
         vaultFiles = emptyList()
+        storageUsage = VaultStorageUsage()
         topicName = ""
         showCreateTopic = false
         showChangePassword = false
@@ -153,6 +155,7 @@ private fun PrivateSpaceRoot() {
         val snapshot = withContext(Dispatchers.IO) { repository.snapshot() }
         topics = snapshot.topics
         vaultFiles = snapshot.files
+        storageUsage = snapshot.storageUsage
     }
 
     LaunchedEffect(unlocked) {
@@ -165,6 +168,7 @@ private fun PrivateSpaceRoot() {
             }.onSuccess { snapshot ->
                 topics = snapshot.topics
                 vaultFiles = snapshot.files
+                storageUsage = snapshot.storageUsage
             }.onFailure {
                 authError = it.message ?: "The vault could not be opened safely."
                 toast(authError)
@@ -505,6 +509,13 @@ private fun PrivateSpaceRoot() {
                             "${topics.size} topics · ${vaultFiles.size} files",
                             color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold
                         )
+                        Text("ENCRYPTED DOCUMENT & PHOTO STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            formatBytes(storageUsage.totalBytes),
+                            color = Cyan,
+                            fontSize = 25.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                         OutlinedButton(onClick = { launchAllExport() }) {
                             Icon(Icons.Default.FolderZip, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
@@ -518,7 +529,11 @@ private fun PrivateSpaceRoot() {
             } else {
                 items(topics, key = { it.id }) { topic ->
                     val topicFiles = vaultFiles.filter { it.topicId == topic.id }
-                    val summary = TopicSummary(topic, topicFiles.size, topicFiles.sumOf { it.sizeBytes })
+                    val summary = TopicSummary(
+                        topic,
+                        topicFiles.size,
+                        storageUsage.topicBytes[topic.id] ?: 0L
+                    )
                     TopicCard(
                         summary = summary,
                         onOpen = { activeTopicId = topic.id },
@@ -536,6 +551,7 @@ private fun PrivateSpaceRoot() {
         TopicDialog(
             topic = activeTopic,
             files = vaultFiles.filter { it.topicId == activeTopic.id },
+            storageBytes = storageUsage.topicBytes[activeTopic.id] ?: 0L,
             onDismiss = { activeTopicId = null },
             onAdd = { launchImport(activeTopic.id) },
             onOpen = ::openVaultFile,
@@ -760,6 +776,7 @@ private fun TopicCard(
 private fun TopicDialog(
     topic: VaultTopic,
     files: List<VaultFile>,
+    storageBytes: Long,
     onDismiss: () -> Unit,
     onAdd: () -> Unit,
     onOpen: (VaultFile) -> Unit,
@@ -774,6 +791,7 @@ private fun TopicDialog(
             Column {
                 Text(topic.name)
                 Text("${files.size} files · Updated ${formatDate(topic.updatedAt)}", color = Muted, fontSize = 10.sp)
+                Text("${formatBytes(storageBytes)} encrypted storage", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
         },
         text = {
@@ -783,6 +801,17 @@ private fun TopicDialog(
                     Spacer(Modifier.width(6.dp))
                     Text("Add documents / photos")
                 }
+                Text(
+                    VaultFormatSupport.commonFormatSummary,
+                    color = Muted,
+                    fontSize = 9.sp,
+                    modifier = Modifier.padding(vertical = 5.dp)
+                )
+                Text(
+                    "All formats can be stored unchanged. Opening requires a compatible app on your device.",
+                    color = Muted,
+                    fontSize = 9.sp
+                )
                 OutlinedButton(onClick = onShareTopic, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Share, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
@@ -807,7 +836,7 @@ private fun TopicDialog(
                                         file.displayName, color = White, fontSize = 11.sp,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis
                                     )
-                                    Text(formatBytes(file.sizeBytes), color = Muted, fontSize = 9.sp)
+                                    Text("${formatBytes(file.sizeBytes)} original file size", color = Muted, fontSize = 9.sp)
                                 }
                                 IconButton(onClick = { onOpen(file) }) {
                                     Icon(Icons.Default.OpenInNew, contentDescription = "Open file")
