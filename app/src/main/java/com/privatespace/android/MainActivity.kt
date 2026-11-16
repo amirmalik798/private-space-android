@@ -151,6 +151,16 @@ private data class FilePickerTarget(
 private const val FILE_PICKER_PREFERENCES = "private_space_ui"
 private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_component"
 
+private enum class VaultReleaseAction { SHARE, EXPORT }
+
+private data class PendingVaultRelease(
+    val action: VaultReleaseAction,
+    val displayName: String,
+    val fileIds: List<String> = emptyList(),
+    val topicId: String? = null,
+    val allTopics: Boolean = false
+)
+
 @Composable
 private fun PrivateSpaceRoot() {
     val context = LocalContext.current
@@ -261,6 +271,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
     var pendingExportTopic by remember { mutableStateOf<String?>(null) }
     var pendingExportAll by remember { mutableStateOf(false) }
+    var pendingExportSelection by remember { mutableStateOf<List<String>?>(null) }
+    var pendingReleaseConfirmation by remember { mutableStateOf<PendingVaultRelease?>(null) }
 
     fun toast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
@@ -288,6 +300,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileToDelete = null
         pendingImportTopic = null
         pendingFilePickerTargets = null
+        pendingExportFile = null
+        pendingExportTopic = null
+        pendingExportAll = false
+        pendingExportSelection = null
+        pendingReleaseConfirmation = null
         activity?.suppressAutoLockForPicker = false
     }
 
@@ -434,8 +451,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         activity?.suppressAutoLockForPicker = false
         val topicId = pendingExportTopic
         val allTopics = pendingExportAll
+        val selectedFileIds = pendingExportSelection
         pendingExportTopic = null
         pendingExportAll = false
+        pendingExportSelection = null
         if (destination != null && unlocked) {
             scope.launch {
                 busy = true
@@ -443,11 +462,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     runCatching {
                         val folder = DocumentFile.fromTreeUri(context, destination)
                             ?: error("The selected folder is unavailable.")
-                        if (allTopics) repository.exportAllToFolder(folder)
-                        else repository.exportTopicToFolder(
-                            topicId ?: error("No topic was selected for export."),
-                            folder
-                        )
+                        when {
+                            allTopics -> repository.exportAllToFolder(folder)
+                            selectedFileIds != null -> repository.exportFilesToFolder(selectedFileIds, folder)
+                            else -> repository.exportTopicToFolder(
+                                topicId ?: error("No topic was selected for export."),
+                                folder
+                            )
+                        }
                     }
                 }
                 busy = false
@@ -557,8 +579,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun launchSingleFileExport(file: VaultFile) {
+    fun openSingleFileExportPicker(file: VaultFile) {
         pendingExportFile = file.id
+        pendingExportTopic = null
+        pendingExportAll = false
+        pendingExportSelection = null
         activity?.suppressAutoLockForPicker = true
         runCatching { exportFileLauncher.launch(file.displayName) }.onFailure {
             activity?.suppressAutoLockForPicker = false
@@ -567,7 +592,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun launchTopicExport(topicId: String) {
+    fun openTopicExportPicker(topicId: String) {
+        pendingExportFile = null
+        pendingExportSelection = null
         pendingExportTopic = topicId
         pendingExportAll = false
         activity?.suppressAutoLockForPicker = true
@@ -578,11 +605,27 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun launchAllExport() {
+    fun openSelectedFilesExportPicker(files: List<VaultFile>) {
+        if (files.isEmpty()) return
+        pendingExportFile = null
+        pendingExportTopic = null
+        pendingExportAll = false
+        pendingExportSelection = files.map { it.id }
+        activity?.suppressAutoLockForPicker = true
+        runCatching { exportFolderLauncher.launch(null) }.onFailure {
+            activity?.suppressAutoLockForPicker = false
+            pendingExportSelection = null
+            toast("Could not open the folder picker.")
+        }
+    }
+
+    fun openAllExportPicker() {
         if (topics.isEmpty()) {
             toast("There are no topics to export.")
             return
         }
+        pendingExportFile = null
+        pendingExportSelection = null
         pendingExportTopic = null
         pendingExportAll = true
         activity?.suppressAutoLockForPicker = true
@@ -700,6 +743,149 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             }.onFailure {
                 toast(it.message ?: "The topic could not be prepared for sharing.")
+            }
+        }
+    }
+
+    fun shareVaultFiles(files: List<VaultFile>) {
+        if (files.isEmpty()) return
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val prepared = mutableListOf<PreparedVaultFile>()
+                    try {
+                        files.forEach { file -> prepared += repository.prepareDecryptedFile(file.id) }
+                        prepared
+                    } catch (failure: Throwable) {
+                        prepared.forEach { item ->
+                            runCatching { item.file.parentFile?.deleteRecursively() }
+                        }
+                        throw failure
+                    }
+                }
+            }
+            busy = false
+            result.onSuccess { preparedFiles ->
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) {
+                    preparedFiles.forEach { item ->
+                        runCatching { item.file.parentFile?.deleteRecursively() }
+                    }
+                    return@onSuccess
+                }
+                try {
+                    val uris = preparedFiles.map { prepared ->
+                        FileProvider.getUriForFile(
+                            context, "com.privatespace.android.fileprovider", prepared.file
+                        )
+                    }
+                    val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE)
+                        .setType("*/*")
+                        .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    val clip = ClipData.newUri(
+                        context.contentResolver,
+                        "Private Space selected files",
+                        uris.first()
+                    )
+                    uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+                    sendIntent.clipData = clip
+                    context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
+                } catch (_: Exception) {
+                    preparedFiles.forEach { item ->
+                        runCatching { item.file.parentFile?.deleteRecursively() }
+                    }
+                    toast("Could not prepare the selected files for sharing.")
+                }
+            }.onFailure {
+                toast(it.message ?: "The selected files could not be prepared for sharing.")
+            }
+        }
+    }
+
+    fun requestFileReleaseConfirmation(file: VaultFile, action: VaultReleaseAction) {
+        pendingReleaseConfirmation = PendingVaultRelease(
+            action = action,
+            displayName = file.displayName,
+            fileIds = listOf(file.id)
+        )
+    }
+
+    fun requestFileSelectionConfirmation(files: List<VaultFile>, action: VaultReleaseAction) {
+        if (files.isEmpty()) {
+            toast("Select at least one file.")
+            return
+        }
+        pendingReleaseConfirmation = PendingVaultRelease(
+            action = action,
+            displayName = "${files.size} selected files",
+            fileIds = files.map { it.id }
+        )
+    }
+
+    fun requestTopicReleaseConfirmation(topicId: String, action: VaultReleaseAction) {
+        val topic = topics.firstOrNull { it.id == topicId } ?: run {
+            toast("This topic is no longer available.")
+            return
+        }
+        pendingReleaseConfirmation = PendingVaultRelease(
+            action = action,
+            displayName = "topic “${topic.name}”",
+            topicId = topic.id
+        )
+    }
+
+    fun launchSingleFileExport(file: VaultFile) {
+        requestFileReleaseConfirmation(file, VaultReleaseAction.EXPORT)
+    }
+
+    fun launchTopicExport(topicId: String) {
+        requestTopicReleaseConfirmation(topicId, VaultReleaseAction.EXPORT)
+    }
+
+    fun launchAllExport() {
+        if (topics.isEmpty()) {
+            toast("There are no topics to export.")
+            return
+        }
+        pendingReleaseConfirmation = PendingVaultRelease(
+            action = VaultReleaseAction.EXPORT,
+            displayName = "all topics",
+            allTopics = true
+        )
+    }
+
+    fun confirmPendingRelease() {
+        val pending = pendingReleaseConfirmation ?: return
+        pendingReleaseConfirmation = null
+        when {
+            pending.allTopics -> openAllExportPicker()
+            pending.topicId != null -> {
+                if (pending.action == VaultReleaseAction.SHARE) shareWholeTopic(pending.topicId)
+                else openTopicExportPicker(pending.topicId)
+            }
+            else -> {
+                val selected = pending.fileIds.mapNotNull { id ->
+                    vaultFiles.firstOrNull { it.id == id }
+                }
+                if (selected.size != pending.fileIds.size || selected.isEmpty()) {
+                    toast("One or more selected files are no longer available.")
+                    return
+                }
+                when (pending.action) {
+                    VaultReleaseAction.SHARE -> {
+                        if (selected.size == 1) shareVaultFile(selected.single())
+                        else shareVaultFiles(selected)
+                    }
+                    VaultReleaseAction.EXPORT -> {
+                        if (selected.size == 1) openSingleFileExportPicker(selected.single())
+                        else openSelectedFilesExportPicker(selected)
+                    }
+                }
             }
         }
     }
@@ -1012,11 +1198,86 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onDismiss = { activeTopicId = null },
             onAdd = { launchImport(activeTopic.id) },
             onOpen = ::openVaultFile,
-            onShare = ::shareVaultFile,
+            onShare = { requestFileReleaseConfirmation(it, VaultReleaseAction.SHARE) },
             onExport = ::launchSingleFileExport,
             onDelete = { fileToDelete = it },
-            onShareTopic = { shareWholeTopic(activeTopic.id) },
-            onExportTopic = { launchTopicExport(activeTopic.id) }
+            onShareSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.SHARE) },
+            onExportSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.EXPORT) },
+            onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
+            onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) }
+        )
+    }
+
+    pendingReleaseConfirmation?.let { pending ->
+        val isShare = pending.action == VaultReleaseAction.SHARE
+        val itemDescription = when {
+            pending.allTopics -> "all topics and their files"
+            pending.topicId != null -> "${pending.displayName} and all its files"
+            pending.fileIds.size == 1 -> "“${pending.displayName}”"
+            else -> pending.displayName
+        }
+        AlertDialog(
+            onDismissRequest = { if (!busy) pendingReleaseConfirmation = null },
+            title = {
+                Text(
+                    if (isShare) "Share outside Private Space?" else "Export outside Private Space?",
+                    color = White,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        if (isShare) {
+                            "You are about to share $itemDescription. The selected content will be made available to the app or recipient you choose."
+                        } else {
+                            "You are about to export $itemDescription. The exported copies will be saved outside Private Space protection."
+                        },
+                        color = Muted
+                    )
+                    Surface(
+                        color = Panel2,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Line)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Icon(
+                                if (isShare) Icons.Default.Share else Icons.Default.FileDownload,
+                                contentDescription = null,
+                                tint = Cyan
+                            )
+                            Text(
+                                "Nothing is shared or exported until you continue and complete the Android share or folder selection.",
+                                color = White,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !busy,
+                    onClick = ::confirmPendingRelease,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(if (isShare) "Continue to share" else "Continue to export")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = { pendingReleaseConfirmation = null }
+                ) {
+                    Text("Cancel")
+                }
+            },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = Panel
         )
     }
 
@@ -1789,9 +2050,21 @@ private fun TopicDialog(
     onShare: (VaultFile) -> Unit,
     onExport: (VaultFile) -> Unit,
     onDelete: (VaultFile) -> Unit,
+    onShareSelected: (List<VaultFile>) -> Unit,
+    onExportSelected: (List<VaultFile>) -> Unit,
     onShareTopic: () -> Unit,
     onExportTopic: () -> Unit
 ) {
+    var selectionMode by remember(topic.id) { mutableStateOf(false) }
+    var selectedFileIds by remember(topic.id) { mutableStateOf<Set<String>>(emptySet()) }
+    val selectedFiles = files.filter { it.id in selectedFileIds }
+
+    LaunchedEffect(files) {
+        val currentIds = files.map { it.id }.toSet()
+        selectedFileIds = selectedFileIds.intersect(currentIds)
+        if (selectedFileIds.isEmpty()) selectionMode = false
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1861,6 +2134,60 @@ private fun TopicDialog(
                     Spacer(Modifier.width(7.dp))
                     Text("Add files")
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = {
+                            selectionMode = !selectionMode
+                            selectedFileIds = emptySet()
+                        }
+                    ) {
+                        Icon(
+                            if (selectionMode) Icons.Default.Close else Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(if (selectionMode) "Cancel selection" else "Select files")
+                    }
+                }
+                if (selectionMode) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                selectedFileIds = if (selectedFileIds.size == files.size) emptySet()
+                                else files.map { it.id }.toSet()
+                            }
+                        ) {
+                            Text(if (selectedFileIds.size == files.size) "Clear" else "Select all")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        OutlinedButton(
+                            enabled = selectedFiles.isNotEmpty(),
+                            onClick = { onShareSelected(selectedFiles) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Share (${selectedFiles.size})")
+                        }
+                        Button(
+                            enabled = selectedFiles.isNotEmpty(),
+                            onClick = { onExportSelected(selectedFiles) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Export (${selectedFiles.size})")
+                        }
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                     OutlinedButton(
                         onClick = onShareTopic,
@@ -1906,7 +2233,16 @@ private fun TopicDialog(
                                 onOpen = { onOpen(file) },
                                 onShare = { onShare(file) },
                                 onExport = { onExport(file) },
-                                onDelete = { onDelete(file) }
+                                onDelete = { onDelete(file) },
+                                selectionMode = selectionMode,
+                                selected = file.id in selectedFileIds,
+                                onToggleSelection = {
+                                    selectedFileIds = if (file.id in selectedFileIds) {
+                                        selectedFileIds - file.id
+                                    } else {
+                                        selectedFileIds + file.id
+                                    }
+                                }
                             )
                         }
                     }
@@ -1999,22 +2335,6 @@ private fun VaultThumbnail(
                         modifier = Modifier.size(19.dp)
                     )
                 }
-                preview?.durationMs?.let { duration ->
-                    Surface(
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(3.dp),
-                        shape = RoundedCornerShape(5.dp),
-                        color = Color.Black.copy(alpha = 0.78f)
-                    ) {
-                        Text(
-                            formatDuration(duration),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                            color = Color.White,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
-                }
             }
         }
     }
@@ -2027,7 +2347,10 @@ private fun VaultFileRow(
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onToggleSelection: () -> Unit = {}
 ) {
     var menuExpanded by remember(file.id) { mutableStateOf(false) }
     val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
@@ -2045,15 +2368,33 @@ private fun VaultFileRow(
         else -> Icons.Default.InsertDriveFile
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier.fillMaxWidth().clickable {
+            if (selectionMode) onToggleSelection() else onOpen()
+        },
         shape = RoundedCornerShape(17.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF192840)),
-        border = BorderStroke(1.dp, White.copy(alpha = 0.035f))
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) Panel2 else Color(0xFF192840)
+        ),
+        border = BorderStroke(
+            if (selected) 1.5.dp else 1.dp,
+            if (selected) Cyan.copy(alpha = 0.85f) else White.copy(alpha = 0.035f)
+        )
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 5.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selectionMode) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onToggleSelection() },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = Cyan,
+                        checkmarkColor = Ink,
+                        uncheckedColor = Muted
+                    )
+                )
+            }
             VaultThumbnail(
                 file = file,
                 preview = mediaPreview,
@@ -2072,7 +2413,7 @@ private fun VaultFileRow(
                 }.joinToString("  ·  ")
                 Text(details, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Box {
+            if (!selectionMode) Box {
                 IconButton(onClick = { menuExpanded = true }) {
                     Icon(Icons.Default.MoreVert, contentDescription = "Actions for " + file.displayName, tint = Muted)
                 }

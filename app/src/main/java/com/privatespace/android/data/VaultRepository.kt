@@ -527,6 +527,30 @@ class VaultRepository(context: Context) {
     }
 
     /**
+     * Exports only the requested active files into a new folder in the selected
+     * destination. The folder is rolled back if any file fails to export.
+     */
+    @Synchronized
+    fun exportFilesToFolder(fileIds: List<String>, destination: DocumentFile) {
+        require(fileIds.isNotEmpty()) { "Select at least one file to export." }
+        require(fileIds.distinct().size == fileIds.size) {
+            "The export selection contains duplicate files."
+        }
+        val index = loadIndex()
+        val activeFiles = index.files.associateBy { it.id }
+        val records = fileIds.map { id ->
+            activeFiles[id] ?: error("A selected file is no longer available in the vault.")
+        }
+        val folder = createExactDirectory(destination, "private-space-selection")
+        try {
+            exportRecords(records, folder)
+        } catch (failure: Throwable) {
+            deleteDocumentTree(folder)
+            throw failure
+        }
+    }
+
+    /**
      * Exports the complete vault beneath a single, predictable root folder:
      * private-space-data/<topic name>/<original files>.
      *
