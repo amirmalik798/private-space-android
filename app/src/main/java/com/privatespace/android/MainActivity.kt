@@ -142,8 +142,81 @@ private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_compone
 @Composable
 private fun PrivateSpaceRoot() {
     val context = LocalContext.current
+    val applicationContext = context.applicationContext
+    var repository by remember { mutableStateOf<VaultRepository?>(null) }
+    var initializationError by remember { mutableStateOf<String?>(null) }
+    var retryCount by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(applicationContext, retryCount) {
+        repository = null
+        initializationError = null
+        try {
+            repository = withContext(Dispatchers.IO) {
+                VaultRepository.getInstance(applicationContext).also {
+                    it.ensureInitialized()
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            initializationError = failure.message ?: "Private Space could not prepare its encrypted vault."
+        }
+    }
+
+    val readyRepository = repository
+    if (readyRepository == null) {
+        VaultInitializationScreen(
+            error = initializationError,
+            onRetry = { retryCount++ }
+        )
+        return
+    }
+
+    PrivateSpaceContent(readyRepository)
+}
+
+@Composable
+private fun VaultInitializationScreen(
+    error: String?,
+    onRetry: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Ink),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, Line)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                if (error == null) {
+                    CircularProgressIndicator(color = Cyan)
+                    Text("Preparing your encrypted vault…", color = White, fontWeight = FontWeight.SemiBold)
+                } else {
+                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Red, modifier = Modifier.size(34.dp))
+                    Text("Vault initialization failed", color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(error, color = Muted, fontSize = 13.sp)
+                    Button(onClick = onRetry, shape = RoundedCornerShape(12.dp)) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(7.dp))
+                        Text("Retry")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivateSpaceContent(repository: VaultRepository) {
+    val context = LocalContext.current
     val activity = remember(context) { context.findMainActivity() }
-    val repository = remember { VaultRepository.getInstance(context.applicationContext) }
     val scope = rememberCoroutineScope()
 
     var unlocked by remember { mutableStateOf(false) }
