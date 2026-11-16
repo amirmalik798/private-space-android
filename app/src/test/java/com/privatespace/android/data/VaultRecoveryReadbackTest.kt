@@ -123,4 +123,43 @@ class VaultRecoveryReadbackTest {
             assertArrayEquals(byteArrayOf(0, 0, 0, 0), bytes)
         }
     }
+    @Test
+    fun readsBoundedBytesWithoutDependingOnProviderReportedLength() {
+        val expected = byteArrayOf(9, 8, 7, 6, 5, 4)
+        var offset = 0
+        var returnZeroOnce = true
+        val providerStream = object : java.io.InputStream() {
+            override fun read(): Int =
+                if (offset >= expected.size) -1 else expected[offset++].toInt() and 0xff
+
+            override fun read(buffer: ByteArray, start: Int, length: Int): Int {
+                if (returnZeroOnce) {
+                    returnZeroOnce = false
+                    return 0
+                }
+                if (offset >= expected.size) return -1
+                val count = minOf(2, length, expected.size - offset)
+                System.arraycopy(expected, offset, buffer, start, count)
+                offset += count
+                return count
+            }
+        }
+
+        val actual = PersistentVaultStore.readBoundedBytes(providerStream, 16)
+
+        assertArrayEquals(expected, actual)
+    }
+
+    @Test
+    fun boundedProviderReadRejectsOversizedEncryptedRecord() {
+        val failure = assertThrows(IOException::class.java) {
+            PersistentVaultStore.readBoundedBytes(
+                java.io.ByteArrayInputStream(ByteArray(9) { it.toByte() }),
+                8
+            )
+        }
+
+        assertTrue(failure.message.orEmpty().contains("exceeds its supported size"))
+    }
+
 }

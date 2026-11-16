@@ -33,9 +33,36 @@ internal class PersistentVaultStore private constructor(
         val generation: Long
     )
 
-    private class DiscardingOutputStream : OutputStream() {
-        override fun write(value: Int) = Unit
-        override fun write(bytes: ByteArray, offset: Int, length: Int) = Unit
+    private class CountingDiscardingOutputStream(
+        private val maximumBytes: Long
+    ) : OutputStream() {
+        var bytesWritten: Long = 0L
+            private set
+
+        fun resetCount() {
+            bytesWritten = 0L
+        }
+
+        private fun record(count: Long) {
+            val updated = try {
+                Math.addExact(bytesWritten, count)
+            } catch (failure: ArithmeticException) {
+                throw IOException("The recovered payload size is invalid.", failure)
+            }
+            if (updated > maximumBytes) {
+                throw IOException("The recovered payload exceeds its recorded size.")
+            }
+            bytesWritten = updated
+        }
+
+        override fun write(value: Int) {
+            record(1L)
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            require(offset >= 0 && length >= 0 && offset <= bytes.size - length)
+            if (length > 0) record(length.toLong())
+        }
     }
 
     private class WipingByteArrayOutputStream(initialSize: Int) : ByteArrayOutputStream(initialSize) {
@@ -78,14 +105,19 @@ internal class PersistentVaultStore private constructor(
                 }
             }
 
-            val expectedContainerBytes = Math.addExact(expectedPlainBytes, 36L)
-            check(target.length() == expectedContainerBytes) {
-                "The encrypted recovery file was not completely written."
-            }
-            // Authenticate the bytes as returned by the selected document provider.
-            // This streams to a discard sink: it creates no plaintext file or duplicate.
+            // Do not trust DocumentFile.length(): some SAF providers report an
+            // unknown or stale size for a file immediately after writing it.
+            // Authenticated decryption plus the exact plaintext byte count verifies
+            // completeness without relying on provider metadata or making a copy.
+            val verifiedOutput = CountingDiscardingOutputStream(expectedPlainBytes)
             VaultRecoveryReadback.verifyWithRetry(
-                verify = { decryptPayload(id, DiscardingOutputStream(), aad) }
+                verify = {
+                    verifiedOutput.resetCount()
+                    decryptPayload(id, verifiedOutput, aad)
+                    if (verifiedOutput.bytesWritten != expectedPlainBytes) {
+                        throw IOException("The encrypted recovery file contains an incomplete payload.")
+                    }
+                }
             )
         } catch (failure: Throwable) {
             runCatching { target.delete() }
@@ -358,33 +390,9 @@ internal class PersistentVaultStore private constructor(
     }
 
     private fun readDocumentBytes(document: DocumentFile, maximumBytes: Int): ByteArray {
-        val reportedLength = document.length()
-        require(reportedLength in 1..maximumBytes.toLong()) {
-            "An encrypted recovery record has an invalid size."
-        }
         val input = resolver.openInputStream(document.uri)
             ?: throw IOException("Could not read an encrypted recovery record.")
-        return input.use { stream ->
-            val output = ByteArrayOutputStream(reportedLength.toInt())
-            val buffer = ByteArray(32 * 1024)
-            try {
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count < 0) break
-                    require(output.size().toLong() + count <= maximumBytes) {
-                        "An encrypted recovery record exceeds its supported size."
-                    }
-                    output.write(buffer, 0, count)
-                    buffer.fill(0, 0, count)
-                }
-                if (output.size().toLong() != reportedLength) {
-                    throw IOException("The storage provider returned an incomplete encrypted recovery record.")
-                }
-                output.toByteArray()
-            } finally {
-                buffer.fill(0)
-            }
-        }
+        return input.use { stream -> readBoundedBytes(stream, maximumBytes) }
     }
 
     companion object {
@@ -593,31 +601,59 @@ internal class PersistentVaultStore private constructor(
             document: DocumentFile,
             maximumBytes: Int
         ): ByteArray {
-            val length = document.length()
-            require(length in 1..maximumBytes.toLong()) { "The recovery-key envelope is invalid." }
             val input = resolver.openInputStream(document.uri)
                 ?: throw IOException("Could not read the recovery-key envelope.")
-            return input.use { stream ->
-                val bytes = stream.readBytes()
-                require(bytes.size <= maximumBytes) { "The recovery-key envelope is too large." }
-                require(bytes.size.toLong() == length) {
-                    "The storage provider returned an incomplete recovery-key envelope."
-                }
-                bytes
-            }
+            return input.use { stream -> readBoundedBytes(stream, maximumBytes) }
         }
 
         private fun readBytes(context: Context, document: DocumentFile, maximumBytes: Int): ByteArray {
-            val length = document.length()
-            require(length in 1..maximumBytes.toLong()) { "The recovery-key envelope is invalid." }
             val input = context.contentResolver.openInputStream(document.uri)
                 ?: throw IOException("Could not read the recovery-key envelope.")
-            return input.use { it.readBytes().also { bytes ->
-                require(bytes.size <= maximumBytes) { "The recovery-key envelope is too large." }
-                require(bytes.size.toLong() == length) {
-                    "The storage provider returned an incomplete recovery-key envelope."
+            return input.use { stream -> readBoundedBytes(stream, maximumBytes) }
+        }
+
+        /**
+         * Reads the provider's actual stream instead of trusting COLUMN_SIZE /
+         * DocumentFile.length(), which may be stale or unknown for newly-written
+         * SAF documents. The hard bound prevents a faulty provider from exhausting
+         * memory; authentication is performed by the caller after this read.
+         */
+        internal fun readBoundedBytes(input: InputStream, maximumBytes: Int): ByteArray {
+            require(maximumBytes > 0) { "Invalid encrypted-record size limit." }
+            val output = WipingByteArrayOutputStream(minOf(maximumBytes, 32 * 1024))
+            val buffer = ByteArray(32 * 1024)
+            try {
+                while (true) {
+                    val count = input.read(buffer, 0, buffer.size)
+                    when {
+                        count < 0 -> break
+                        count == 0 -> {
+                            // Defensive handling for providers that return zero
+                            // for a non-empty read instead of making progress.
+                            val single = input.read()
+                            if (single < 0) break
+                            if (output.size() >= maximumBytes) {
+                                throw IOException("An encrypted recovery record exceeds its supported size.")
+                            }
+                            output.write(single)
+                        }
+                        else -> {
+                            if (output.size().toLong() + count.toLong() > maximumBytes.toLong()) {
+                                throw IOException("An encrypted recovery record exceeds its supported size.")
+                            }
+                            output.write(buffer, 0, count)
+                            buffer.fill(0, 0, count)
+                        }
+                    }
                 }
-            } }
+                if (output.size() == 0) {
+                    throw IOException("The storage provider returned an empty encrypted recovery record.")
+                }
+                return output.toByteArray()
+            } finally {
+                buffer.fill(0)
+                output.wipe()
+            }
         }
 
         private fun requireValidId(id: String) {
