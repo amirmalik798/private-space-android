@@ -13,6 +13,7 @@ internal object VaultRecoveryReadback {
 
     fun verifyWithRetry(
         verify: () -> Unit,
+        operation: String = "encrypted recovery data",
         attempts: Int = DEFAULT_ATTEMPTS,
         initialDelayMs: Long = DEFAULT_INITIAL_DELAY_MS,
         pause: (Long) -> Unit = ::pauseForProvider
@@ -34,7 +35,7 @@ internal object VaultRecoveryReadback {
         }
 
         throw IOException(
-            "Android could not verify the encrypted recovery data in the selected folder. " +
+            "Android could not verify $operation in the selected folder. " +
                 "Choose a writable folder on this device and try again. Your original vault has not been changed.",
             lastFailure
         )
@@ -43,6 +44,7 @@ internal object VaultRecoveryReadback {
     fun readVerifiedBytes(
         read: () -> ByteArray,
         verify: (ByteArray) -> Boolean,
+        operation: String = "encrypted recovery data",
         attempts: Int = DEFAULT_ATTEMPTS,
         initialDelayMs: Long = DEFAULT_INITIAL_DELAY_MS,
         pause: (Long) -> Unit = ::pauseForProvider
@@ -74,7 +76,7 @@ internal object VaultRecoveryReadback {
         }
 
         throw IOException(
-            "Android could not verify the encrypted recovery data in the selected folder. " +
+            "Android could not verify $operation in the selected folder. " +
                 "Choose a writable folder on this device and try again. Your original vault has not been changed.",
             lastFailure
         )

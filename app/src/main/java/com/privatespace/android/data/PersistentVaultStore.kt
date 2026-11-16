@@ -111,6 +111,7 @@ internal class PersistentVaultStore private constructor(
             // completeness without relying on provider metadata or making a copy.
             val verifiedOutput = CountingDiscardingOutputStream(expectedPlainBytes)
             VaultRecoveryReadback.verifyWithRetry(
+                operation = "the encrypted recovery file",
                 verify = {
                     verifiedOutput.resetCount()
                     decryptPayload(id, verifiedOutput, aad)
@@ -168,6 +169,7 @@ internal class PersistentVaultStore private constructor(
             }
 
             val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
+                operation = "the encrypted recovery index",
                 read = { readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD) },
                 verify = { candidate ->
                     val verified = WipingByteArrayOutputStream(clearIndex.size)
@@ -293,6 +295,7 @@ internal class PersistentVaultStore private constructor(
                     output.use { it.write(envelope); it.flush() }
 
                     val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        operation = "the backup recovery-key envelope",
                         read = { readDocumentBytes(document, MAX_ENVELOPE_BYTES) },
                         verify = { candidate ->
                             val verified = PersistentVaultCrypto.unwrapDataKey(
@@ -448,6 +451,7 @@ internal class PersistentVaultStore private constructor(
                         ?: throw IOException("Could not write the recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
                     val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        operation = "the initial recovery-key envelope",
                         read = { readBytes(context, keyDocument, MAX_ENVELOPE_BYTES) },
                         verify = { candidate ->
                             val verified = PersistentVaultCrypto.unwrapDataKey(
@@ -573,6 +577,7 @@ internal class PersistentVaultStore private constructor(
                         ?: throw IOException("Could not write the backup recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
                     val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        operation = "the backup recovery-key envelope",
                         read = { readBytesFromResolver(resolver, document, MAX_ENVELOPE_BYTES) },
                         verify = { candidate ->
                             val verified = PersistentVaultCrypto.unwrapDataKey(
