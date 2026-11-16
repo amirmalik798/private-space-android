@@ -691,10 +691,11 @@ class VaultRepository(context: Context) {
     }
 
     /**
-     * Creates an authenticated in-memory image/video preview from a short-lived
-     * private plaintext file. No preview or duration is written to the index.
-     * The temporary file is removed even when decoding fails; encrypted records
-     * and original bytes are never modified.
+     * Creates an authenticated in-memory media preview. Current-format videos
+     * are read through an authenticated random-access source without creating a
+     * full plaintext copy; images and small legacy videos use private staging.
+     * No preview or duration is written to the index, and encrypted originals
+     * are never modified.
      */
     @Synchronized
     fun loadMediaPreview(id: String, maxDimensionPx: Int): VaultMediaPreview? {
