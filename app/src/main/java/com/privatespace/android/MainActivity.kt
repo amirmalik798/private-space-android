@@ -2,6 +2,7 @@ package com.privatespace.android
 
 import android.app.Activity
 import android.app.KeyguardManager
+import android.graphics.Bitmap
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
@@ -17,6 +18,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
@@ -34,15 +36,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -124,7 +132,12 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         isResumedForVault = false
         super.onStop()
-        if (!isChangingConfigurations && !suppressAutoLockForPicker) {
+        if (VaultSessionPolicy.shouldLockOnStop(
+                isFinishing = isFinishing,
+                isChangingConfigurations = isChangingConfigurations,
+                suppressAutoLockForPicker = suppressAutoLockForPicker
+            )
+        ) {
             onVaultShouldLock?.invoke()
         }
     }
@@ -181,7 +194,7 @@ private fun VaultInitializationScreen(
     onRetry: () -> Unit
 ) {
     Box(
-        modifier = Modifier.fillMaxSize().background(Ink),
+        modifier = Modifier.fillMaxSize().background(Ink).windowInsetsPadding(WindowInsets.safeDrawing),
         contentAlignment = Alignment.Center
     ) {
         Card(
@@ -235,6 +248,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var activeTopicId by remember { mutableStateOf<String?>(null) }
     var topicQuery by remember { mutableStateOf("") }
     var showSecurityInfo by remember { mutableStateOf(false) }
+    var topMenuExpanded by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
     var trashEntryToPermanentlyDelete by remember { mutableStateOf<VaultTrashEntry?>(null) }
     var showCreateTopic by remember { mutableStateOf(false) }
@@ -261,6 +275,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         activeTopicId = null
         topicQuery = ""
         showSecurityInfo = false
+        topMenuExpanded = false
         topics = emptyList()
         vaultFiles = emptyList()
         trashEntries = emptyList()
@@ -603,7 +618,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         .setDataAndType(uri, prepared.mimeType)
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     viewIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                    context.startActivity(Intent.createChooser(viewIntent, "Open with"))
+                    context.startActivity(viewIntent)
                 } catch (failure: Exception) {
                     runCatching { prepared.file.parentFile?.deleteRecursively() }
                     toast("No compatible app could open this file.")
@@ -774,25 +789,36 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     Scaffold(
         containerColor = Ink,
         topBar = {
-            Surface(color = Ink, tonalElevation = 0.dp) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars),
+                color = Ink,
+                tonalElevation = 0.dp
+            ) {
                 Column {
                     Row(
-                        Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
+                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Surface(
-                            modifier = Modifier.size(46.dp),
-                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.size(44.dp),
+                            shape = RoundedCornerShape(15.dp),
                             color = Blue.copy(alpha = 0.18f),
                             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(25.dp))
+                                Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(24.dp))
                             }
                         }
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text("Private Space", fontWeight = FontWeight.Bold, color = White, fontSize = 19.sp)
+                            Text(
+                                "Private Space",
+                                fontWeight = FontWeight.Bold,
+                                color = White,
+                                fontSize = 18.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(12.dp))
                                 Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
@@ -805,14 +831,42 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 tint = if (trashEntries.isNotEmpty()) Cyan else Muted
                             )
                         }
-                        IconButton(onClick = { showSecurityInfo = true }) {
-                            Icon(Icons.Default.Info, contentDescription = "Security", tint = Muted)
+                        Box {
+                            IconButton(onClick = { topMenuExpanded = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Muted)
+                            }
+                            DropdownMenu(
+                                expanded = topMenuExpanded,
+                                onDismissRequest = { topMenuExpanded = false },
+                                containerColor = Panel
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Security information") },
+                                    leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                    onClick = {
+                                        topMenuExpanded = false
+                                        showSecurityInfo = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Change password") },
+                                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                                    onClick = {
+                                        topMenuExpanded = false
+                                        showChangePassword = true
+                                    }
+                                )
+                            }
                         }
-                        IconButton(onClick = { showChangePassword = true }) {
-                            Icon(Icons.Default.Key, contentDescription = "Change password", tint = Muted)
-                        }
-                        IconButton(onClick = { lockVault() }) {
-                            Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
+                        Surface(
+                            modifier = Modifier.size(42.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            color = Blue.copy(alpha = 0.24f),
+                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                        ) {
+                            IconButton(onClick = { lockVault() }, modifier = Modifier.fillMaxSize()) {
+                                Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
+                            }
                         }
                     }
                     HorizontalDivider(color = Line.copy(alpha = 0.55f), thickness = 0.7.dp)
@@ -924,6 +978,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     if (showTrash) {
         TrashDialog(
             entries = trashEntries,
+            repository = repository,
             busy = busy,
             onDismiss = { showTrash = false },
             onRestore = { entry ->
@@ -953,6 +1008,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         TopicDialog(
             topic = activeTopic,
             files = vaultFiles.filter { it.topicId == activeTopic.id },
+            repository = repository,
             storageBytes = storageUsage.topicBytes[activeTopic.id] ?: 0L,
             onDismiss = { activeTopicId = null },
             onAdd = { launchImport(activeTopic.id) },
@@ -1267,50 +1323,49 @@ private fun AuthScreen(
     val locked = lockUntil > now
     val secondsRemaining = ((lockUntil - now).coerceAtLeast(0L) + 999L) / 1_000L
 
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.verticalGradient(listOf(Color(0xFF101D32), Ink, Color(0xFF070B13)))
-        ),
-        contentAlignment = Alignment.Center
+    BoxWithConstraints(
+        Modifier.fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF101D32), Ink, Color(0xFF070B13))))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding()
     ) {
         Column(
-            Modifier.fillMaxSize()
+            Modifier.fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 36.dp),
+                .heightIn(min = maxHeight)
+                .padding(horizontal = 24.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             Surface(
-                modifier = Modifier.size(72.dp),
-                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.size(68.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = Blue.copy(alpha = 0.16f)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = Cyan, modifier = Modifier.size(34.dp))
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = Cyan, modifier = Modifier.size(32.dp))
                 }
             }
-            Spacer(Modifier.height(18.dp))
-            Text("Private Space", color = White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(16.dp))
+            Text("Private Space", color = White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(24.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth().widthIn(max = 460.dp),
-                shape = RoundedCornerShape(28.dp),
+                shape = RoundedCornerShape(26.dp),
                 colors = CardDefaults.cardColors(containerColor = Panel),
                 border = BorderStroke(1.dp, Line.copy(alpha = 0.9f))
             ) {
                 Column(
-                    Modifier.fillMaxWidth().padding(22.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    Modifier.fillMaxWidth().padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(13.dp)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            if (setup) "Create your vault password" else "Welcome back",
-                            color = White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 21.sp
-                        )
-                    }
+                    Text(
+                        if (setup) "Create your vault password" else "Welcome back",
+                        color = White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 21.sp
+                    )
                     OutlinedTextField(
                         value = password,
                         onValueChange = onPassword,
@@ -1388,7 +1443,7 @@ private fun AuthScreen(
                         onClick = onSubmit,
                         enabled = !busy && !locked && password.isNotEmpty() &&
                             (!setup || confirmation.isNotEmpty()),
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(15.dp)
                     ) {
                         if (busy) {
@@ -1407,7 +1462,15 @@ private fun AuthScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Developed by: Amir Malik (2026)",
+                color = Muted,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(12.dp))
         }
     }
 }
@@ -1523,9 +1586,9 @@ private fun OverviewMetric(
                 }
             }
             Spacer(Modifier.width(10.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(value, color = White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(value, color = White, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -1719,6 +1782,7 @@ private fun TopicCard(
 private fun TopicDialog(
     topic: VaultTopic,
     files: List<VaultFile>,
+    repository: VaultRepository,
     storageBytes: Long,
     onDismiss: () -> Unit,
     onAdd: () -> Unit,
@@ -1734,7 +1798,7 @@ private fun TopicDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
+            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
             shape = RoundedCornerShape(27.dp),
             color = Panel,
             border = BorderStroke(1.dp, Line)
@@ -1839,6 +1903,7 @@ private fun TopicDialog(
                         items(files, key = { it.id }) { file ->
                             VaultFileRow(
                                 file = file,
+                                repository = repository,
                                 onOpen = { onOpen(file) },
                                 onShare = { onShare(file) },
                                 onExport = { onExport(file) },
@@ -1855,8 +1920,60 @@ private fun TopicDialog(
 }
 
 @Composable
+private fun VaultThumbnail(
+    file: VaultFile,
+    repository: VaultRepository,
+    modifier: Modifier = Modifier,
+    fallbackIcon: ImageVector,
+    isPhoto: Boolean
+) {
+    val targetSizePx = with(LocalDensity.current) { 112.dp.roundToPx().coerceAtLeast(64) }
+    val thumbnail by produceState<Bitmap?>(null, file.id, file.mimeType, targetSizePx) {
+        value = if (isPhoto) {
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.loadImageThumbnail(file.id, targetSizePx)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+    }
+    val shape = RoundedCornerShape(13.dp)
+    Surface(
+        modifier = modifier,
+        shape = shape,
+        color = if (isPhoto) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            val preview = thumbnail
+            if (preview != null && !preview.isRecycled) {
+                Image(
+                    bitmap = preview.asImageBitmap(),
+                    contentDescription = "Preview of ${file.displayName}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Icon(
+                    fallbackIcon,
+                    contentDescription = if (isPhoto) "Photo" else "Document",
+                    tint = if (isPhoto) Green else Cyan,
+                    modifier = Modifier.size(23.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun VaultFileRow(
     file: VaultFile,
+    repository: VaultRepository,
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onExport: () -> Unit,
@@ -1884,19 +2001,13 @@ private fun VaultFileRow(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 5.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                modifier = Modifier.size(42.dp),
-                shape = RoundedCornerShape(13.dp),
-                color = if (isPhoto) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        fileIcon,
-                        contentDescription = if (isPhoto) "Photo" else "Document",
-                        tint = if (isPhoto) Green else Cyan
-                    )
-                }
-            }
+            VaultThumbnail(
+                file = file,
+                repository = repository,
+                modifier = Modifier.size(46.dp),
+                fallbackIcon = fileIcon,
+                isPhoto = isPhoto
+            )
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1942,6 +2053,7 @@ private fun VaultFileRow(
 @Composable
 private fun TrashDialog(
     entries: List<VaultTrashEntry>,
+    repository: VaultRepository,
     busy: Boolean,
     onDismiss: () -> Unit,
     onRestore: (VaultTrashEntry) -> Unit,
@@ -1952,7 +2064,7 @@ private fun TrashDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
+            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
             shape = RoundedCornerShape(27.dp),
             color = Panel,
             border = BorderStroke(1.dp, Line)
@@ -2003,6 +2115,7 @@ private fun TrashDialog(
                         items(entries, key = { it.file.id }) { entry ->
                             TrashFileRow(
                                 entry = entry,
+                                repository = repository,
                                 enabled = !busy,
                                 onRestore = { onRestore(entry) },
                                 onDeletePermanently = { onDeletePermanently(entry) }
@@ -2020,6 +2133,7 @@ private fun TrashDialog(
 @Composable
 private fun TrashFileRow(
     entry: VaultTrashEntry,
+    repository: VaultRepository,
     enabled: Boolean,
     onRestore: () -> Unit,
     onDeletePermanently: () -> Unit
@@ -2034,19 +2148,13 @@ private fun TrashFileRow(
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    modifier = Modifier.size(42.dp),
-                    shape = RoundedCornerShape(13.dp),
-                    color = if (isPhoto) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            if (isPhoto) Icons.Default.Image else Icons.Default.InsertDriveFile,
-                            contentDescription = if (isPhoto) "Photo" else "Document",
-                            tint = if (isPhoto) Green else Cyan
-                        )
-                    }
-                }
+                VaultThumbnail(
+                    file = file,
+                    repository = repository,
+                    modifier = Modifier.size(48.dp),
+                    fallbackIcon = if (isPhoto) Icons.Default.Image else Icons.Default.InsertDriveFile,
+                    isPhoto = isPhoto
+                )
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
