@@ -86,7 +86,7 @@ internal object ChunkedAesGcm {
             cipher.init(Cipher.ENCRYPT_MODE, key)
             val nonce = cipher.iv
             require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
-            val encrypted = try {
+            val encryptedLength = try {
                 updateFrameAad(cipher, aad, magic, index, length, cumulativeBytes)
                 cipher.doFinal(clear, 0, length, encryptedBuffer, 0)
             } catch (failure: Throwable) {
@@ -94,6 +94,7 @@ internal object ChunkedAesGcm {
                 throw failure
             }
             try {
+                check(encryptedLength == length + TAG_BYTES) { "Unexpected AES-GCM frame length." }
                 writeInt(output, length)
                 output.write(nonce)
                 output.write(encryptedBuffer, 0, length + TAG_BYTES)
@@ -114,7 +115,7 @@ internal object ChunkedAesGcm {
             cipher.init(Cipher.ENCRYPT_MODE, key)
             val nonce = cipher.iv
             require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
-            val terminal = try {
+            val terminalLength = try {
                 updateFrameAad(cipher, aad, magic, frameIndex, 0, totalBytes)
                 cipher.doFinal(ByteArray(0), 0, 0, terminalBuffer, 0)
             } catch (failure: Throwable) {
@@ -122,6 +123,7 @@ internal object ChunkedAesGcm {
                 throw failure
             }
             try {
+                check(terminalLength == TAG_BYTES) { "Unexpected AES-GCM terminal frame length." }
                 writeInt(output, 0)
                 output.write(nonce)
                 output.write(terminalBuffer, 0, TAG_BYTES)
