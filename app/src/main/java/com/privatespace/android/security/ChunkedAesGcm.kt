@@ -5,7 +5,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.SecretKey
@@ -25,7 +24,6 @@ internal object ChunkedAesGcm {
     private const val TAG_BYTES = 16
     private const val LENGTH_BYTES = 4
     private const val TAG_BITS = TAG_BYTES * 8
-    private val random = SecureRandom()
 
     class EncryptingOutputStream internal constructor(
         private val output: OutputStream,
@@ -79,14 +77,18 @@ internal object ChunkedAesGcm {
         }
 
         private fun writeFrame(clear: ByteArray, length: Int, index: Long, cumulativeBytes: Long) {
-            val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            // Let Android Keystore generate the nonce: keys configured with
+            // randomizedEncryptionRequired must not accept caller-supplied IVs.
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val nonce = cipher.iv
+            require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
             val encrypted = try {
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
                 updateFrameAad(cipher, aad, magic, index, length, cumulativeBytes)
                 cipher.doFinal(clear, 0, length)
-            } finally {
-                // The nonce is serialized below; keep it until the write completes.
+            } catch (failure: Throwable) {
+                nonce.fill(0)
+                throw failure
             }
             try {
                 writeInt(output, length)
@@ -106,10 +108,11 @@ internal object ChunkedAesGcm {
         fun finish() {
             check(!finished) { "Encryption stream is already finalized." }
             emitFrame()
-            val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val nonce = cipher.iv
+            require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
             val terminal = try {
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
                 updateFrameAad(cipher, aad, magic, frameIndex, 0, totalBytes)
                 cipher.doFinal(ByteArray(0))
             } catch (failure: Throwable) {
