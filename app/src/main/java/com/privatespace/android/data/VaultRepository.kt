@@ -3,6 +3,8 @@ package com.privatespace.android.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.os.Build
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.AtomicFile
@@ -340,45 +342,102 @@ class VaultRepository(context: Context) {
     }
 
     /**
-     * Builds a small in-memory preview for an image without changing the encrypted
-     * record. Decryption completes (including AES-GCM tag verification) before the
-     * decoder sees the bytes. The private plaintext staging file is always removed.
-     * Records in Trash are supported so Recycle Bin previews work as well.
+     * Creates an authenticated in-memory image/video preview from a short-lived
+     * private plaintext file. No preview or duration is written to the index.
+     * The temporary file is removed even when decoding fails; encrypted records
+     * and original bytes are never modified.
      */
     @Synchronized
-    fun loadImageThumbnail(id: String, maxDimensionPx: Int): Bitmap? {
+    fun loadMediaPreview(id: String, maxDimensionPx: Int): VaultMediaPreview? {
         val index = loadIndex()
         val record = index.files.firstOrNull { it.id == id }
             ?: index.trash.firstOrNull { it.file.id == id }?.file
             ?: return null
-        if (!record.mimeType.startsWith("image/", ignoreCase = true)) return null
 
-        val target = File(staging, "thumbnail-${UUID.randomUUID()}.tmp")
+        val isImage = VaultFormatSupport.isImageMimeType(record.mimeType)
+        val isVideo = VaultFormatSupport.isVideoMimeType(record.mimeType)
+        if (!isImage && !isVideo) return null
+
+        val target = File(staging, "media-preview-${UUID.randomUUID()}.tmp")
         try {
+            // decryptInto returns only after the AES-GCM authentication tag is verified.
             decryptInto(record, target)
-
-            val bounds = BitmapFactory.Options().apply {
-                inJustDecodeBounds = true
-                inScaled = false
+            return if (isImage) {
+                VaultMediaPreview(decodeImageThumbnail(target, maxDimensionPx))
+            } else {
+                decodeVideoPreview(target, maxDimensionPx)
             }
-            BitmapFactory.decodeFile(target.absolutePath, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-            val safeTargetSize = maxDimensionPx.coerceIn(32, 512)
-            val options = BitmapFactory.Options().apply {
-                inJustDecodeBounds = false
-                inScaled = false
-                inDither = false
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-                inSampleSize = VaultThumbnailPolicy.calculateSampleSize(
-                    bounds.outWidth,
-                    bounds.outHeight,
-                    safeTargetSize
-                )
-            }
-            return BitmapFactory.decodeFile(target.absolutePath, options)
         } finally {
             target.delete()
+        }
+    }
+
+    private fun decodeImageThumbnail(source: File, maxDimensionPx: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+            inScaled = false
+        }
+        BitmapFactory.decodeFile(source.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = false
+            inScaled = false
+            inDither = false
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = VaultThumbnailPolicy.calculateSampleSize(
+                bounds.outWidth,
+                bounds.outHeight,
+                maxDimensionPx.coerceIn(32, 512)
+            )
+        }
+        return BitmapFactory.decodeFile(source.absolutePath, options)
+    }
+
+    private fun decodeVideoPreview(source: File, maxDimensionPx: Int): VaultMediaPreview {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(source.absolutePath)
+            val durationMs = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_DURATION
+            )?.toLongOrNull()?.takeIf { it >= 0L }
+
+            val safeTarget = maxDimensionPx.coerceIn(32, 512)
+            val width = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+            )?.toIntOrNull() ?: 0
+            val height = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+            )?.toIntOrNull() ?: 0
+            val dimensions = if (width > 0 && height > 0) {
+                VaultThumbnailPolicy.fitWithin(width, height, safeTarget)
+            } else {
+                safeTarget to safeTarget
+            }
+
+            val bitmap = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(
+                        -1L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        dimensions.first,
+                        dimensions.second
+                    )
+                } else {
+                    val fullFrame = retriever.getFrameAtTime(
+                        -1L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    ) ?: return@runCatching null
+                    val target = VaultThumbnailPolicy.fitWithin(fullFrame.width, fullFrame.height, safeTarget)
+                    val scaled = Bitmap.createScaledBitmap(fullFrame, target.first, target.second, true)
+                    if (scaled !== fullFrame && !fullFrame.isRecycled) fullFrame.recycle()
+                    scaled
+                }
+            }.getOrNull()
+
+            return VaultMediaPreview(bitmap, durationMs)
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 

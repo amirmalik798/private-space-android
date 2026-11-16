@@ -1,5 +1,14 @@
 # Private Space
 
+## Video support and media details (0.11.0)
+
+- Add documents, photos, and videos to topics through the existing unrestricted multi-file picker. The AES-256-GCM streaming importer stores original bytes without transcoding, recompressing, or resizing.
+- MIME mappings cover common video containers including MP4/M4V, MOV, 3GP/3G2, MKV, WebM, AVI, MPEG, MPEG transport streams (TS/MTS/M2TS), OGV, WMV/ASF, FLV/F4V, DV, and MXF. Unknown extensions remain importable as opaque files.
+- Video thumbnails use Android's media metadata/frame retriever only after the encrypted record is fully decrypted and authenticated into an app-private temporary file. Frames are scaled for list display; the temporary plaintext file is deleted in a `finally` block.
+- Topic rows and Recycle Bin rows display each file's source size. Video rows additionally show duration and a thumbnail with a play indicator.
+- Playback capability depends on the Android device's installed media decoders and viewer apps. A video can be importable and securely stored even when the current device cannot play its codec.
+
+
 ## Interface, thumbnails and session controls (0.10.0)
 
 - The dashboard and full-screen dialogs now account for Android system-bar insets. The password screen adjusts for the on-screen keyboard and remains vertically scrollable on compact displays.
@@ -45,7 +54,7 @@
 - Logical file/topic deletion commits a Trash entry to the encrypted index while keeping the encrypted payload in app-private storage. Restoring an item updates only the index and does not rewrite file bytes. Permanent deletion stages the payload under a recoverable tombstone, commits its removal from the index, then purges it; startup recovery reconciles interrupted permanent deletions using both active and trashed index entries.
 - Metadata decryption is bounded to the index-size limit. Temporary clear metadata and cipher buffers are wiped after use where the runtime permits.
 - When a document provider reports a file size, import verifies the completed stream byte count against it before committing the encrypted record. A mismatch discards the temporary encrypted file instead of saving a possibly truncated import; providers that report an unknown size remain supported.
-- **No application-level file-size ceiling is imposed.** Imports use bounded-memory streaming and a 64-bit byte counter. Practical limits still depend on available storage, the filesystem, Android's document provider and cryptographic provider. Photos/documents are never resized, recompressed, converted or stripped of metadata; new encrypted records add 36 bytes of container overhead.
+- **No application-level file-size ceiling is imposed.** Imports use bounded-memory streaming and a 64-bit byte counter. Practical limits still depend on available storage, the filesystem, Android's document provider and cryptographic provider. Photos/documents/videos are never resized, recompressed, converted or stripped of metadata; new encrypted records add 36 bytes of container overhead.
 
 ## Modern user interface and usability (0.7.0)
 
@@ -76,7 +85,7 @@ When adding documents or photos, Private Space lists compatible Android apps tha
 
 ## Storage reporting and file format support (0.4.0)
 
-The vault dashboard displays the combined encrypted storage used by saved documents and photos. Each topic shows the combined encrypted size of its files. Values are calculated from the actual encrypted container lengths under app-private vault storage, including encryption framing. They exclude the APK, encrypted index, and temporary cache. New AES-GCM containers add 36 bytes per file.
+The vault dashboard displays the combined encrypted storage used by saved documents, photos, and videos. Each topic shows the combined encrypted size of its files. Values are calculated from the actual encrypted container lengths under app-private vault storage, including encryption framing. They exclude the APK, encrypted index, and temporary cache. New AES-GCM containers add 36 bytes per file.
 
 Private Space accepts all file types through Android's unrestricted document picker. MIME mappings cover common raster/photo formats (JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF, AVIF, SVG, JPEG 2000 and popular camera RAW types), document/text formats (PDF, TXT, RTF, Markdown, CSV, TSV, HTML, XML, JSON, YAML and EPUB), Microsoft Office formats (DOC/DOCX, XLS/XLSX and PPT/PPTX including common macro-enabled variants), OpenDocument formats (ODT, ODS, ODP and related templates), and Apple iWork formats. Unknown extensions are stored as generic binary files. MIME mappings help Android select an external viewer; opening depends on compatible apps installed on the device. Storage, encryption, decryption, sharing and export do not convert or recompress file contents.
 

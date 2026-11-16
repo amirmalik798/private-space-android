@@ -16,6 +16,12 @@ data class VaultFile(
     val addedAt: Long
 )
 
+/** Transient in-memory preview; never stored in the encrypted metadata index. */
+data class VaultMediaPreview(
+    val bitmap: android.graphics.Bitmap?,
+    val durationMs: Long? = null
+)
+
 data class TopicSummary(
     val topic: VaultTopic,
     val fileCount: Int,

@@ -2,7 +2,6 @@ package com.privatespace.android
 
 import android.app.Activity
 import android.app.KeyguardManager
-import android.graphics.Bitmap
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
@@ -1920,19 +1919,18 @@ private fun TopicDialog(
 }
 
 @Composable
-private fun VaultThumbnail(
+private fun rememberVaultMediaPreview(
     file: VaultFile,
-    repository: VaultRepository,
-    modifier: Modifier = Modifier,
-    fallbackIcon: ImageVector,
-    isPhoto: Boolean
-) {
-    val targetSizePx = with(LocalDensity.current) { 112.dp.roundToPx().coerceAtLeast(64) }
-    val thumbnail by produceState<Bitmap?>(null, file.id, file.mimeType, targetSizePx) {
-        value = if (isPhoto) {
+    repository: VaultRepository
+): VaultMediaPreview? {
+    val targetSizePx = with(LocalDensity.current) { 128.dp.roundToPx().coerceAtLeast(64) }
+    val isPreviewable = VaultFormatSupport.isImageMimeType(file.mimeType) ||
+        VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val preview by produceState<VaultMediaPreview?>(null, file.id, file.mimeType, targetSizePx) {
+        value = if (isPreviewable) {
             try {
                 withContext(Dispatchers.IO) {
-                    repository.loadImageThumbnail(file.id, targetSizePx)
+                    repository.loadMediaPreview(file.id, targetSizePx)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -1943,17 +1941,34 @@ private fun VaultThumbnail(
             null
         }
     }
-    val shape = RoundedCornerShape(13.dp)
+    DisposableEffect(preview?.bitmap) {
+        val bitmap = preview?.bitmap
+        onDispose {
+            if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+    return preview
+}
+
+@Composable
+private fun VaultThumbnail(
+    file: VaultFile,
+    preview: VaultMediaPreview?,
+    modifier: Modifier = Modifier,
+    fallbackIcon: ImageVector,
+    isImage: Boolean,
+    isVideo: Boolean
+) {
     Surface(
         modifier = modifier,
-        shape = shape,
-        color = if (isPhoto) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
+        shape = RoundedCornerShape(13.dp),
+        color = if (isImage) Green.copy(alpha = 0.13f) else Blue.copy(alpha = 0.15f)
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            val preview = thumbnail
-            if (preview != null && !preview.isRecycled) {
+            val bitmap = preview?.bitmap
+            if (bitmap != null && !bitmap.isRecycled) {
                 Image(
-                    bitmap = preview.asImageBitmap(),
+                    bitmap = bitmap.asImageBitmap(),
                     contentDescription = "Preview of ${file.displayName}",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -1961,10 +1976,45 @@ private fun VaultThumbnail(
             } else {
                 Icon(
                     fallbackIcon,
-                    contentDescription = if (isPhoto) "Photo" else "Document",
-                    tint = if (isPhoto) Green else Cyan,
+                    contentDescription = when {
+                        isVideo -> "Video"
+                        isImage -> "Photo"
+                        else -> "Document"
+                    },
+                    tint = if (isImage) Green else Cyan,
                     modifier = Modifier.size(23.dp)
                 )
+            }
+            if (isVideo) {
+                Box(
+                    modifier = Modifier.align(Alignment.Center)
+                        .size(25.dp)
+                        .background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(50.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = "Video",
+                        tint = Color.White,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+                preview?.durationMs?.let { duration ->
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(3.dp),
+                        shape = RoundedCornerShape(5.dp),
+                        color = Color.Black.copy(alpha = 0.78f)
+                    ) {
+                        Text(
+                            formatDuration(duration),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            color = Color.White,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }
@@ -1980,10 +2030,13 @@ private fun VaultFileRow(
     onDelete: () -> Unit
 ) {
     var menuExpanded by remember(file.id) { mutableStateOf(false) }
-    val isPhoto = file.mimeType.startsWith("image/")
+    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
+    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val mediaPreview = rememberVaultMediaPreview(file, repository)
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     val fileIcon = when {
         isPhoto -> Icons.Default.Image
+        isVideo -> Icons.Default.Movie
         extension == "PDF" -> Icons.Default.PictureAsPdf
         extension in setOf("DOC", "DOCX", "ODT", "RTF") -> Icons.Default.Article
         extension in setOf("XLS", "XLSX", "ODS", "CSV") -> Icons.Default.TableChart
@@ -2003,15 +2056,21 @@ private fun VaultFileRow(
         ) {
             VaultThumbnail(
                 file = file,
-                repository = repository,
+                preview = mediaPreview,
                 modifier = Modifier.size(46.dp),
                 fallbackIcon = fileIcon,
-                isPhoto = isPhoto
+                isImage = isPhoto,
+                isVideo = isVideo
             )
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(extension + "  ·  " + formatBytes(file.sizeBytes), color = Muted, fontSize = 11.sp, maxLines = 1)
+                val details = buildList {
+                    add(extension)
+                    add(formatBytes(file.sizeBytes))
+                    if (isVideo) mediaPreview?.durationMs?.let { add(formatDuration(it)) }
+                }.joinToString("  ·  ")
+                Text(details, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -2139,7 +2198,10 @@ private fun TrashFileRow(
     onDeletePermanently: () -> Unit
 ) {
     val file = entry.file
-    val isPhoto = file.mimeType.startsWith("image/")
+    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
+    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val mediaPreview = rememberVaultMediaPreview(file, repository)
+    val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp),
@@ -2150,14 +2212,25 @@ private fun TrashFileRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 VaultThumbnail(
                     file = file,
-                    repository = repository,
-                    modifier = Modifier.size(48.dp),
-                    fallbackIcon = if (isPhoto) Icons.Default.Image else Icons.Default.InsertDriveFile,
-                    isPhoto = isPhoto
+                    preview = mediaPreview,
+                    modifier = Modifier.size(50.dp),
+                    fallbackIcon = when {
+                        isPhoto -> Icons.Default.Image
+                        isVideo -> Icons.Default.Movie
+                        else -> Icons.Default.InsertDriveFile
+                    },
+                    isImage = isPhoto,
+                    isVideo = isVideo
                 )
                 Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val details = buildList {
+                        add(extension)
+                        add(formatBytes(file.sizeBytes))
+                        if (isVideo) mediaPreview?.durationMs?.let { add(formatDuration(it)) }
+                    }.joinToString("  ·  ")
+                    Text(details, color = Muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("From ${entry.originalTopic.name}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("Deleted ${formatDate(entry.deletedAt)}", color = Muted, fontSize = 10.sp)
                 }
@@ -2334,6 +2407,18 @@ private fun formatBytes(value: Long): String = when {
     value < 1_048_576 -> String.format("%.1f KB", value / 1024.0)
     value < 1_073_741_824 -> String.format("%.1f MB", value / 1_048_576.0)
     else -> String.format("%.2f GB", value / 1_073_741_824.0)
+}
+
+private fun formatDuration(durationMs: Long): String {
+    val totalSeconds = durationMs.coerceAtLeast(0L) / 1_000L
+    val hours = totalSeconds / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format("%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%02d:%02d", minutes, seconds)
+    }
 }
 
 private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {

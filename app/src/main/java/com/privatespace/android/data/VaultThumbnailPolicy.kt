@@ -18,4 +18,13 @@ internal object VaultThumbnailPolicy {
         }
         return sampleSize
     }
+
+    /** Returns a non-zero frame target that preserves aspect ratio within the memory bound. */
+    fun fitWithin(width: Int, height: Int, targetSizePx: Int): Pair<Int, Int> {
+        if (width <= 0 || height <= 0 || targetSizePx <= 0) return 1 to 1
+        val longestSide = maxOf(width, height).toDouble()
+        val scale = targetSizePx.coerceIn(32, 512).toDouble() / longestSide
+        return (width * scale).toInt().coerceAtLeast(1) to
+            (height * scale).toInt().coerceAtLeast(1)
+    }
 }
