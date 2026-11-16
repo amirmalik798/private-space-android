@@ -18,6 +18,12 @@ class VaultIndexSchemaTest {
     }
 
     @Test
+    fun onlyCurrentSchemaRequiresTheTrashArray() {
+        assertFalse(VaultIndexSchema.requiresTrashArray(VaultIndexSchema.LEGACY_VERSION))
+        assertTrue(VaultIndexSchema.requiresTrashArray(VaultIndexSchema.CURRENT_VERSION))
+    }
+
+    @Test
     fun currentReaderRejectsUnknownVersionsInsteadOfRewritingThem() {
         assertFalse(VaultIndexSchema.isSupported(1))
         assertFalse(VaultIndexSchema.isSupported(4))
