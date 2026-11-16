@@ -32,6 +32,7 @@ internal object ChunkedAesGcm {
         private val key: SecretKey
     ) : OutputStream() {
         private val buffer = ByteArray(CHUNK_BYTES)
+        private val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         private var buffered = 0
         private var frameIndex = 0L
         private var totalBytes = 0L
@@ -77,7 +78,7 @@ internal object ChunkedAesGcm {
         }
 
         private fun writeFrame(clear: ByteArray, length: Int, index: Long, cumulativeBytes: Long) {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            // Reinitialize the cipher per frame, but reuse its provider instance.
             // Let Android Keystore generate the nonce: keys configured with
             // randomizedEncryptionRequired must not accept caller-supplied IVs.
             cipher.init(Cipher.ENCRYPT_MODE, key)
@@ -108,7 +109,6 @@ internal object ChunkedAesGcm {
         fun finish() {
             check(!finished) { "Encryption stream is already finalized." }
             emitFrame()
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key)
             val nonce = cipher.iv
             require(nonce.size == NONCE_BYTES) { "Unexpected AES-GCM nonce length." }
@@ -165,6 +165,7 @@ internal object ChunkedAesGcm {
     ) {
         var frameIndex = 0L
         var totalBytes = 0L
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         while (true) {
             val length = readInt(input)
             if (length < 0 || length > CHUNK_BYTES) {
@@ -180,7 +181,6 @@ internal object ChunkedAesGcm {
                 } catch (failure: ArithmeticException) {
                     throw IOException("Vault payload is too large.", failure)
                 }
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
                 updateFrameAad(cipher, aad, magic, frameIndex, length, frameTotal)
                 val clear = try {
