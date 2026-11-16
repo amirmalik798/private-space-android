@@ -298,6 +298,18 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
     }
 
+    fun discardViewerFile(prepared: PreparedVaultFile?) {
+        if (prepared == null) return
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repository.discardMediaForViewing(prepared) }
+            }
+            result.onFailure {
+                toast("Temporary media could not be removed from the private cache.")
+            }
+        }
+    }
+
     fun lockVault() {
         repository.lockPersistentStorage()
         pendingRecoveryPassword?.fill('\u0000')
@@ -312,7 +324,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         authError = ""
         activeTopicId = null
         mediaRequestToken += 1L
-        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        discardViewerFile(activeMediaFile)
         activeMediaFile = null
         activeMediaId = null
         mediaViewerLoading = false
@@ -348,7 +360,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun closeMediaViewer() {
         mediaRequestToken += 1L
-        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        discardViewerFile(activeMediaFile)
         activeMediaFile = null
         activeMediaId = null
         mediaViewerLoading = false
@@ -391,6 +403,16 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     repository.snapshot()
                 }
                 applySnapshot(snapshot)
+
+                // Reclaim expired external-share and staging sessions even when
+                // the user keeps the vault unlocked for a long time.
+                while (unlocked) {
+                    delay(5 * 60 * 1_000L)
+                    if (!unlocked) break
+                    withContext(Dispatchers.IO) {
+                        repository.cleanupExpiredOutgoing()
+                    }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -803,20 +825,18 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
         mediaRequestToken += 1L
         val requestToken = mediaRequestToken
-        runCatching { activeMediaFile?.file?.parentFile?.deleteRecursively() }
+        discardViewerFile(activeMediaFile)
         activeMediaFile = null
         activeMediaId = file.id
         mediaViewerLoading = true
 
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { repository.prepareDecryptedFile(file.id) }
+                runCatching { repository.prepareMediaForViewing(file.id) }
             }
 
             if (requestToken != mediaRequestToken) {
-                result.getOrNull()?.file?.parentFile?.let { directory ->
-                    runCatching { directory.deleteRecursively() }
-                }
+                result.getOrNull()?.let(::discardViewerFile)
                 return@launch
             }
 
@@ -833,7 +853,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     if (stillAvailable) {
                         activeMediaFile = prepared
                     } else {
-                        runCatching { prepared.file.parentFile?.deleteRecursively() }
+                        discardViewerFile(prepared)
                         activeMediaId = null
                     }
                 },
@@ -1610,14 +1630,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Choose a folder in this device's Documents or other local storage. Private Space will create a dedicated folder named " +
-                            PersistentVaultStore.FOLDER_NAME + " containing only encrypted recovery data.",
+                        "Choose a folder on this device. Private Space will save an encrypted recovery copy there. Keep the folder and your vault password; both are needed to restore your data after reinstalling.",
                         color = Muted
-                    )
-                    Text(
-                        "Your current vault stays in Private Space. The recovery copy is updated when files or topics change. Keep your vault password safe: it is required to restore this data after reinstalling.",
-                        color = White,
-                        fontSize = 13.sp
                     )
                     if (recoverySetupError.isNotBlank()) {
                         Surface(color = Red.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {

@@ -82,6 +82,11 @@ internal class PersistentVaultStore private constructor(
             check(target.length() == expectedContainerBytes) {
                 "The encrypted recovery file was not completely written."
             }
+            // Authenticate the bytes as returned by the selected document provider.
+            // This streams to a discard sink: it creates no plaintext file or duplicate.
+            VaultRecoveryReadback.verifyWithRetry {
+                decryptPayload(id, DiscardingOutputStream(), aad)
+            }
         } catch (failure: Throwable) {
             runCatching { target.delete() }
             throw failure
@@ -130,28 +135,29 @@ internal class PersistentVaultStore private constructor(
                 )
             }
 
-            val encryptedBytes = readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
-            try {
-                val verified = WipingByteArrayOutputStream(clearIndex.size)
-                try {
-                    PersistentVaultCrypto.decrypt(
-                        ByteArrayInputStream(encryptedBytes),
-                        verified,
-                        aad,
-                        requireKey()
-                    )
-                    val verifiedBytes = verified.toByteArray()
+            val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
+                read = { readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD) },
+                verify = { candidate ->
+                    val verified = WipingByteArrayOutputStream(clearIndex.size)
                     try {
-                        check(verifiedBytes.contentEquals(clearIndex)) {
-                            "The recovery index could not be verified after writing."
+                        PersistentVaultCrypto.decrypt(
+                            ByteArrayInputStream(candidate),
+                            verified,
+                            aad,
+                            requireKey()
+                        )
+                        val verifiedBytes = verified.toByteArray()
+                        try {
+                            verifiedBytes.contentEquals(clearIndex)
+                        } finally {
+                            verifiedBytes.fill(0)
                         }
                     } finally {
-                        verifiedBytes.fill(0)
+                        verified.wipe()
                     }
-                } finally {
-                    verified.wipe()
                 }
-
+            )
+            try {
                 indexGeneration = generation
                 val snapshot = IndexSnapshot(
                     clearBytes = ByteArray(0),
@@ -184,7 +190,27 @@ internal class PersistentVaultStore private constructor(
         var lastFailure: Throwable? = null
         for ((generation, document) in candidates) {
             try {
-                val encryptedBytes = readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
+                val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
+                    read = {
+                        readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
+                    },
+                    verify = { candidate ->
+                        val verification = WipingByteArrayOutputStream(
+                            MAX_INDEX_BYTES.coerceAtMost(64 * 1024)
+                        )
+                        try {
+                            PersistentVaultCrypto.decrypt(
+                                ByteArrayInputStream(candidate),
+                                verification,
+                                aad,
+                                requireKey()
+                            )
+                            true
+                        } finally {
+                            verification.wipe()
+                        }
+                    }
+                )
                 try {
                     val clear = WipingByteArrayOutputStream(MAX_INDEX_BYTES.coerceAtMost(64 * 1024))
                     try {
@@ -254,16 +280,21 @@ internal class PersistentVaultStore private constructor(
                         ?: error("Could not open a recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
 
-                    val saved = readDocumentBytes(document, MAX_ENVELOPE_BYTES)
-                    val verified = PersistentVaultCrypto.unwrapDataKey(saved, verificationPassword)
-                    try {
-                        check(verified.contentEquals(key)) {
-                            "A recovery-key envelope failed verification."
+                    val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        read = { readDocumentBytes(document, MAX_ENVELOPE_BYTES) },
+                        verify = { candidate ->
+                            val verified = PersistentVaultCrypto.unwrapDataKey(
+                                candidate,
+                                verificationPassword.copyOf()
+                            )
+                            try {
+                                verified.contentEquals(key)
+                            } finally {
+                                verified.fill(0)
+                            }
                         }
-                    } finally {
-                        verified.fill(0)
-                        saved.fill(0)
-                    }
+                    )
+                    saved.fill(0)
                     keyGeneration = safeGeneration
                 } catch (failure: Throwable) {
                     runCatching { document.delete() }
@@ -366,6 +397,9 @@ internal class PersistentVaultStore private constructor(
                     output.write(buffer, 0, count)
                     buffer.fill(0, 0, count)
                 }
+                if (output.size().toLong() != reportedLength) {
+                    throw IOException("The storage provider returned an incomplete encrypted recovery record.")
+                }
                 output.toByteArray()
             } finally {
                 buffer.fill(0)
@@ -425,16 +459,21 @@ internal class PersistentVaultStore private constructor(
                     val output = context.contentResolver.openOutputStream(keyDocument.uri, "w")
                         ?: throw IOException("Could not write the recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
-                    val saved = readBytes(context, keyDocument, MAX_ENVELOPE_BYTES)
-                    val verified = PersistentVaultCrypto.unwrapDataKey(saved, verificationPassword)
-                    try {
-                        check(verified.contentEquals(key)) {
-                            "The recovery-key envelope failed verification."
+                    val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        read = { readBytes(context, keyDocument, MAX_ENVELOPE_BYTES) },
+                        verify = { candidate ->
+                            val verified = PersistentVaultCrypto.unwrapDataKey(
+                                candidate,
+                                verificationPassword.copyOf()
+                            )
+                            try {
+                                verified.contentEquals(key)
+                            } finally {
+                                verified.fill(0)
+                            }
                         }
-                    } finally {
-                        verified.fill(0)
-                        saved.fill(0)
-                    }
+                    )
+                    saved.fill(0)
                 } finally {
                     envelope.fill(0)
                 }
@@ -545,16 +584,21 @@ internal class PersistentVaultStore private constructor(
                     val output = resolver.openOutputStream(document.uri, "w")
                         ?: throw IOException("Could not write the backup recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
-                    val saved = readBytesFromResolver(resolver, document, MAX_ENVELOPE_BYTES)
-                    val verified = PersistentVaultCrypto.unwrapDataKey(saved, verificationPassword)
-                    try {
-                        check(verified.contentEquals(key)) {
-                            "The backup recovery-key envelope failed verification."
+                    val saved = VaultRecoveryReadback.readVerifiedBytes(
+                        read = { readBytesFromResolver(resolver, document, MAX_ENVELOPE_BYTES) },
+                        verify = { candidate ->
+                            val verified = PersistentVaultCrypto.unwrapDataKey(
+                                candidate,
+                                verificationPassword.copyOf()
+                            )
+                            try {
+                                verified.contentEquals(key)
+                            } finally {
+                                verified.fill(0)
+                            }
                         }
-                    } finally {
-                        verified.fill(0)
-                        saved.fill(0)
-                    }
+                    )
+                    saved.fill(0)
                 } finally {
                     envelope.fill(0)
                 }
@@ -576,6 +620,9 @@ internal class PersistentVaultStore private constructor(
             return input.use { stream ->
                 val bytes = stream.readBytes()
                 require(bytes.size <= maximumBytes) { "The recovery-key envelope is too large." }
+                require(bytes.size.toLong() == length) {
+                    "The storage provider returned an incomplete recovery-key envelope."
+                }
                 bytes
             }
         }
@@ -587,6 +634,9 @@ internal class PersistentVaultStore private constructor(
                 ?: throw IOException("Could not read the recovery-key envelope.")
             return input.use { it.readBytes().also { bytes ->
                 require(bytes.size <= maximumBytes) { "The recovery-key envelope is too large." }
+                require(bytes.size.toLong() == length) {
+                    "The storage provider returned an incomplete recovery-key envelope."
+                }
             } }
         }
 

@@ -110,42 +110,123 @@ object VaultCrypto {
         decryptWithKey(input, output, aad, testKey)
     }
 
+    /**
+     * Streaming sink for restoring an authenticated recovery record directly
+     * into the local Keystore-encrypted format. Call finish() only after the
+     * upstream recovery decryptor has verified its GCM authentication tag.
+     */
+    class EncryptingOutputStream internal constructor(
+        private val output: OutputStream,
+        private val cipher: Cipher
+    ) : OutputStream() {
+        private var finished = false
+
+        override fun write(value: Int) {
+            val single = byteArrayOf(value.toByte())
+            try {
+                write(single, 0, 1)
+            } finally {
+                single.fill(0)
+            }
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            check(!finished) { "Vault encryption stream is already finalized." }
+            require(offset >= 0 && length >= 0 && offset <= bytes.size - length)
+            if (length == 0) return
+            val encrypted = cipher.update(bytes, offset, length)
+            if (encrypted != null) {
+                try {
+                    output.write(encrypted)
+                } finally {
+                    encrypted.fill(0)
+                }
+            }
+        }
+
+        override fun flush() {
+            check(!finished) { "Vault encryption stream is already finalized." }
+            output.flush()
+        }
+
+        fun finish() {
+            check(!finished) { "Vault encryption stream is already finalized." }
+            val finalBytes = cipher.doFinal()
+            try {
+                output.write(finalBytes)
+                output.flush()
+                finished = true
+            } finally {
+                finalBytes.fill(0)
+            }
+        }
+
+        /** Leaves an incomplete ciphertext without an authentication tag. */
+        fun abort() {
+            finished = true
+        }
+
+        override fun close() {
+            // The owner controls the underlying file/output stream lifecycle.
+            abort()
+        }
+    }
+
+    fun encryptingOutputStream(
+        output: OutputStream,
+        aad: ByteArray
+    ): EncryptingOutputStream =
+        createEncryptingOutputStream(output, aad, encryptionKey())
+
+    internal fun encryptingOutputStreamForTest(
+        output: OutputStream,
+        aad: ByteArray,
+        testKey: SecretKey
+    ): EncryptingOutputStream =
+        createEncryptingOutputStream(output, aad, testKey)
+
+    private fun createEncryptingOutputStream(
+        output: OutputStream,
+        aad: ByteArray,
+        key: SecretKey
+    ): EncryptingOutputStream {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.updateAAD(aad)
+
+        val nonce = cipher.iv
+        try {
+            require(nonce.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
+            output.write(MAGIC)
+            output.write(nonce)
+            return EncryptingOutputStream(output, cipher)
+        } finally {
+            nonce.fill(0)
+        }
+    }
+
     private fun encryptWithKey(
         input: InputStream,
         output: OutputStream,
         aad: ByteArray,
         key: SecretKey
     ) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        cipher.updateAAD(aad)
-
-        val nonce = cipher.iv
-        require(nonce.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
-        output.write(MAGIC)
-        output.write(nonce)
-
+        val encrypting = createEncryptingOutputStream(output, aad, key)
         val buffer = ByteArray(BUFFER_SIZE)
         try {
             while (true) {
                 val count = readChunkOrEof(input, buffer)
                 if (count < 0) break
                 try {
-                    val encrypted = cipher.update(buffer, 0, count)
-                    if (encrypted != null) {
-                        try { output.write(encrypted) } finally { encrypted.fill(0) }
-                    }
+                    encrypting.write(buffer, 0, count)
                 } finally {
                     buffer.fill(0, 0, count)
                 }
             }
-            val finalBytes = cipher.doFinal()
-            try {
-                output.write(finalBytes)
-                output.flush()
-            } finally {
-                finalBytes.fill(0)
-            }
+            encrypting.finish()
+        } catch (failure: Throwable) {
+            encrypting.abort()
+            throw failure
         } finally {
             buffer.fill(0)
         }
