@@ -18,6 +18,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
 import android.system.Os
@@ -368,7 +369,7 @@ class VaultRepository(context: Context) {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
-                    restoreWorkingVault(index, store)
+                    restoreWorkingVault(index, store, onProgress)
                     // Keep unreferenced encrypted payloads; an older authenticated
                     // index must never cause newer recoverable data to be deleted.
                     store.markReady()
