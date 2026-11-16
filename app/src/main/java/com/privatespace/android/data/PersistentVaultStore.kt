@@ -161,7 +161,7 @@ internal class PersistentVaultStore private constructor(
         // emitted through several small writes. Build the bounded index envelope
         // in memory, then send it to the provider as one contiguous write (the
         // password-wrapped key files use this same single-write pattern).
-        val encryptedBuffer = WipingByteArrayOutputStream(clearIndex.size + CONTAINER_OVERHEAD)
+        val encryptedBuffer = WipingByteArrayOutputStream(PersistentVaultCrypto.maximumEncryptedContainerLength(clearIndex.size))
         val encryptedPayload = try {
             PersistentVaultCrypto.encrypt(
                 ByteArrayInputStream(clearIndex),
@@ -251,7 +251,7 @@ internal class PersistentVaultStore private constructor(
         var lastFailure: Throwable? = null
         for ((generation, document) in candidates) {
             try {
-                val encryptedBytes = readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
+                val encryptedBytes = readDocumentBytes(document, PersistentVaultCrypto.maximumEncryptedContainerLength(MAX_INDEX_BYTES))
                 try {
                     val clear = WipingByteArrayOutputStream(MAX_INDEX_BYTES.coerceAtMost(64 * 1024))
                     try {
