@@ -688,15 +688,7 @@ private fun PrivateSpaceRoot() {
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (topics.isEmpty()) "Your files will be organized here"
-                            else topics.size.toString() + if (topics.size == 1) " private collection" else " private collections",
-                            color = Muted,
-                            fontSize = 12.sp
-                        )
-                    }
+                    Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (topics.isNotEmpty()) {
                         Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
                             Text(
@@ -792,7 +784,6 @@ private fun PrivateSpaceRoot() {
             title = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Create a topic", fontWeight = FontWeight.Bold)
-                    Text("Give this collection a name you will recognize.", color = Muted, fontSize = 12.sp)
                 }
             },
             text = {
@@ -1250,7 +1241,6 @@ private fun VaultOverviewCard(
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("Your private library", color = White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
-                    Text("Everything you store here stays inside your encrypted vault.", color = Muted, fontSize = 13.sp)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OverviewMetric(
@@ -1282,7 +1272,7 @@ private fun VaultOverviewCard(
                     ) {
                         Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Export all")
+                        Text("Export all topics")
                     }
                 }
             }
@@ -1339,7 +1329,7 @@ private fun EmptyTopicsState(onCreate: () -> Unit) {
             }
             Text("Start with a topic", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
             Text(
-                "Create a collection for your documents or photos. You can add files, open them, share them, or export them later.",
+                "Create a topic to add documents and photos.",
                 color = Muted,
                 fontSize = 13.sp,
                 lineHeight = 19.sp
