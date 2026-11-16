@@ -60,6 +60,66 @@ private class BoundedWipingByteArrayOutputStream(
     }
 }
 
+private class RestoreProgressOutputStream(
+    private val delegate: OutputStream,
+    private val expectedBytes: Long,
+    private val completedBeforeFile: Long,
+    private val totalBytes: Long,
+    private val completedFiles: Int,
+    private val totalFiles: Int,
+    private val fileName: String,
+    private val onProgress: (VaultRestoreProgress) -> Unit
+) : OutputStream() {
+    private var written = 0L
+    private var lastReported = 0L
+
+    override fun write(value: Int) {
+        delegate.write(value)
+        record(1)
+    }
+
+    override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        delegate.write(bytes, offset, length)
+        record(length.toLong())
+    }
+
+    override fun flush() = delegate.flush()
+
+    private fun record(count: Long) {
+        if (count <= 0L) return
+        written = try { Math.addExact(written, count) } catch (failure: ArithmeticException) {
+            throw IOException("Recovered file size is invalid.", failure)
+        }
+        if (written > expectedBytes) throw IOException("Recovered file is larger than its authenticated index entry.")
+        if (written - lastReported >= 1024L * 1024L) {
+            lastReported = written
+            report()
+        }
+    }
+
+    fun finish() {
+        if (written != expectedBytes) {
+            throw IOException("Recovered file size does not match its authenticated index entry.")
+        }
+        report()
+    }
+
+    private fun report() {
+        val completed = try { Math.addExact(completedBeforeFile, written) } catch (failure: ArithmeticException) {
+            throw IOException("Recovery progress is outside the supported range.", failure)
+        }
+        onProgress(
+            VaultRestoreProgress(
+                completedBytes = completed.coerceAtMost(totalBytes),
+                totalBytes = totalBytes,
+                completedFiles = completedFiles,
+                totalFiles = totalFiles,
+                currentFileName = fileName
+            )
+        )
+    }
+}
+
 class VaultRepository(context: Context) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
@@ -229,7 +289,11 @@ class VaultRepository(context: Context) {
      * means the durable copy is newer and the private working copy is rebuilt.
      */
     @Synchronized
-    fun openPersistentStorage(treeUri: Uri, password: CharArray) {
+    fun openPersistentStorage(
+        treeUri: Uri,
+        password: CharArray,
+        onProgress: (VaultRestoreProgress) -> Unit = {}
+    ) {
         try {
             if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
@@ -270,7 +334,7 @@ class VaultRepository(context: Context) {
                         !localIndexMatchesRecovery ||
                         !localPayloadsComplete
                     ) {
-                        restoreWorkingVault(index, store)
+                        restoreWorkingVault(index, store, onProgress)
                     }
                     // Keep unreferenced encrypted payloads. They may be newer file
                     // records from an interrupted index commit or older-index fallback.
@@ -292,7 +356,11 @@ class VaultRepository(context: Context) {
 
     /** Restores an existing encrypted recovery vault after a fresh installation. */
     @Synchronized
-    fun restorePersistentVault(treeUri: Uri, password: CharArray) {
+    fun restorePersistentVault(
+        treeUri: Uri,
+        password: CharArray,
+        onProgress: (VaultRestoreProgress) -> Unit = {}
+    ) {
         try {
             if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
@@ -1199,14 +1267,25 @@ class VaultRepository(context: Context) {
 
 
     /** Rebuilds the private working copy from authenticated recovery records. */
-    private fun restoreWorkingVault(index: VaultIndex, store: PersistentVaultStore) {
+    private fun restoreWorkingVault(
+        index: VaultIndex,
+        store: PersistentVaultStore,
+        onProgress: (VaultRestoreProgress) -> Unit
+    ) {
         validateIndexForSave(index)
         recoverInterruptedRestoreFiles()
         val records = index.files + index.trash.map { it.file }
+        val totalBytes = records.fold(0L) { total, record ->
+            try { Math.addExact(total, record.sizeBytes) } catch (failure: ArithmeticException) {
+                throw IOException("Recovery backup size exceeds the supported range.", failure)
+            }
+        }
         val incomingFiles = mutableMapOf<String, File>()
+        var completedBytes = 0L
         var restoreFailure: Throwable? = null
+        onProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
         try {
-            records.forEach { record ->
+            records.forEachIndexed { recordIndex, record ->
                 val incoming = File(root, "${record.id}.restore.tmp")
                 check(!incoming.exists()) { "An interrupted vault restore needs recovery." }
                 try {
@@ -1222,7 +1301,18 @@ class VaultRepository(context: Context) {
                                     // The recovery GCM tag must authenticate before the
                                     // local ciphertext tag is finalized. No clear restore
                                     // copy is ever written to disk.
-                                    store.decryptPayload(record.id, localEncryptor, fileAad(record.id))
+                                    val progressOutput = RestoreProgressOutputStream(
+                                        delegate = localEncryptor,
+                                        expectedBytes = record.sizeBytes,
+                                        completedBeforeFile = completedBytes,
+                                        totalBytes = totalBytes,
+                                        completedFiles = recordIndex,
+                                        totalFiles = records.size,
+                                        fileName = record.displayName,
+                                        onProgress = onProgress
+                                    )
+                                    store.decryptPayload(record.id, progressOutput, fileAad(record.id))
+                                    progressOutput.finish()
                                     localEncryptor.finish()
                                     encrypted.fd.sync()
                                 } catch (failure: Throwable) {
@@ -1237,12 +1327,23 @@ class VaultRepository(context: Context) {
                         }
                     })
                     incomingFiles[record.id] = incoming
+                    completedBytes = Math.addExact(completedBytes, record.sizeBytes)
+                    onProgress(
+                        VaultRestoreProgress(
+                            completedBytes = completedBytes,
+                            totalBytes = totalBytes,
+                            completedFiles = recordIndex + 1,
+                            totalFiles = records.size,
+                            currentFileName = record.displayName
+                        )
+                    )
                 } catch (failure: Throwable) {
                     runCatching { deleteTemporaryEntry(incoming) }
                         .onFailure(failure::addSuppressed)
                     throw failure
                 }
             }
+            onProgress(VaultRestoreProgress(totalBytes, totalBytes, records.size, records.size, "Finalizing restored vault"))
             incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
             saveIndex(index)
         } catch (failure: Throwable) {
