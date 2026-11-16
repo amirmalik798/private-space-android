@@ -34,8 +34,11 @@ object VaultCrypto {
     private const val TAG_BYTES = 16
     private const val BUFFER_SIZE = 64 * 1024
     const val VERSIONED_CONTAINER_OVERHEAD_BYTES = 8 + IV_BYTES + TAG_BYTES
+    const val MINIMUM_CHUNKED_CONTAINER_OVERHEAD_BYTES = 8 + 4 + IV_BYTES + TAG_BYTES
+    fun encryptedContainerLength(plainBytes: Long): Long = ChunkedAesGcm.encryptedLength(plainBytes)
 
-    private val MAGIC = byteArrayOf(0x50, 0x53, 0x56, 0x4c, 0x54, 0x30, 0x32, 0x0a)
+    private val LEGACY_MAGIC = byteArrayOf(0x50, 0x53, 0x56, 0x4c, 0x54, 0x30, 0x32, 0x0a)
+    private val CHUNKED_MAGIC = "PSVLT03\n".toByteArray(Charsets.US_ASCII)
 
     private fun existingKey(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -116,60 +119,14 @@ object VaultCrypto {
      * upstream recovery decryptor has verified its GCM authentication tag.
      */
     class EncryptingOutputStream internal constructor(
-        private val output: OutputStream,
-        private val cipher: Cipher
+        private val delegate: ChunkedAesGcm.EncryptingOutputStream
     ) : OutputStream() {
-        private var finished = false
-
-        override fun write(value: Int) {
-            val single = byteArrayOf(value.toByte())
-            try {
-                write(single, 0, 1)
-            } finally {
-                single.fill(0)
-            }
-        }
-
-        override fun write(bytes: ByteArray, offset: Int, length: Int) {
-            check(!finished) { "Vault encryption stream is already finalized." }
-            require(offset >= 0 && length >= 0 && offset <= bytes.size - length)
-            if (length == 0) return
-            val encrypted = cipher.update(bytes, offset, length)
-            if (encrypted != null) {
-                try {
-                    output.write(encrypted)
-                } finally {
-                    encrypted.fill(0)
-                }
-            }
-        }
-
-        override fun flush() {
-            check(!finished) { "Vault encryption stream is already finalized." }
-            output.flush()
-        }
-
-        fun finish() {
-            check(!finished) { "Vault encryption stream is already finalized." }
-            val finalBytes = cipher.doFinal()
-            try {
-                output.write(finalBytes)
-                output.flush()
-                finished = true
-            } finally {
-                finalBytes.fill(0)
-            }
-        }
-
-        /** Leaves an incomplete ciphertext without an authentication tag. */
-        fun abort() {
-            finished = true
-        }
-
-        override fun close() {
-            // The owner controls the underlying file/output stream lifecycle.
-            abort()
-        }
+        override fun write(value: Int) = delegate.write(value)
+        override fun write(bytes: ByteArray, offset: Int, length: Int) = delegate.write(bytes, offset, length)
+        override fun flush() = delegate.flush()
+        fun finish() = delegate.finish()
+        fun abort() = delegate.abort()
+        override fun close() = abort()
     }
 
     fun encryptingOutputStream(
@@ -189,21 +146,8 @@ object VaultCrypto {
         output: OutputStream,
         aad: ByteArray,
         key: SecretKey
-    ): EncryptingOutputStream {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
-        cipher.updateAAD(aad)
-
-        val nonce = cipher.iv
-        try {
-            require(nonce.size == IV_BYTES) { "Unexpected AES-GCM nonce length." }
-            output.write(MAGIC)
-            output.write(nonce)
-            return EncryptingOutputStream(output, cipher)
-        } finally {
-            nonce.fill(0)
-        }
-    }
+    ): EncryptingOutputStream =
+        EncryptingOutputStream(ChunkedAesGcm.encryptingOutputStream(output, aad, key, CHUNKED_MAGIC))
 
     private fun encryptWithKey(
         input: InputStream,
@@ -243,15 +187,19 @@ object VaultCrypto {
         aad: ByteArray,
         key: SecretKey
     ) {
-        val prefix = ByteArray(MAGIC.size)
+        val prefix = ByteArray(LEGACY_MAGIC.size)
         readExactly(input, prefix, 0, prefix.size)
-        val versioned = prefix.contentEquals(MAGIC)
+        if (prefix.contentEquals(CHUNKED_MAGIC)) {
+            ChunkedAesGcm.decryptAfterMagic(input, output, aad, key, CHUNKED_MAGIC)
+            return
+        }
+        val versioned = prefix.contentEquals(LEGACY_MAGIC)
         val nonce = ByteArray(IV_BYTES)
         if (versioned) {
             readExactly(input, nonce, 0, nonce.size)
         } else {
             prefix.copyInto(nonce, destinationOffset = 0)
-            readExactly(input, nonce, MAGIC.size, IV_BYTES - MAGIC.size)
+            readExactly(input, nonce, LEGACY_MAGIC.size, IV_BYTES - LEGACY_MAGIC.size)
         }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
