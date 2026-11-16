@@ -931,7 +931,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     sendIntent.clipData = clip
                     context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
                 } catch (_: Exception) {
-                    preparedFiles.firstOrNull()?.file?.parentFile?.deleteRecursively()
+                    preparedFiles.firstOrNull()?.file?.parentFile?.let { session ->
+                        runCatching { session.deleteRecursively() }
+                    }
                     toast("Could not prepare the topic for sharing.")
                 }
             }.onFailure {

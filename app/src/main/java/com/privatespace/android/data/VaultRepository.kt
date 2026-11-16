@@ -580,7 +580,7 @@ class VaultRepository(context: Context) {
         val isVideo = VaultFormatSupport.isVideoMimeType(record.mimeType)
         if (!isImage && !isVideo) return null
 
-        val target = File(staging, "media-preview-${UUID.randomUUID()}.tmp")
+        val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))
         try {
             // decryptInto returns only after the AES-GCM authentication tag is verified.
             decryptInto(record, target)
@@ -1444,8 +1444,24 @@ class VaultRepository(context: Context) {
     private fun createPrivateDirectory(parent: File, name: String): File {
         val directory = File(parent, name)
         check(directory.mkdir()) { "Could not create a temporary sharing folder." }
-        Os.chmod(directory.absolutePath, PRIVATE_DIRECTORY_MODE)
-        return directory
+        try {
+            Os.chmod(directory.absolutePath, PRIVATE_DIRECTORY_MODE)
+            return directory
+        } catch (failure: Throwable) {
+            runCatching { directory.deleteRecursively() }.onFailure(failure::addSuppressed)
+            throw failure
+        }
+    }
+
+    private fun createPrivateFile(file: File): File {
+        check(file.createNewFile()) { "Could not create a private temporary file." }
+        try {
+            restrictFilePermissions(file)
+            return file
+        } catch (failure: Throwable) {
+            runCatching { file.delete() }.onFailure(failure::addSuppressed)
+            throw failure
+        }
     }
 
     private fun restrictFilePermissions(file: File) {
