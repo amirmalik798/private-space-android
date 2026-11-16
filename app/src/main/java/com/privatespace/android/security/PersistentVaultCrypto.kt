@@ -222,7 +222,7 @@ object PersistentVaultCrypto {
     private fun decryptLegacyPayload(input: InputStream, output: OutputStream, aad: ByteArray, key: ByteArray) {
         val nonce = ByteArray(NONCE_BYTES)
         val buffer = ByteArray(BUFFER_BYTES)
-        val clearBuffer = ByteArray(BUFFER_BYTES + TAG_BYTES / 8)
+        val clearBuffer = ByteArray(BUFFER_BYTES + TAG_BYTES)
         try {
             readExactly(input, nonce, 0, nonce.size)
             val cipher = GCMBlockCipher(AESEngine.newInstance())
