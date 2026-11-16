@@ -83,7 +83,7 @@ internal object ChunkedAesGcm {
             val encrypted = try {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-                cipher.updateAAD(frameAad(aad, magic, index, length, cumulativeBytes))
+                updateFrameAad(cipher, aad, magic, index, length, cumulativeBytes)
                 cipher.doFinal(clear, 0, length)
             } finally {
                 // The nonce is serialized below; keep it until the write completes.
@@ -110,7 +110,7 @@ internal object ChunkedAesGcm {
             val terminal = try {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-                cipher.updateAAD(frameAad(aad, magic, frameIndex, 0, totalBytes))
+                updateFrameAad(cipher, aad, magic, frameIndex, 0, totalBytes)
                 cipher.doFinal(ByteArray(0))
             } catch (failure: Throwable) {
                 nonce.fill(0)
@@ -122,6 +122,8 @@ internal object ChunkedAesGcm {
                 output.write(terminal)
                 output.flush()
                 finished = true
+                aad.fill(0)
+                magic.fill(0)
             } finally {
                 nonce.fill(0)
                 terminal.fill(0)
@@ -132,6 +134,8 @@ internal object ChunkedAesGcm {
         fun abort() {
             finished = true
             buffer.fill(0)
+            aad.fill(0)
+            magic.fill(0)
             buffered = 0
         }
 
@@ -170,7 +174,7 @@ internal object ChunkedAesGcm {
                 readExactly(input, encrypted)
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-                cipher.updateAAD(frameAad(aad, magic, frameIndex, length, totalBytes))
+                updateFrameAad(cipher, aad, magic, frameIndex, length, totalBytes)
                 val clear = try {
                     cipher.doFinal(encrypted)
                 } catch (failure: Exception) {
@@ -180,6 +184,7 @@ internal object ChunkedAesGcm {
                     if (length == 0) {
                         if (clear.isNotEmpty()) throw IOException("Invalid encrypted vault terminal frame.")
                         if (input.read() != -1) throw IOException("Encrypted vault contains unexpected trailing data.")
+                        output.flush()
                         return
                     }
                     if (clear.size != length) throw IOException("Encrypted vault frame length does not match.")
@@ -210,6 +215,22 @@ internal object ChunkedAesGcm {
             )
         } catch (failure: ArithmeticException) {
             throw IllegalArgumentException("Vault payload is too large.", failure)
+        }
+    }
+
+    private fun updateFrameAad(
+        cipher: Cipher,
+        aad: ByteArray,
+        magic: ByteArray,
+        index: Long,
+        length: Int,
+        cumulativeBytes: Long
+    ) {
+        val frame = frameAad(aad, magic, index, length, cumulativeBytes)
+        try {
+            cipher.updateAAD(frame)
+        } finally {
+            frame.fill(0)
         }
     }
 
