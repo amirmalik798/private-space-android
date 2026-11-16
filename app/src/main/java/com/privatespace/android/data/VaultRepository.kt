@@ -1134,10 +1134,10 @@ class VaultRepository(context: Context) {
     }
 
     @Synchronized
-    private fun saveIndex(index: VaultIndex) {
+    private fun saveIndex(index: VaultIndex, restoreTransactionId: String? = null) {
         validateIndexForSave(index)
         val previousBytes = serializeIndex(runCatching { loadIndex() }.getOrDefault(VaultIndex()))
-        val bytes = serializeIndex(index)
+        val bytes = serializeIndex(index, restoreTransactionId)
         try {
             val persistentSnapshot = persistentStore?.saveIndex(
                 bytes,
@@ -1205,7 +1205,7 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun serializeIndex(index: VaultIndex): ByteArray {
+    private fun serializeIndex(index: VaultIndex, restoreTransactionId: String? = null): ByteArray {
         fun topicObject(topic: VaultTopic) = JSONObject()
             .put("id", topic.id)
             .put("name", topic.name)
@@ -1236,6 +1236,7 @@ class VaultRepository(context: Context) {
         json.put("topics", topicArray)
             .put("files", fileArray)
             .put("trash", trashArray)
+        restoreTransactionId?.let { json.put("restoreTransactionId", it) }
         val bytes = json.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= MAX_METADATA_BYTES) { "Vault index has reached its supported size limit." }
         return bytes
@@ -1376,12 +1377,12 @@ class VaultRepository(context: Context) {
             // Persist a small rollback journal before the first live payload is
             // replaced. It lets the next process distinguish a committed restore
             // from a process death halfway through promotion.
-            writeRestoreTransaction(index, records)
+            val restoreTransactionId = writeRestoreTransaction(index, records)
             incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
             // The encrypted AtomicFile index is the commit point. Recovery compares
             // its authenticated contents with the journal before keeping or rolling
             // back any promoted payloads.
-            saveIndex(index)
+            saveIndex(index, restoreTransactionId)
             recoverInterruptedRestoreFiles()
         } catch (failure: Throwable) {
             restoreFailure = failure
@@ -1433,7 +1434,8 @@ class VaultRepository(context: Context) {
         val hadOriginal: Boolean
     )
 
-    private fun writeRestoreTransaction(index: VaultIndex, records: List<VaultFile>) {
+    private fun writeRestoreTransaction(index: VaultIndex, records: List<VaultFile>): String {
+        val transactionId = UUID.randomUUID().toString()
         val serializedIndex = serializeIndex(index)
         val targetDigest = try {
             MessageDigest.getInstance("SHA-256").digest(serializedIndex)
@@ -1451,6 +1453,7 @@ class VaultRepository(context: Context) {
         }
         val journalBytes = JSONObject()
             .put("version", 1)
+            .put("transactionId", transactionId)
             .put("targetIndexSha256", targetDigest)
             .put("records", journalRecords)
             .toString()
@@ -1478,6 +1481,29 @@ class VaultRepository(context: Context) {
         } finally {
             journalBytes.fill(0)
         }
+        return transactionId
+    }
+
+    private fun readRestoreCommitTransactionId(): String? {
+        val hasBase = metadata.baseFile.isFile
+        val hasBackup = File(metadata.baseFile.path + ".bak").isFile
+        if (!hasBase && !hasBackup) return null
+        val output = BoundedWipingByteArrayOutputStream(MAX_METADATA_BYTES)
+        try {
+            metadata.openRead().use { encrypted ->
+                VaultCrypto.decrypt(encrypted, output, METADATA_AAD.toByteArray(Charsets.UTF_8))
+            }
+            val clear = output.toByteArray()
+            try {
+                JSONObject(String(clear, Charsets.UTF_8))
+                    .optString("restoreTransactionId")
+                    .takeIf { it.matches(Regex("[0-9a-fA-F-]{36}")) }
+            } finally {
+                clear.fill(0)
+            }
+        } finally {
+            output.wipe()
+        }
     }
 
     private fun recoverInterruptedRestoreFiles() {
@@ -1498,6 +1524,8 @@ class VaultRepository(context: Context) {
             val records = try {
                 val json = JSONObject(String(journalBytes, Charsets.UTF_8))
                 require(json.getInt("version") == 1) { "Unsupported restore journal version." }
+                val transactionId = json.getString("transactionId")
+                UUID.fromString(transactionId)
                 val digest = json.getString("targetIndexSha256")
                 require(digest.matches(Regex("[0-9a-f]{64}"))) { "Invalid restore journal digest." }
                 val array = json.getJSONArray("records")
@@ -1510,7 +1538,7 @@ class VaultRepository(context: Context) {
                 require(parsed.map { it.id }.distinct().size == parsed.size) {
                     "The restore journal contains duplicate file identifiers."
                 }
-                digest to parsed
+                transactionId to digest to parsed
             } catch (failure: Throwable) {
                 journalBytes.fill(0)
                 throw IOException(
@@ -1520,7 +1548,7 @@ class VaultRepository(context: Context) {
             }
             journalBytes.fill(0)
 
-            val (targetDigest, journalRecords) = records
+            val (transactionId, targetDigest, journalRecords) = records
             val currentDigest = runCatching {
                 val currentIndex = serializeIndex(loadIndex())
                 try {
@@ -1530,7 +1558,7 @@ class VaultRepository(context: Context) {
                     currentIndex.fill(0)
                 }
             }.getOrNull()
-            val committed = currentDigest == targetDigest
+            val committed = readRestoreCommitTransactionId() == transactionId && currentDigest == targetDigest
 
             if (committed) {
                 // The new authenticated index is durable: keep the new payloads
