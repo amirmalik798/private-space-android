@@ -6,8 +6,8 @@ import com.privatespace.android.security.VaultCrypto
  * Cheap structural checks for the app-private working copy before trusting it
  * over the separately authenticated recovery copy.
  *
- * Legacy VaultCrypto records contain a 12-byte nonce and 16-byte GCM tag.
- * Versioned records additionally contain an 8-byte format marker.
+ * Legacy records use a 12-byte nonce; older versioned records use an 8-byte
+ * marker plus a nonce. Current chunked records include authenticated frame headers.
  */
 internal object VaultRecoveryIntegrity {
     private const val LEGACY_CONTAINER_OVERHEAD_BYTES = 12L + 16L
