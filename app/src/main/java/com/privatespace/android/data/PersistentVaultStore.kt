@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.util.UUID
 
 /**
@@ -425,6 +426,10 @@ internal class PersistentVaultStore private constructor(
         dataKey.fill(0)
         dataKey = ByteArray(0)
     }
+
+    @Synchronized
+    fun hasSameDataKey(other: PersistentVaultStore): Boolean =
+        MessageDigest.isEqual(requireKey(), other.requireKey())
 
     private fun requireKey(): ByteArray {
         check(dataKey.size == DATA_KEY_BYTES) { "The recovery vault is locked." }

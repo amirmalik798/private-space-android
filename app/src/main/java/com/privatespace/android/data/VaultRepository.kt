@@ -163,10 +163,21 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun hasActivePersistentStorage(): Boolean = persistentStore != null
 
-    private fun isAlreadyActiveFor(treeUri: Uri): Boolean {
-        if (persistentStore == null) return false
+    private fun isAlreadyActiveFor(treeUri: Uri, password: CharArray): Boolean {
+        val activeStore = persistentStore ?: return false
         check(persistentTreeUri == treeUri) {
             "A different recovery folder is already active. Lock the vault before switching recovery folders."
+        }
+
+        // A duplicate restore/setup callback is idempotent only after the
+        // supplied password opens this exact folder and unwraps the same key.
+        val verifiedStore = PersistentVaultStore.open(appContext, treeUri, password.copyOf())
+        try {
+            check(activeStore.hasSameDataKey(verifiedStore)) {
+                "The selected recovery folder no longer matches the active vault."
+            }
+        } finally {
+            verifiedStore.clearKey()
         }
         return true
     }
@@ -178,7 +189,7 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun enablePersistentStorage(treeUri: Uri, password: CharArray) {
         try {
-            if (isAlreadyActiveFor(treeUri)) return
+            if (isAlreadyActiveFor(treeUri, password)) return
             val index = loadIndex()
             val store = PersistentVaultStore.create(appContext, treeUri, password)
             try {
@@ -221,7 +232,7 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun openPersistentStorage(treeUri: Uri, password: CharArray) {
         try {
-            if (isAlreadyActiveFor(treeUri)) return
+            if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
@@ -284,7 +295,7 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun restorePersistentVault(treeUri: Uri, password: CharArray) {
         try {
-            if (isAlreadyActiveFor(treeUri)) return
+            if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
