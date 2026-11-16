@@ -626,33 +626,40 @@ private fun PrivateSpaceRoot() {
         containerColor = Ink,
         topBar = {
             Surface(color = Ink, tonalElevation = 0.dp) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        modifier = Modifier.size(44.dp),
-                        shape = RoundedCornerShape(15.dp),
-                        color = Blue.copy(alpha = 0.16f)
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(23.dp))
+                        Surface(
+                            modifier = Modifier.size(46.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = Blue.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(25.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("Private Space", fontWeight = FontWeight.Bold, color = White, fontSize = 19.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(12.dp))
+                                Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                        IconButton(onClick = { showSecurityInfo = true }) {
+                            Icon(Icons.Default.Info, contentDescription = "Security", tint = Muted)
+                        }
+                        IconButton(onClick = { showChangePassword = true }) {
+                            Icon(Icons.Default.Key, contentDescription = "Change password", tint = Muted)
+                        }
+                        IconButton(onClick = { lockVault() }) {
+                            Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
                         }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Private Space", fontWeight = FontWeight.Bold, color = White, fontSize = 19.sp)
-                        Text("YOUR PERSONAL VAULT", fontSize = 10.sp, color = Muted, letterSpacing = 1.1.sp)
-                    }
-                    IconButton(onClick = { showSecurityInfo = true }) {
-                        Icon(Icons.Default.Info, contentDescription = "Vault security information", tint = Muted)
-                    }
-                    IconButton(onClick = { showChangePassword = true }) {
-                        Icon(Icons.Default.Key, contentDescription = "Change password", tint = Muted)
-                    }
-                    IconButton(onClick = { lockVault() }) {
-                        Icon(Icons.Default.Lock, contentDescription = "Lock vault now", tint = Cyan)
-                    }
+                    HorizontalDivider(color = Line.copy(alpha = 0.55f), thickness = 0.7.dp)
                 }
             }
         },
@@ -660,7 +667,7 @@ private fun PrivateSpaceRoot() {
             if (topics.isNotEmpty()) {
                 ExtendedFloatingActionButton(
                     onClick = { showCreateTopic = true },
-                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
                     text = { Text("New topic", fontWeight = FontWeight.SemiBold) },
                     containerColor = Blue,
                     contentColor = Color.White,
@@ -670,9 +677,11 @@ private fun PrivateSpaceRoot() {
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 12.dp, end = 18.dp, bottom = 104.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            Modifier.fillMaxSize()
+                .background(Brush.verticalGradient(listOf(Color(0xFF0E1728), Ink, Color(0xFF070B13))))
+                .padding(padding),
+            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 104.dp),
+            verticalArrangement = Arrangement.spacedBy(17.dp)
         ) {
             item {
                 VaultOverviewCard(
@@ -688,7 +697,7 @@ private fun PrivateSpaceRoot() {
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Your topics", color = White, fontSize = 21.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("Topics", color = White, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     if (topics.isNotEmpty()) {
                         Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
                             Text(
@@ -710,7 +719,7 @@ private fun PrivateSpaceRoot() {
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
-                        placeholder = { Text("Search your topics", color = Muted) },
+                        placeholder = { Text("Search topics", color = Muted) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
                         trailingIcon = {
                             if (topicQuery.isNotEmpty()) {
@@ -730,10 +739,7 @@ private fun PrivateSpaceRoot() {
                 }
                 filteredTopics.isEmpty() -> {
                     item {
-                        EmptySearchState(
-                            query = topicQuery,
-                            onClear = { topicQuery = "" }
-                        )
+                        EmptySearchState(onClear = { topicQuery = "" })
                     }
                 }
                 else -> {
@@ -793,12 +799,8 @@ private fun PrivateSpaceRoot() {
                         onValueChange = { topicName = it.take(64) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Topic name") },
-                        placeholder = { Text("e.g. Personal documents") },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        supportingText = {
-                            Text(topicName.length.toString() + " / 64", color = Muted)
-                        }
+                        shape = RoundedCornerShape(14.dp)
                     )
                 }
             },
@@ -825,10 +827,18 @@ private fun PrivateSpaceRoot() {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                         Spacer(Modifier.width(8.dp))
                     }
+                    Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
                     Text("Create topic")
                 }
             },
-            dismissButton = { TextButton(onClick = { showCreateTopic = false }) { Text("Cancel") } },
+            dismissButton = {
+                TextButton(onClick = { showCreateTopic = false }) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Cancel")
+                }
+            },
             shape = RoundedCornerShape(24.dp),
             containerColor = Panel
         )
@@ -946,12 +956,6 @@ private fun FilePickerChoiceDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Choose an app to browse and select documents or photos.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -985,13 +989,6 @@ private fun FilePickerChoiceDialog(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    if (selected) "Selected file picker" else "Tap to choose this app",
-                                    color = Muted,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
                             }
                             if (selected) {
                                 Icon(
@@ -1010,15 +1007,21 @@ private fun FilePickerChoiceDialog(
                 onClick = { onChoice(targets[selectedIndex], true) },
                 colors = ButtonDefaults.buttonColors(containerColor = Blue)
             ) {
+                Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
                 Text("Always", color = White)
             }
         },
         dismissButton = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text("Cancel", color = Muted)
                 }
                 TextButton(onClick = { onChoice(targets[selectedIndex], false) }) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text("Just once", color = Cyan)
                 }
             }
@@ -1073,7 +1076,6 @@ private fun AuthScreen(
             }
             Spacer(Modifier.height(18.dp))
             Text("Private Space", color = White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text("Your documents. Your private place.", color = Muted, fontSize = 14.sp)
             Spacer(Modifier.height(28.dp))
 
             Card(
@@ -1092,12 +1094,6 @@ private fun AuthScreen(
                             color = White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 21.sp
-                        )
-                        Text(
-                            if (setup) "Set a password to protect this vault on this device."
-                            else "Enter your password to unlock your private files.",
-                            color = Muted,
-                            fontSize = 13.sp
                         )
                     }
                     OutlinedTextField(
@@ -1185,27 +1181,18 @@ private fun AuthScreen(
                             Spacer(Modifier.width(10.dp))
                             Text("Securing your vault…")
                         } else {
-                            Text(if (setup) "Create secure vault" else "Unlock vault", fontWeight = FontWeight.SemiBold)
+                            Icon(
+                                if (setup) Icons.Default.Shield else Icons.Default.LockOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
                             Spacer(Modifier.width(8.dp))
-                            Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(if (setup) "Create secure vault" else "Unlock vault", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
             Spacer(Modifier.height(20.dp))
-            Row(
-                Modifier.widthIn(max = 420.dp).padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(Icons.Default.Shield, contentDescription = null, tint = Green, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Your files and vault index are encrypted on this device.",
-                    color = Muted,
-                    fontSize = 12.sp
-                )
-            }
         }
     }
 }
@@ -1220,59 +1207,73 @@ private fun VaultOverviewCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = Panel),
-        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.16f))
     ) {
-        Box(Modifier.background(Brush.linearGradient(listOf(Panel2, Panel)))) {
+        Box(
+            Modifier.background(
+                Brush.linearGradient(
+                    listOf(Color(0xFF1B3454), Color(0xFF14243B), Color(0xFF101A2B))
+                )
+            )
+        ) {
             Column(
                 Modifier.fillMaxWidth().padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Surface(color = Green.copy(alpha = 0.13f), shape = RoundedCornerShape(30.dp)) {
-                    Row(
-                        Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Surface(
+                        color = Green.copy(alpha = 0.13f),
+                        shape = RoundedCornerShape(30.dp)
                     ) {
-                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(7.dp))
-                        Text("ON-DEVICE ENCRYPTION", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(14.dp))
+                            Text("ON-DEVICE ENCRYPTION", color = Green, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp)
+                        }
                     }
+                    Spacer(Modifier.weight(1f))
+                    Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Cyan.copy(alpha = 0.75f), modifier = Modifier.size(27.dp))
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Your private library", color = White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Your vault", color = White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OverviewMetric(
                         modifier = Modifier.weight(1f),
-                        label = "TOPICS",
+                        label = "Topics",
                         value = topicCount.toString(),
                         icon = Icons.Default.Folder
                     )
                     OverviewMetric(
                         modifier = Modifier.weight(1f),
-                        label = "FILES",
+                        label = "Files",
                         value = fileCount.toString(),
                         icon = Icons.Default.Description
                     )
                 }
-                HorizontalDivider(color = Line.copy(alpha = 0.8f))
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Encrypted storage used", color = Muted, fontSize = 12.sp)
+                        Text("Storage used", color = Muted, fontSize = 12.sp)
                         Text(formatBytes(storageBytes), color = Cyan, fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     }
                     FilledTonalButton(
                         onClick = onExportAll,
                         enabled = exportEnabled,
-                        shape = RoundedCornerShape(13.dp)
+                        shape = RoundedCornerShape(14.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(7.dp))
-                        Text("Export all topics")
+                        Text("Export all")
                     }
                 }
             }
@@ -1289,18 +1290,27 @@ private fun OverviewMetric(
 ) {
     Surface(
         modifier = modifier,
-        color = Panel2.copy(alpha = 0.85f),
-        shape = RoundedCornerShape(17.dp)
+        color = Color(0xFF223652).copy(alpha = 0.72f),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, White.copy(alpha = 0.05f))
     ) {
         Row(
-            Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+            Modifier.padding(horizontal = 13.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(icon, contentDescription = null, tint = Cyan, modifier = Modifier.size(21.dp))
+            Surface(
+                modifier = Modifier.size(36.dp),
+                color = Cyan.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = Cyan, modifier = Modifier.size(19.dp))
+                }
+            }
             Spacer(Modifier.width(10.dp))
-            Column {
-                Text(value, color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text(label, color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(value, color = White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -1328,23 +1338,17 @@ private fun EmptyTopicsState(onCreate: () -> Unit) {
                 }
             }
             Text("Start with a topic", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
-            Text(
-                "Create a topic to add documents and photos.",
-                color = Muted,
-                fontSize = 13.sp,
-                lineHeight = 19.sp
-            )
             Button(onClick = onCreate, shape = RoundedCornerShape(14.dp)) {
-                Icon(Icons.Default.Add, contentDescription = null)
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("Create your first topic")
+                Text("Create topic")
             }
         }
     }
 }
 
 @Composable
-private fun EmptySearchState(query: String, onClear: () -> Unit) {
+private fun EmptySearchState(onClear: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 30.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1352,8 +1356,11 @@ private fun EmptySearchState(query: String, onClear: () -> Unit) {
     ) {
         Icon(Icons.Default.SearchOff, contentDescription = null, tint = Muted, modifier = Modifier.size(36.dp))
         Text("No matching topics", color = White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-        Text("Nothing matches \"" + query + "\".", color = Muted, fontSize = 13.sp)
-        TextButton(onClick = onClear) { Text("Clear search") }
+        TextButton(onClick = onClear) {
+            Icon(Icons.Default.Backspace, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Clear search")
+        }
     }
 }
 
@@ -1382,7 +1389,13 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 )
             }
         },
-        confirmButton = { Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) { Text("Got it") } },
+        confirmButton = {
+            Button(onClick = onDismiss, shape = RoundedCornerShape(12.dp)) {
+                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Got it")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
@@ -1415,9 +1428,9 @@ private fun TopicCard(
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(21.dp),
-        border = BorderStroke(1.dp, Line.copy(alpha = 0.75f))
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF121F33)),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, Line.copy(alpha = 0.72f))
     ) {
         Row(
             Modifier.fillMaxWidth().padding(15.dp),
@@ -1442,14 +1455,19 @@ private fun TopicCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    (summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files") +
-                        " · " + formatBytes(summary.totalBytes),
-                    color = Cyan,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text("Updated " + formatDate(summary.topic.updatedAt), color = Muted, fontSize = 11.sp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files",
+                        color = Cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text("·", color = Muted, fontSize = 12.sp)
+                    Text(formatBytes(summary.totalBytes), color = Muted, fontSize = 12.sp)
+                }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -1534,8 +1552,11 @@ private fun TopicDialog(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("ENCRYPTED STORAGE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
-                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.Lock, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
+                                Text("Storage", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            }
+                            Text(formatBytes(storageBytes), color = Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Surface(
@@ -1544,7 +1565,10 @@ private fun TopicDialog(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("LAST UPDATED", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Icon(Icons.Default.History, contentDescription = null, tint = Cyan, modifier = Modifier.size(12.dp))
+                                Text("Updated", color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            }
                             Text(formatDate(topic.updatedAt), color = White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
                         }
                     }
@@ -1555,7 +1579,7 @@ private fun TopicDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(13.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(7.dp))
                     Text("Add files")
                 }
@@ -1566,18 +1590,18 @@ private fun TopicDialog(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(13.dp)
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderShared, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Share topic")
+                        Text("Share")
                     }
                     OutlinedButton(
                         onClick = onExportTopic,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(13.dp)
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderZip, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Export topic")
+                        Text("Export")
                     }
                 }
                 HorizontalDivider(color = Line)
@@ -1609,13 +1633,7 @@ private fun TopicDialog(
                     }
                 }
                 HorizontalDivider(color = Line)
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Created " + formatDate(topic.createdAt), color = Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = onDismiss) { Text("Done") }
-                }
+                Spacer(Modifier.height(8.dp))
             }
         }
     }
@@ -1632,10 +1650,20 @@ private fun VaultFileRow(
     var menuExpanded by remember(file.id) { mutableStateOf(false) }
     val isPhoto = file.mimeType.startsWith("image/")
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
+    val fileIcon = when {
+        isPhoto -> Icons.Default.Image
+        extension == "PDF" -> Icons.Default.PictureAsPdf
+        extension in setOf("DOC", "DOCX", "ODT", "RTF") -> Icons.Default.Article
+        extension in setOf("XLS", "XLSX", "ODS", "CSV") -> Icons.Default.TableChart
+        extension in setOf("PPT", "PPTX", "ODP") -> Icons.Default.Slideshow
+        extension in setOf("ZIP", "7Z", "RAR", "TAR", "GZ") -> Icons.Default.FolderZip
+        else -> Icons.Default.InsertDriveFile
+    }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Panel2)
+        shape = RoundedCornerShape(17.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF192840)),
+        border = BorderStroke(1.dp, White.copy(alpha = 0.035f))
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 5.dp, top = 9.dp, bottom = 9.dp),
@@ -1648,7 +1676,7 @@ private fun VaultFileRow(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        if (isPhoto) Icons.Default.Image else Icons.Default.Description,
+                        fileIcon,
                         contentDescription = if (isPhoto) "Photo" else "Document",
                         tint = if (isPhoto) Green else Cyan
                     )
@@ -1657,7 +1685,7 @@ private fun VaultFileRow(
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(file.displayName, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(extension + " · " + formatBytes(file.sizeBytes) + " original size", color = Muted, fontSize = 11.sp, maxLines = 1)
+                Text(extension + "  ·  " + formatBytes(file.sizeBytes), color = Muted, fontSize = 11.sp, maxLines = 1)
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -1670,7 +1698,7 @@ private fun VaultFileRow(
                 ) {
                     DropdownMenuItem(
                         text = { Text("Open") },
-                        leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpen() }
                     )
                     DropdownMenuItem(
@@ -1713,7 +1741,6 @@ private fun ChangePasswordDialog(
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Change password", fontWeight = FontWeight.Bold)
-                Text("Choose a new password for this device.", color = Muted, fontSize = 12.sp)
             }
         },
         text = {
@@ -1773,13 +1800,11 @@ private fun ChangePasswordDialog(
                     shape = RoundedCornerShape(13.dp),
                     isError = confirmation.isNotEmpty() && newPassword != confirmation
                 )
-                Text(
-                    "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH +
-                        " characters. The new password must match its confirmation.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
+                if (confirmation.isNotEmpty() && newPassword != confirmation) {
+                    Text("Passwords do not match.", color = Red, fontSize = 12.sp)
+                } else if (newPassword.isNotEmpty() && newPassword.length < PasswordManager.MIN_PASSWORD_LENGTH) {
+                    Text("Use at least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters.", color = Muted, fontSize = 12.sp)
+                }
             }
         },
         confirmButton = {
@@ -1789,9 +1814,19 @@ private fun ChangePasswordDialog(
                     newPassword == confirmation,
                 onClick = { onChange(oldPassword, newPassword) },
                 shape = RoundedCornerShape(12.dp)
-            ) { Text("Save password") }
+            ) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Save password")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Cancel")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
@@ -1814,9 +1849,19 @@ private fun ConfirmDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Ink),
                 shape = RoundedCornerShape(12.dp)
-            ) { Text("Delete permanently", fontWeight = FontWeight.SemiBold) }
+            ) {
+                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Delete permanently", fontWeight = FontWeight.SemiBold)
+            }
         },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Keep it") } },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Keep it")
+            }
+        },
         shape = RoundedCornerShape(24.dp),
         containerColor = Panel
     )
