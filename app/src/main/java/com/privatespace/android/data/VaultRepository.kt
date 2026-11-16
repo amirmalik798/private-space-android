@@ -67,6 +67,30 @@ class VaultRepository(context: Context) {
     private var initializationFailure: Throwable? = null
 
     companion object {
+        private val INSTANCE_LOCK = Any()
+
+        @Volatile
+        private var sharedInstance: VaultRepository? = null
+
+        /**
+         * A process-wide repository keeps its synchronized file/index transactions
+         * serialized across Activity recreation. Failed initialization is not
+         * cached permanently, so a later Activity recreation can retry recovery.
+         */
+        fun getInstance(context: Context): VaultRepository {
+            sharedInstance?.let { cached ->
+                if (cached.initializationFailure == null) return cached
+            }
+            return synchronized(INSTANCE_LOCK) {
+                val cached = sharedInstance
+                if (cached != null && cached.initializationFailure == null) {
+                    cached
+                } else {
+                    VaultRepository(context.applicationContext).also { sharedInstance = it }
+                }
+            }
+        }
+
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
         private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
