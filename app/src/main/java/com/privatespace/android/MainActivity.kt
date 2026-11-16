@@ -68,6 +68,7 @@ import com.privatespace.android.security.PasswordManager
 import com.privatespace.android.security.VaultSessionPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -155,7 +156,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         isResumedForVault = false
-        foregroundGeneration = Math.addExact(foregroundGeneration, 1L)
+        foregroundGeneration = if (foregroundGeneration == Long.MAX_VALUE) {
+            0L
+        } else {
+            foregroundGeneration + 1L
+        }
         super.onPause()
         if (VaultSessionPolicy.shouldLockForScreenLock(
                 getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
@@ -298,7 +303,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var activeMediaFile by remember { mutableStateOf<PreparedVaultFile?>(null) }
     var mediaViewerLoading by remember { mutableStateOf(false) }
     var mediaRequestToken by remember { mutableLongStateOf(0L) }
-    var pendingOpenFile by remember { mutableStateOf<VaultFile?>(null) }
     var topicQuery by remember { mutableStateOf("")}
     var showSecurityInfo by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
@@ -352,7 +356,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         activeMediaFile = null
         activeMediaId = null
         mediaViewerLoading = false
-        pendingOpenFile = null
         topicQuery = ""
         showSecurityInfo = false
         topMenuExpanded = false
@@ -787,95 +790,103 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         preferredSamsungPackages: List<String> = emptyList(),
         mimeTypeOverride: String? = null
     ) {
+        if (!unlocked || busy) return
+        busy = true
         scope.launch {
-            busy = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repository.prepareDecryptedFile(file.id) }
-            }
-            busy = false
-            result.onSuccess { prepared ->
+            var prepared: PreparedVaultFile? = null
+            var handedOff = false
+            try {
+                prepared = withContext(Dispatchers.IO) {
+                    repository.prepareDecryptedFile(file.id)
+                }
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
                         activity?.isResumedForVault == true
                     )
                 ) {
-                    runCatching { prepared.file.parentFile?.deleteRecursively() }
-                    return@onSuccess
+                    toast("Private Space was locked before the file could be opened.")
+                    return@launch
                 }
-                try {
-                    val uri = FileProvider.getUriForFile(
-                        context, "com.privatespace.android.fileprovider", prepared.file
-                    )
-                    val requestedMimeType = mimeTypeOverride ?: prepared.mimeType
-                    val baseIntent = Intent(Intent.ACTION_VIEW)
-                        .setDataAndType(uri, requestedMimeType)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    baseIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
 
-                    val samsungIntents = if (
-                        Build.MANUFACTURER.equals("samsung", ignoreCase = true)
-                    ) {
-                        preferredSamsungPackages.map { packageName ->
-                            Intent(baseIntent).setPackage(packageName)
-                        }
-                    } else {
-                        emptyList()
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "com.privatespace.android.fileprovider",
+                    prepared.file
+                )
+                val baseIntent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, mimeTypeOverride ?: prepared.mimeType)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                baseIntent.clipData = ClipData.newUri(
+                    context.contentResolver,
+                    file.displayName,
+                    uri
+                )
+
+                val samsungIntents = if (
+                    Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+                ) {
+                    preferredSamsungPackages.map { packageName ->
+                        Intent(baseIntent).setPackage(packageName)
                     }
-                    // Try Samsung targets directly before Android's generic resolver.
-                    // Avoid resolveActivity pre-filtering on OEM builds: some resolver
-                    // combinations hide installed handlers even though launch succeeds.
-                    val launchCandidates = samsungIntents + baseIntent
-                    var launchFailure: Exception? = null
-                    var launched = false
-                    for (candidate in launchCandidates) {
-                        try {
-                            context.startActivity(candidate)
-                            launched = true
-                            break
-                        } catch (failure: Exception) {
-                            launchFailure = failure
-                        }
-                    }
-                    if (!launched) {
-                        throw launchFailure ?: IllegalStateException("No compatible media viewer is installed.")
-                    }
-                } catch (failure: Exception) {
-                    runCatching { prepared.file.parentFile?.deleteRecursively() }
-                    toast("No compatible app could open this file.")
+                } else {
+                    emptyList()
                 }
-            }.onFailure {
-                toast(it.message ?: "The file could not be decrypted or opened.")
+                // Try Samsung targets directly before Android's generic resolver.
+                // Avoid resolveActivity pre-filtering on OEM builds because some
+                // Samsung handlers are not consistently reported by the resolver.
+                val launchCandidates = samsungIntents + baseIntent
+                var launchFailure: Exception? = null
+                for (candidate in launchCandidates) {
+                    try {
+                        context.startActivity(candidate)
+                        handedOff = true
+                        break
+                    } catch (failure: Exception) {
+                        launchFailure = failure
+                    }
+                }
+                if (!handedOff) {
+                    throw launchFailure ?: IllegalStateException(
+                        "No compatible app is installed to open this file."
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (memoryFailure: OutOfMemoryError) {
+                toast("There is not enough available memory to prepare this file.")
+            } catch (failure: Exception) {
+                toast(failure.message ?: "The file could not be opened by another app.")
+            } finally {
+                val staged = prepared
+                if (!handedOff && staged != null) {
+                    val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
+                        runCatching {
+                            repository.discardPreparedOutgoing(listOf(staged))
+                        }.exceptionOrNull()
+                    }
+                    if (cleanupFailure != null) {
+                        toast("A temporary decrypted copy could not be removed from private cache.")
+                    }
+                }
+                busy = false
             }
         }
     }
 
-
     fun openVaultFile(file: VaultFile) {
+        if (busy) return
+        if (
+            activeTopicId != file.topicId ||
+            vaultFiles.none { it.id == file.id } ||
+            !unlocked
+        ) {
+            toast("This file is no longer available in the open topic.")
+            return
+        }
+
         val kind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
-        if (kind == VaultFormatSupport.FileKind.DOCUMENT) {
-            // Documents retain the explicit confirmation before an external app
-            // receives access to a temporary decrypted copy.
-            pendingOpenFile = file
-            return
-        }
-
-        if (activeTopicId != file.topicId || vaultFiles.none { it.id == file.id }) {
-            toast("This media item is no longer available in the open topic.")
-            return
-        }
-
         val extensionMimeType = VaultFormatSupport.mimeTypeForName(file.displayName)
-        val targetMimeType = when (kind) {
-            VaultFormatSupport.FileKind.PHOTO ->
-                extensionMimeType?.takeIf(VaultFormatSupport::isImageMimeType)
-                    ?: file.mimeType.takeIf(VaultFormatSupport::isImageMimeType)
-                    ?: "image/*"
-            VaultFormatSupport.FileKind.VIDEO ->
-                extensionMimeType?.takeIf(VaultFormatSupport::isVideoMimeType)
-                    ?: file.mimeType.takeIf(VaultFormatSupport::isVideoMimeType)
-                    ?: "video/*"
-            VaultFormatSupport.FileKind.DOCUMENT -> file.mimeType
-        }
+        val targetMimeType = extensionMimeType ?: file.mimeType
         val samsungTargets = when (kind) {
             VaultFormatSupport.FileKind.PHOTO -> listOf(SAMSUNG_GALLERY_PACKAGE)
             VaultFormatSupport.FileKind.VIDEO -> listOf(
@@ -886,8 +897,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             VaultFormatSupport.FileKind.DOCUMENT -> emptyList()
         }
 
-        // Full-screen in-app images are downsampled to a bounded bitmap. Hand
-        // the original decrypted bytes to Samsung Gallery to preserve detail.
+        // Opening is an explicit tap on this file. It launches the appropriate
+        // external viewer directly; only Share and Export retain confirmation.
+        // The original bytes are decrypted into the restricted, temporary
+        // FileProvider cache and are never copied into public/shared storage here.
         openExternalVaultFile(
             file = file,
             preferredSamsungPackages = samsungTargets,
@@ -908,7 +921,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         activity?.isResumedForVault == true
                     )
                 ) {
-                    runCatching { prepared.file.parentFile?.deleteRecursively() }
+                    runCatching { repository.discardPreparedOutgoing(listOf(prepared)) }
                     return@onSuccess
                 }
                 try {
@@ -922,7 +935,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
                     context.startActivity(Intent.createChooser(sendIntent, "Share file"))
                 } catch (failure: Exception) {
-                    runCatching { prepared.file.parentFile?.deleteRecursively() }
+                    runCatching { repository.discardPreparedOutgoing(listOf(prepared)) }
                     toast("Could not open the Android share sheet.")
                 }
             }.onFailure {
@@ -944,7 +957,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         activity?.isResumedForVault == true
                     )
                 ) {
-                    runCatching { preparedFiles.firstOrNull()?.file?.parentFile?.deleteRecursively() }
+                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
                     return@onSuccess
                 }
                 try {
@@ -962,9 +975,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     sendIntent.clipData = clip
                     context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
                 } catch (_: Exception) {
-                    preparedFiles.firstOrNull()?.file?.parentFile?.let { session ->
-                        runCatching { session.deleteRecursively() }
-                    }
+                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
                     toast("Could not prepare the topic for sharing.")
                 }
             }.onFailure {
@@ -985,7 +996,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         prepared
                     } catch (failure: Throwable) {
                         prepared.forEach { item ->
-                            runCatching { item.file.parentFile?.deleteRecursively() }
+                            runCatching { repository.discardPreparedOutgoing(listOf(item)) }
                         }
                         throw failure
                     }
@@ -998,9 +1009,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         activity?.isResumedForVault == true
                     )
                 ) {
-                    preparedFiles.forEach { item ->
-                        runCatching { item.file.parentFile?.deleteRecursively() }
-                    }
+                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
                     return@onSuccess
                 }
                 try {
@@ -1022,9 +1031,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     sendIntent.clipData = clip
                     context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
                 } catch (_: Exception) {
-                    preparedFiles.forEach { item ->
-                        runCatching { item.file.parentFile?.deleteRecursively() }
-                    }
+                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
                     toast("Could not prepare the selected files for sharing.")
                 }
             }.onFailure {
@@ -1565,53 +1572,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
 
-
-    pendingOpenFile?.let { requestedFile ->
-        val isVideoRequest = VaultFormatSupport.isVideoMimeType(requestedFile.mimeType)
-        AlertDialog(
-            onDismissRequest = { pendingOpenFile = null },
-            title = {
-                Text(
-                    if (isVideoRequest) "Open video outside Private Space?" else "Open document outside Private Space?",
-                    color = White,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Text(
-                    if (isVideoRequest) {
-                        "To play this video, Private Space must create a temporary decrypted copy and grant Samsung Gallery or a compatible video player access to it. The receiving app may retain or copy the video. Continue only if you trust the player."
-                    } else {
-                        "Private Space does not render this document internally. To open it, the app must create a temporary decrypted copy and grant the app you choose access to that copy. That app may retain or copy the document. Continue only when you trust the receiving app."
-                    },
-                    color = Muted
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        pendingOpenFile = null
-                        val currentFile = vaultFiles.firstOrNull { it.id == requestedFile.id }
-                        if (currentFile == null || !unlocked) {
-                            toast("This document is no longer available in the vault.")
-                        } else {
-                            openExternalVaultFile(currentFile)
-                        }
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(if (isVideoRequest) "Open video player" else "Continue to document app")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingOpenFile = null }) {
-                    Text("Keep private")
-                }
-            },
-            shape = RoundedCornerShape(24.dp),
-            containerColor = Panel
-        )
-    }
 
     pendingReleaseConfirmation?.let { pending ->
         val isShare = pending.action == VaultReleaseAction.SHARE
@@ -2517,7 +2477,7 @@ private fun TopicCard(
                 }
             }
             Box {
-                IconButton(onClick = { menuExpanded = true }) {
+                IconButton(onClick = { menuExpanded = true }, enabled = !busy) {
                     Icon(Icons.Default.MoreVert, contentDescription = "Actions for " + summary.topic.name, tint = Muted)
                 }
                 DropdownMenu(
@@ -3229,7 +3189,7 @@ private fun VaultFileRow(
         else -> Icons.Default.InsertDriveFile
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable {
+        modifier = Modifier.fillMaxWidth().clickable(enabled = !busy) {
             if (selectionMode) onToggleSelection() else onOpen()
         },
         shape = RoundedCornerShape(17.dp),
@@ -3248,6 +3208,7 @@ private fun VaultFileRow(
             if (selectionMode) {
                 Checkbox(
                     checked = selected,
+                    enabled = !busy,
                     onCheckedChange = { onToggleSelection() },
                     colors = CheckboxDefaults.colors(
                         checkedColor = Cyan,
@@ -3284,6 +3245,7 @@ private fun VaultFileRow(
                     containerColor = Panel
                 ) {
                     DropdownMenuItem(
+                        enabled = !busy,
                         text = { Text("Open") },
                         leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpen() }

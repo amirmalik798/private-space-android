@@ -121,9 +121,9 @@ class VaultRepository(context: Context) {
             // first created for this process. Remove all abandoned plaintext
             // staging left by a previous process before exposing the vault UI.
             staging.listFiles()?.forEach { temporary ->
-                check(temporary.deleteRecursively()) {
-                    "Could not securely remove abandoned plaintext staging files."
-                }
+                // Cache cleanup is best-effort: an undeletable private staging
+                // entry must not prevent the encrypted vault from opening.
+                runCatching { temporary.deleteRecursively() }
             }
             migrateLegacyMetadataIfNeeded()
 
@@ -553,6 +553,31 @@ class VaultRepository(context: Context) {
             runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
             throw failure
         }
+    }
+
+    /**
+     * Removes only temporary decrypted files created inside the private outgoing
+     * cache. Canonical-path checks prevent a malformed/stale handle from deleting
+     * any file outside that dedicated directory.
+     */
+    @Synchronized
+    fun discardPreparedOutgoing(preparedFiles: Collection<PreparedVaultFile>) {
+        if (preparedFiles.isEmpty()) return
+        val outgoingRoot = outgoing.canonicalFile
+        val sessions = linkedMapOf<String, File>()
+        preparedFiles.forEach { prepared ->
+            val canonicalFile = prepared.file.canonicalFile
+            val session = canonicalFile.parentFile
+                ?: throw IOException("The temporary outgoing file location is invalid.")
+            check(
+                canonicalFile.isFile &&
+                    session.parentFile?.canonicalFile == outgoingRoot
+            ) {
+                "Refusing to remove a temporary file outside the private outgoing cache."
+            }
+            sessions[session.canonicalPath] = session
+        }
+        sessions.values.forEach(::deleteTemporaryEntry)
     }
 
     /**
@@ -1268,9 +1293,14 @@ class VaultRepository(context: Context) {
     private fun recoverInterruptedRestoreFiles() {
         root.listFiles()?.filter { it.name.endsWith(".restore.bak") }?.forEach { backup ->
             val id = backup.name.removeSuffix(".restore.bak")
+            if (runCatching { UUID.fromString(id) }.isFailure) {
+                // This is not one of our transaction names. Leave it untouched
+                // rather than letting malformed local metadata crash startup.
+                return@forEach
+            }
             val destination = encryptedFile(id)
             if (!destination.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
-            else backup.delete()
+            else runCatching { backup.delete() }
         }
         root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach(::deleteTemporaryEntry)
         syncDirectory(root)
@@ -1599,7 +1629,7 @@ class VaultRepository(context: Context) {
         // these incomplete encrypted records cannot be resumed and only waste space.
         root.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
-            ?.forEach(::deleteTemporaryEntry)
+            ?.forEach { temporary -> runCatching { deleteTemporaryEntry(temporary) } }
     }
 
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
@@ -1607,7 +1637,11 @@ class VaultRepository(context: Context) {
             val modified = child.lastModified()
             val ageIsUnknown = modified <= 0L
             val expired = modified > 0L && now >= modified && now - modified > ttlMs
-            if (ageIsUnknown || expired) deleteTemporaryEntry(child)
+            if (ageIsUnknown || expired) {
+                // Cache deletion failure is contained to this entry. Keep it in
+                // app-private storage and retry later instead of locking the vault.
+                runCatching { deleteTemporaryEntry(child) }
+            }
         }
     }
 
