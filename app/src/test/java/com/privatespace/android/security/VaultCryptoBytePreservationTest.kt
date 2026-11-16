@@ -13,6 +13,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VaultCryptoBytePreservationTest {
@@ -101,6 +102,14 @@ class VaultCryptoBytePreservationTest {
     }
 
     @Test
+    fun chunkedContainerLengthSupportsOneTerabyteWithoutIntOverflow() {
+        val oneTerabyte = 1_099_511_627_776L
+        val encryptedLength = VaultCrypto.encryptedContainerLength(oneTerabyte)
+        assertTrue(encryptedLength > oneTerabyte)
+        assertTrue(encryptedLength < Long.MAX_VALUE)
+    }
+
+    @Test
     fun encryptionUsesFreshRandomNonceForEachCopy() {
         val original = payload(1024)
         val (first, firstClear) = roundTrip(original)
@@ -109,8 +118,8 @@ class VaultCryptoBytePreservationTest {
         assertArrayEquals(original, firstClear)
         assertArrayEquals(original, secondClear)
         assertNotEquals(
-            first.copyOfRange(8, 20).toList(),
-            second.copyOfRange(8, 20).toList()
+            first.copyOfRange(12, 24).toList(),
+            second.copyOfRange(12, 24).toList()
         )
     }
 
