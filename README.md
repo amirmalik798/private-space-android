@@ -1,5 +1,22 @@
 # Private Space
 
+## User interface and usability (0.6.0)
+
+The vault has a redesigned, accessibility-conscious interface with a searchable topic dashboard, at-a-glance topic/file/storage totals, a clearer empty state, a full-height topic view, and streamlined per-file actions. Password fields can be revealed while typing, destructive actions explain what will be removed, and security guidance is available from the dashboard.
+
+The UI applies Jakob Nielsen's ten usability heuristics:
+
+1. **Visibility of system status:** visible topic/file/storage totals, encryption status, lockout countdowns, and progress feedback.
+2. **Match between system and real world:** familiar topics, folders, documents, photos, and plain-language actions.
+3. **User control and freedom:** clear cancel/close actions, a one-tap lock action, and a searchable dashboard.
+4. **Consistency and standards:** shared Material 3 colors, typography, surfaces, shapes, and action patterns.
+5. **Error prevention:** disabled unavailable actions, password confirmation, clear password guidance, and explicit permanent-delete confirmation.
+6. **Recognition rather than recall:** visible labels, familiar icons, file metadata, and contextual action menus.
+7. **Flexibility and efficiency:** topic search, quick-create action, and direct file-row opening with secondary actions grouped in a menu.
+8. **Aesthetic and minimalist design:** fewer competing file buttons, stronger visual hierarchy, and more breathing room.
+9. **Help users recognize, diagnose, and recover from errors:** readable inline authentication errors, lockout timing, and safe document-picker fallback behavior.
+10. **Help and documentation:** an in-app security explainer describes encryption, sharing/export boundaries, and the lack of password recovery.
+
 Private Space is a local-only Android vault for organizing documents and photos into topics. The project uses Kotlin, Jetpack Compose, Android Keystore, Gradle 8.13, a Windows PowerShell APK script, and GitHub Actions.
 
 ## File-manager import preference (0.5.0)
