@@ -121,8 +121,12 @@ object VaultCrypto {
         val marker = ByteArray(CHUNKED_MAGIC.size)
         try {
             file.seek(0L)
-            val count = file.read(marker)
-            if (count != marker.size || !marker.contentEquals(CHUNKED_MAGIC)) return null
+            try {
+                file.readFully(marker)
+            } catch (_: java.io.EOFException) {
+                return null
+            }
+            if (!marker.contentEquals(CHUNKED_MAGIC)) return null
             return ChunkedRandomAccessReader(
                 ChunkedAesGcm.openRandomAccessReader(file, plainBytes, aad, key, CHUNKED_MAGIC),
                 plainBytes
