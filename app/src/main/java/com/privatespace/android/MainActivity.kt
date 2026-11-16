@@ -843,7 +843,9 @@ private fun PrivateSpaceRoot() {
     topicToDelete?.let { topic ->
         ConfirmDialog(
             title = "Delete topic and files?",
-            message = "This permanently deletes the topic and its encrypted files from this device.",
+            message = "“" + topic.name + "” and all " +
+                vaultFiles.count { it.topicId == topic.id } +
+                " stored file(s) will be permanently deleted from this device. This cannot be undone.",
             onCancel = { topicToDelete = null },
             onConfirm = {
                 topicToDelete = null
@@ -865,7 +867,7 @@ private fun PrivateSpaceRoot() {
     fileToDelete?.let { file ->
         ConfirmDialog(
             title = "Delete file?",
-            message = "This permanently removes the encrypted copy from Private Space.",
+            message = "“" + file.displayName + "” will be permanently removed from Private Space. This does not delete the original file outside the vault.",
             onCancel = { fileToDelete = null },
             onConfirm = {
                 fileToDelete = null
@@ -990,9 +992,9 @@ private fun FilePickerChoiceDialog(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    target.component.packageName,
+                                    if (selected) "Selected file picker" else "Tap to choose this app",
                                     color = Muted,
-                                    fontSize = 9.sp,
+                                    fontSize = 11.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1446,7 +1448,7 @@ private fun TopicCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files" +
+                    (summary.fileCount.toString() + if (summary.fileCount == 1) " file" else " files") +
                         " · " + formatBytes(summary.totalBytes),
                     color = Cyan,
                     fontSize = 12.sp,
@@ -1614,7 +1616,7 @@ private fun VaultFileRow(
     val isPhoto = file.mimeType.startsWith("image/")
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Panel2)
     ) {
@@ -1685,46 +1687,96 @@ private fun ChangePasswordDialog(
     var oldPassword by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
+    var oldVisible by remember { mutableStateOf(false) }
+    var newVisible by remember { mutableStateOf(false) }
+    var confirmationVisible by remember { mutableStateOf(false) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Change password") },
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Change password", fontWeight = FontWeight.Bold)
+                Text("Choose a new password for this device.", color = Muted, fontSize = 12.sp)
+            }
+        },
         text = {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
                 OutlinedTextField(
-                    oldPassword,
-                    { oldPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    value = oldPassword,
+                    onValueChange = { oldPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    modifier = Modifier.fillMaxWidth(),
                     label = { Text("Current password") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true
+                    visualTransformation = if (oldVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { oldVisible = !oldVisible }) {
+                            Icon(
+                                if (oldVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (oldVisible) "Hide current password" else "Show current password"
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    singleLine = true,
+                    shape = RoundedCornerShape(13.dp)
                 )
                 OutlinedTextField(
-                    newPassword,
-                    { newPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    value = newPassword,
+                    onValueChange = { newPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    modifier = Modifier.fillMaxWidth(),
                     label = { Text("New password") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (newVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { newVisible = !newVisible }) {
+                            Icon(
+                                if (newVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (newVisible) "Hide new password" else "Show new password"
+                            )
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(13.dp)
                 )
                 OutlinedTextField(
-                    confirmation,
-                    { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    value = confirmation,
+                    onValueChange = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    modifier = Modifier.fillMaxWidth(),
                     label = { Text("Confirm new password") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (confirmationVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { confirmationVisible = !confirmationVisible }) {
+                            Icon(
+                                if (confirmationVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (confirmationVisible) "Hide confirmation" else "Show confirmation"
+                            )
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(13.dp),
+                    isError = confirmation.isNotEmpty() && newPassword != confirmation
                 )
-                Text("Use at least ${PasswordManager.MIN_PASSWORD_LENGTH} characters.", color = Muted, fontSize = 10.sp)
+                Text(
+                    "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH +
+                        " characters. The new password must match its confirmation.",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
             }
         },
         confirmButton = {
-            TextButton(
+            Button(
                 enabled = oldPassword.isNotEmpty() &&
                     newPassword.length >= PasswordManager.MIN_PASSWORD_LENGTH &&
                     newPassword == confirmation,
-                onClick = { onChange(oldPassword, newPassword) }
-            ) { Text("Change") }
+                onClick = { onChange(oldPassword, newPassword) },
+                shape = RoundedCornerShape(12.dp)
+            ) { Text("Save password") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        shape = RoundedCornerShape(24.dp),
+        containerColor = Panel
     )
 }
 
@@ -1737,10 +1789,19 @@ private fun ConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text(title) },
-        text = { Text(message) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete", color = Red) } },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } }
+        icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Red) },
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = { Text(message, color = Muted, lineHeight = 19.sp) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Ink),
+                shape = RoundedCornerShape(12.dp)
+            ) { Text("Delete permanently", fontWeight = FontWeight.SemiBold) }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Keep it") } },
+        shape = RoundedCornerShape(24.dp),
+        containerColor = Panel
     )
 }
 
