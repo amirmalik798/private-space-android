@@ -18,7 +18,12 @@
 
 ## Crash recovery and file-size handling
 
+- The encrypted index uses schema version 3 for Recycle Bin metadata. Current readers continue to accept schema version 2, including earlier 0.9.0 indexes that already contain a Trash array. Unknown versions are rejected before any write so an incompatible older build cannot silently drop fields.
+- Authentication is bound to a foreground lifecycle generation. A password verification finishing after the Activity is interrupted cannot unlock the vault in the background.
+- Prepared plaintext is handed to an external viewer or share target only while the vault remains unlocked and the Activity is resumed. If the lifecycle changes during decryption, the prepared temporary session is deleted.
+
 - Imports stream to a temporary encrypted file, sync it, atomically rename it, and only then commit the encrypted index. Startup recovery removes interrupted temporary imports and unindexed payloads only after an authenticated index is available.
+- If a document provider reports an input size, import compares it with the actual streamed byte count before committing the file. A mismatch fails the import and removes the temporary encrypted container; unknown provider sizes are still accepted.
 - Logical file deletion and topic deletion atomically move file records into the encrypted Recycle Bin in the authenticated index. The original encrypted payload remains in app-private storage; original topic metadata is retained so a restored file can recreate its topic if needed.
 - Restoring a Trash item changes only the authenticated index. It does not decrypt, re-encrypt, or rewrite the original file bytes.
 - Permanent deletion from Trash stages the encrypted payload under a recoverable tombstone, commits the authenticated index removal, and only then purges the staged payload. Startup restores a tombstone if the authenticated index still references the item (including Trash) and completes permanent deletion when it does not.

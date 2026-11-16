@@ -28,7 +28,8 @@ data class PreparedVaultFile(
 private data class VaultIndex(
     val topics: List<VaultTopic> = emptyList(),
     val files: List<VaultFile> = emptyList(),
-    val trash: List<VaultTrashEntry> = emptyList()
+    val trash: List<VaultTrashEntry> = emptyList(),
+    val schemaVersion: Int = VaultIndexSchema.CURRENT_VERSION
 )
 
 private class BoundedWipingByteArrayOutputStream(
@@ -67,6 +68,30 @@ class VaultRepository(context: Context) {
     private var initializationFailure: Throwable? = null
 
     companion object {
+        private val INSTANCE_LOCK = Any()
+
+        @Volatile
+        private var sharedInstance: VaultRepository? = null
+
+        /**
+         * A process-wide repository keeps its synchronized file/index transactions
+         * serialized across Activity recreation. Failed initialization is not
+         * cached permanently, so a later Activity recreation can retry recovery.
+         */
+        fun getInstance(context: Context): VaultRepository {
+            sharedInstance?.let { cached ->
+                if (cached.initializationFailure == null) return cached
+            }
+            return synchronized(INSTANCE_LOCK) {
+                val cached = sharedInstance
+                if (cached != null && cached.initializationFailure == null) {
+                    cached
+                } else {
+                    VaultRepository(context.applicationContext).also { sharedInstance = it }
+                }
+            }
+        }
+
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
         private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
@@ -87,6 +112,12 @@ class VaultRepository(context: Context) {
             // Authenticate the committed index before recovering file operations.
             val hasCommittedIndex = metadata.baseFile.exists() || File(metadata.baseFile.path + ".bak").exists()
             val index = loadIndex()
+            if (hasCommittedIndex && VaultIndexSchema.needsUpgrade(index.schemaVersion)) {
+                // Upgrade v2 (including early 0.9.0 indexes with Trash) before
+                // the app can be downgraded to a build that would ignore Trash.
+                // AtomicFile preserves the authenticated v2 index if this write fails.
+                saveIndex(index)
+            }
             recoverInterruptedFileOperations(index, hasCommittedIndex)
 
             // Remove abandoned plaintext staging by age, not eagerly: a recreated
@@ -177,6 +208,11 @@ class VaultRepository(context: Context) {
                     byteCount = counted.bytesRead
                 }
             }
+
+            // The provider's reported size is only a hint until the stream has
+            // been consumed. Reject mismatches before the temp payload is made
+            // visible as a finalized vault record.
+            VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
 
             atomicRename(temporary, target)
             finalized = true
@@ -499,14 +535,22 @@ class VaultRepository(context: Context) {
 
     private fun fileAad(id: String) = "private-space:file:v2:$id".toByteArray(Charsets.UTF_8)
 
-    @Synchronized
-    private fun loadIndex(): VaultIndex {
+    /**
+     * Reports a failed constructor-time recovery attempt without touching disk.
+     * UI startup calls this on a worker thread before presenting the password screen.
+     */
+    fun ensureInitialized() {
         initializationFailure?.let {
             throw IllegalStateException(
                 it.message ?: "Vault initialization failed. Preserve app data and do not clear storage.",
                 it
             )
         }
+    }
+
+    @Synchronized
+    private fun loadIndex(): VaultIndex {
+        ensureInitialized()
         val hasBase = metadata.baseFile.exists()
         val hasBackup = File(metadata.baseFile.path + ".bak").exists()
         if (!hasBase && !hasBackup) return VaultIndex()
@@ -519,7 +563,10 @@ class VaultRepository(context: Context) {
             val clear = output.toByteArray()
             try {
                 val json = JSONObject(String(clear, Charsets.UTF_8))
-                require(json.optInt("version") == 2) { "Unsupported vault index version." }
+                val schemaVersion = json.optInt("version")
+                require(VaultIndexSchema.isSupported(schemaVersion)) {
+                    "Unsupported vault index version. Preserve app data and use a compatible app version."
+                }
 
                 val topicArray = json.getJSONArray("topics")
                 val topics = (0 until topicArray.length()).map { index ->
@@ -563,9 +610,14 @@ class VaultRepository(context: Context) {
                     readFile(fileArray.getJSONObject(index), requireActiveTopic = true)
                 }
 
-                // Version 2 indexes created before Trash existed have no "trash"
-                // property. Treat that as an empty Recycle Bin during upgrade.
-                val trashArray = json.optJSONArray("trash") ?: JSONArray()
+                // Legacy v2 indexes may predate Trash. Current v3 indexes
+                // must contain the array; a missing field is malformed metadata
+                // and must not be mistaken for an empty Recycle Bin.
+                val trashArray = if (VaultIndexSchema.requiresTrashArray(schemaVersion)) {
+                    json.getJSONArray("trash")
+                } else {
+                    json.optJSONArray("trash") ?: JSONArray()
+                }
                 val trash = (0 until trashArray.length()).map { index ->
                     val item = trashArray.getJSONObject(index)
                     val deletedAt = item.getLong("deleted")
@@ -590,7 +642,7 @@ class VaultRepository(context: Context) {
                 require(allFileIds.distinct().size == allFileIds.size) {
                     "Vault index contains duplicate active or trashed file identifiers."
                 }
-                return VaultIndex(topics, files, trash)
+                return VaultIndex(topics, files, trash, schemaVersion)
             } finally {
                 clear.fill(0)
             }
@@ -628,7 +680,7 @@ class VaultRepository(context: Context) {
             .put("size", file.sizeBytes)
             .put("added", file.addedAt)
 
-        val json = JSONObject().put("version", 2)
+        val json = JSONObject().put("version", VaultIndexSchema.CURRENT_VERSION)
         val topicArray = JSONArray()
         index.topics.forEach { topic -> topicArray.put(topicObject(topic)) }
 
