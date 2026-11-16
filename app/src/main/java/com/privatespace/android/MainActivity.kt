@@ -2141,8 +2141,8 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 )
                 SecurityInfoRow(
                     icon = Icons.Default.Warning,
-                    title = "No password recovery",
-                    body = "There is no cloud backup or password reset. Keep a separate secure copy of important documents."
+                    title = "Password and recovery",
+                    body = "Your password unlocks the app and protects the optional encrypted recovery key. It is not the Android Keystore key used for files on this device. To restore after reinstalling, keep the recovery folder and the password used to protect it. There is no password reset or cloud backup."
                 )
             }
         },

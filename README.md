@@ -1,5 +1,15 @@
 # Private Space
 
+## Encrypted recovery across reinstallations
+
+- Private Space can keep an optional encrypted recovery copy in a folder the user selects in this device's internal storage or SD card. The folder contains encrypted file payloads, an encrypted vault index, and password-protected recovery-key envelopes. It does not contain plaintext vault files or readable topic/file names.
+- The normal on-device working vault remains encrypted with an AES-256-GCM key held by Android Keystore. The app password is stored as a PBKDF2-HMAC-SHA256 password verifier; it is not the encryption key for the on-device working files.
+- The recovery copy uses a separate random 256-bit data key. A PBKDF2-HMAC-SHA256 key derived from the vault password wraps that random key using AES-256-GCM. Recovery payloads and the recovery index are encrypted with the random data key.
+- Changing the password re-wraps the same random recovery data key with the new password. It does not decrypt and re-encrypt all files. The app updates the local password verifier after the new recovery-key envelopes have been written and verified.
+- After reinstalling, select the parent folder that contains the "Private Space Vault" folder and enter the password that last protected the recovery key. The app restores the vault and uses that entered password as the new installation's app password. To use a different password, restore first and then use **Change password**.
+- Creating a new password without restoring creates a new, empty app-private vault. It does not automatically restore or merge an older recovery folder. The recovery-protection prompt also offers **I already have a recovery vault**; choosing it explicitly restores that copy and replaces the current app-private vault. The recovery password becomes the app password during restore, so use **Change password** afterward to set a different one. Keep the old folder until you have successfully restored and verified its contents.
+- Recovery is device-local, not cloud or cross-device sync. The selected folder must remain available and must not be deleted. A factory reset, deleted folder, lost/removed SD card, or damaged storage can still destroy the recovery copy. Keep another independent backup for irreplaceable data.
+
 ## Video support and media details (0.11.0)
 
 - Add documents, photos, and videos to topics through the existing unrestricted multi-file picker. The AES-256-GCM streaming importer stores original bytes without transcoding, recompressing, or resizing.
@@ -111,9 +121,9 @@ Private Space encrypts its own stored files and index. Android must temporarily 
 
 Exported files are ordinary, unencrypted files outside the vault. Anyone with access to the export destination can read them. The app cannot revoke copies after export or sharing.
 
-The app password is an application access gate; the encryption key is device-bound in Android Keystore. Newly generated keys require the Android device to be unlocked where the OS supports that setting. This is not protection against a compromised/rooted device, malicious accessibility software, screen capture by a privileged attacker, or malware running with control of the unlocked app.
+The app password is an application access gate for the on-device working vault; its AES-256-GCM key is held by Android Keystore. Newly generated keys require the Android device to be unlocked where the OS supports that setting. Optional reinstall recovery uses a separate random data key, protected by a password-derived AES-GCM key. This is not protection against a compromised/rooted device, malicious accessibility software, screen capture by a privileged attacker, or malware running with control of the unlocked app.
 
-There is no password recovery, cloud backup, or cross-device restore. Clearing app data or uninstalling the app removes the Android Keystore key and makes the encrypted vault unrecoverable. Keep independent, secure backups of important documents.
+There is no account, cloud backup, automatic sync, cross-device restore, or password reset. Without an enabled recovery folder, uninstalling or clearing app data removes the Android Keystore key and makes the app-private vault unrecoverable. With recovery enabled, reinstall recovery is possible only while the selected device-storage folder remains intact and the user knows the password that protected the recovery key.
 
 ## Data compatibility
 

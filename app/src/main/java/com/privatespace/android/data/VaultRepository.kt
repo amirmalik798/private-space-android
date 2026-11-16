@@ -206,14 +206,42 @@ class VaultRepository(context: Context) {
         try {
             val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
             try {
+                val index = parseIndexBytes(snapshot.clearBytes)
                 val knownDigest = recoveryPrefs.getString(RECOVERY_INDEX_DIGEST, null)
                 val hasLocalIndex = metadata.baseFile.isFile ||
                     File(metadata.baseFile.path + ".bak").isFile
-                if (!hasLocalIndex || knownDigest != snapshot.encryptedDigest) {
-                    val index = parseIndexBytes(snapshot.clearBytes)
+
+                // Do not trust a matching digest preference or an index filename
+                // by itself. Authenticate the local index, compare its contents
+                // with the recovery index, and check every referenced payload's
+                // presence and expected container length before reusing the
+                // working copy. This is a bounded metadata/filesystem check; full
+                // GCM authentication is still performed whenever a record is read.
+                val localIndex = if (hasLocalIndex) {
+                    runCatching { loadIndex() }.getOrNull()
+                } else {
+                    null
+                }
+                val localPayloadsComplete = localIndex?.let { local ->
+                    (local.files + local.trash.map { it.file }).all { record ->
+                        val localFile = encryptedFile(record.id)
+                        localFile.isFile &&
+                            VaultRecoveryIntegrity.hasExpectedEncryptedLength(
+                                record.sizeBytes,
+                                localFile.length()
+                            )
+                    }
+                } ?: false
+                val localIndexMatchesRecovery = localIndex != null && localIndex == index
+
+                if (
+                    !hasLocalIndex ||
+                    knownDigest != snapshot.encryptedDigest ||
+                    !localIndexMatchesRecovery ||
+                    !localPayloadsComplete
+                ) {
                     restoreWorkingVault(index, store)
                 }
-                val index = parseIndexBytes(snapshot.clearBytes)
                 // Keep unreferenced encrypted payloads. They may be newer file
                 // records from an interrupted index commit or older-index fallback.
                 store.markReady()
