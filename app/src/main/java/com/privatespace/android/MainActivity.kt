@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.view.WindowManager
 import android.widget.MediaController
 import android.widget.Toast
@@ -86,6 +87,31 @@ private val Cyan = Color(0xFF69E0D0)
 private val Red = Color(0xFFFF7888)
 private val Green = Color(0xFF70D6A6)
 private val Gold = Color(0xFFF3C16D)
+
+/**
+ * Prefer Samsung My Files only when the installed version explicitly handles
+ * Android's directory-tree picker contract. Otherwise retain the standard SAF
+ * picker, which returns the persistable tree URI required by recovery storage.
+ */
+private class SamsungPreferredOpenDocumentTree : ActivityResultContracts.OpenDocumentTree() {
+    override fun createIntent(context: Context, input: Uri?): Intent {
+        val standardIntent = super.createIntent(context, input)
+        if (!Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
+            return standardIntent
+        }
+
+        val samsungIntent = Intent(standardIntent).setPackage(SAMSUNG_MY_FILES_PACKAGE)
+        return if (samsungIntent.resolveActivity(context.packageManager) != null) {
+            samsungIntent
+        } else {
+            standardIntent
+        }
+    }
+
+    private companion object {
+        const val SAMSUNG_MY_FILES_PACKAGE = "com.sec.android.app.myfiles"
+    }
+}
 
 class MainActivity : ComponentActivity() {
     var suppressAutoLockForPicker: Boolean = false
@@ -483,7 +509,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     val recoveryFolderLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
+        SamsungPreferredOpenDocumentTree()
     ) { selectedTreeUri ->
         activity?.suppressAutoLockForPicker = false
         if (selectedTreeUri == null) {

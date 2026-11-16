@@ -87,8 +87,13 @@ internal object VaultRecoveryReadback {
      * Gives the user a useful diagnosis without displaying provider URIs,
      * filenames, exception messages, passwords, or other potentially private data.
      */
-    private fun safeFailureHint(failure: Exception?): String {
-        val causes = generateSequence(failure) { it.cause }.toList()
+    private fun safeFailureHint(failure: Throwable?): String {
+        val causes = mutableListOf<Throwable>()
+        var current = failure
+        while (current != null) {
+            causes += current
+            current = current.cause
+        }
         return when {
             causes.any {
                 it.message?.contains("empty encrypted recovery record", ignoreCase = true) == true
