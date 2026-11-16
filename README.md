@@ -1,6 +1,14 @@
 # Private Space
 
-## Recycle Bin and recoverable deletion (0.9.0)
+## Reliability hardening (0.9.1)
+
+- Authentication completes only if the app remains in the same foreground lifecycle generation. If the app is interrupted while the password is being checked, the vault stays locked and the password must be entered again.
+- A decrypted file prepared for opening or sharing is handed to another app only while the vault is unlocked and Private Space is resumed. If the app is backgrounded or locked during preparation, the temporary plaintext session is removed instead.
+- One process-wide vault repository serializes index and file operations across Activity recreation. Failed repository initialization is not cached as a permanent success state; a later Activity recreation may retry recovery.
+- Vault refresh failures are caught, reported, and fail closed by clearing unlocked UI state instead of escaping from a UI coroutine.
+- The encrypted index now writes schema version 3 for Trash metadata and continues to read version 2 indexes. Unknown future versions are rejected without rewriting them, protecting data from older/incompatible app builds.
+
+## Recycle Bin and recoverable deletion (0.9.1)
 
 - Deleting an individual photo/document moves its encrypted record into the in-app Recycle Bin instead of immediately removing its encrypted payload.
 - Deleting a topic removes it from the active topic list and moves all of its files into the Recycle Bin. Empty topics are removed immediately.
@@ -18,7 +26,7 @@
 - Export the complete vault into `private-space-data/<topic name>/<files>`. Every topic gets its own subfolder, including empty topics. If the selected destination already contains a `private-space-data` folder, the app stops and asks you to choose another location rather than overwrite existing content.
 - File-name collisions inside an export are resolved by adding a numbered suffix so no exported file silently replaces another.
 
-## Security, crash recovery and file sizes (0.9.0)
+## Security, crash recovery and file sizes (0.9.1)
 
 - Vault files, topics and metadata stay under app-private internal storage. The vault, plaintext staging area and temporary outgoing-share folders are restricted to the app's Linux UID with owner-only directory/file permissions.
 - The Android FileProvider is not exported and exposes only the temporary `cache/outgoing/` directory. It does not expose the encrypted vault directory or plaintext export-staging directory. Read-only URI grants are created only after the user chooses an explicit Open, Share, or Share topic action.
