@@ -1150,7 +1150,7 @@ class VaultRepository(context: Context) {
                 val incoming = File(root, "${record.id}.restore.tmp")
                 check(!incoming.exists()) { "An interrupted vault restore needs recovery." }
                 try {
-                    VaultRecoveryReadback.verifyWithRetry {
+                    VaultRecoveryReadback.verifyWithRetry(verify = {
                         try {
                             FileOutputStream(incoming).use { encrypted ->
                                 restrictFilePermissions(incoming)
@@ -1175,7 +1175,7 @@ class VaultRepository(context: Context) {
                                 .onFailure(failure::addSuppressed)
                             throw failure
                         }
-                    }
+                    })
                     incomingFiles[record.id] = incoming
                 } catch (failure: Throwable) {
                     runCatching { deleteTemporaryEntry(incoming) }

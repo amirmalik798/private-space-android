@@ -84,9 +84,9 @@ internal class PersistentVaultStore private constructor(
             }
             // Authenticate the bytes as returned by the selected document provider.
             // This streams to a discard sink: it creates no plaintext file or duplicate.
-            VaultRecoveryReadback.verifyWithRetry {
-                decryptPayload(id, DiscardingOutputStream(), aad)
-            }
+            VaultRecoveryReadback.verifyWithRetry(
+                verify = { decryptPayload(id, DiscardingOutputStream(), aad) }
+            )
         } catch (failure: Throwable) {
             runCatching { target.delete() }
             throw failure
@@ -190,27 +190,7 @@ internal class PersistentVaultStore private constructor(
         var lastFailure: Throwable? = null
         for ((generation, document) in candidates) {
             try {
-                val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
-                    read = {
-                        readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
-                    },
-                    verify = { candidate ->
-                        val verification = WipingByteArrayOutputStream(
-                            MAX_INDEX_BYTES.coerceAtMost(64 * 1024)
-                        )
-                        try {
-                            PersistentVaultCrypto.decrypt(
-                                ByteArrayInputStream(candidate),
-                                verification,
-                                aad,
-                                requireKey()
-                            )
-                            true
-                        } finally {
-                            verification.wipe()
-                        }
-                    }
-                )
+                val encryptedBytes = readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD)
                 try {
                     val clear = WipingByteArrayOutputStream(MAX_INDEX_BYTES.coerceAtMost(64 * 1024))
                     try {
