@@ -7,6 +7,7 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.AEADBadTagException
@@ -87,6 +88,61 @@ object VaultCrypto {
     fun decrypt(input: InputStream, output: OutputStream, aad: ByteArray) {
         decryptWithKey(input, output, aad, existingKey())
     }
+
+    /**
+     * Random-access authenticated reader for current-format encrypted media.
+     * It authenticates the terminal frame up front and every data frame on read.
+     * Returns null for legacy containers, which must use the bounded full-decrypt
+     * compatibility path rather than being interpreted as chunked data.
+     */
+    class ChunkedRandomAccessReader internal constructor(
+        private val delegate: ChunkedAesGcm.RandomAccessReader,
+        val sizeBytes: Long
+    ) : AutoCloseable {
+        fun readAt(position: Long, target: ByteArray, offset: Int, length: Int): Int =
+            delegate.readAt(position, target, offset, length)
+        override fun close() = delegate.close()
+    }
+
+    fun openChunkedRandomAccessReader(
+        file: RandomAccessFile,
+        plainBytes: Long,
+        aad: ByteArray
+    ): ChunkedRandomAccessReader? = openChunkedRandomAccessReaderWithKey(
+        file, plainBytes, aad, existingKey()
+    )
+
+    private fun openChunkedRandomAccessReaderWithKey(
+        file: RandomAccessFile,
+        plainBytes: Long,
+        aad: ByteArray,
+        key: SecretKey
+    ): ChunkedRandomAccessReader? {
+        val marker = ByteArray(CHUNKED_MAGIC.size)
+        try {
+            file.seek(0L)
+            val count = file.read(marker)
+            if (count != marker.size || !marker.contentEquals(CHUNKED_MAGIC)) return null
+            return ChunkedRandomAccessReader(
+                ChunkedAesGcm.openRandomAccessReader(file, plainBytes, aad, key, CHUNKED_MAGIC),
+                plainBytes
+            )
+        } catch (failure: Throwable) {
+            runCatching { file.close() }
+            throw failure
+        } finally {
+            marker.fill(0)
+        }
+    }
+
+    internal fun openChunkedRandomAccessReaderForTest(
+        file: RandomAccessFile,
+        plainBytes: Long,
+        aad: ByteArray,
+        testKey: SecretKey
+    ): ChunkedRandomAccessReader? = openChunkedRandomAccessReaderWithKey(
+        file, plainBytes, aad, testKey
+    )
 
     /**
      * Shared cryptographic path used by JVM tests with an ephemeral test key.
