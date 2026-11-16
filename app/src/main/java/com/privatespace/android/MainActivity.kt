@@ -49,6 +49,7 @@ import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.data.*
 import com.privatespace.android.security.PasswordManager
+import com.privatespace.android.security.VaultSessionPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -208,12 +209,13 @@ private fun PrivateSpaceRoot() {
         onDispose { activity?.onVaultShouldLock = null }
     }
 
-    fun applySnapshot(snapshot: VaultSnapshot) {
-        if (!unlocked) return
+    fun applySnapshot(snapshot: VaultSnapshot): Boolean {
+        if (!unlocked) return false
         topics = snapshot.topics
         vaultFiles = snapshot.files
         trashEntries = snapshot.trash
         storageUsage = snapshot.storageUsage
+        return true
     }
 
     fun failClosed(failure: Throwable) {
@@ -228,7 +230,6 @@ private fun PrivateSpaceRoot() {
         return try {
             val snapshot = withContext(Dispatchers.IO) { repository.snapshot() }
             applySnapshot(snapshot)
-            true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
