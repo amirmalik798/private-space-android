@@ -1,10 +1,14 @@
 package com.privatespace.android
 
+import android.app.Activity
 import android.app.KeyguardManager
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
@@ -14,10 +18,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -95,6 +101,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private data class FilePickerTarget(
+    val label: String,
+    val component: ComponentName,
+    val intent: Intent
+)
+
+private const val FILE_PICKER_PREFERENCES = "private_space_ui"
+private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_component"
+
 @Composable
 private fun PrivateSpaceRoot() {
     val context = LocalContext.current
@@ -122,6 +137,7 @@ private fun PrivateSpaceRoot() {
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
 
     var pendingImportTopic by remember { mutableStateOf<String?>(null) }
+    var pendingFilePickerTargets by remember { mutableStateOf<List<FilePickerTarget>?>(null) }
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
     var pendingExportTopic by remember { mutableStateOf<String?>(null) }
     var pendingExportAll by remember { mutableStateOf(false) }
@@ -144,6 +160,9 @@ private fun PrivateSpaceRoot() {
         showChangePassword = false
         topicToDelete = null
         fileToDelete = null
+        pendingImportTopic = null
+        pendingFilePickerTargets = null
+        activity?.suppressAutoLockForPicker = false
     }
 
     DisposableEffect(activity) {
@@ -185,10 +204,9 @@ private fun PrivateSpaceRoot() {
         clockNow = System.currentTimeMillis()
     }
 
-    val importLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { selectedUris ->
+    fun handleImportUris(selectedUris: List<Uri>) {
         activity?.suppressAutoLockForPicker = false
+        pendingFilePickerTargets = null
         val topicId = pendingImportTopic
         pendingImportTopic = null
         if (topicId != null && selectedUris.isNotEmpty() && unlocked) {
@@ -212,6 +230,35 @@ private fun PrivateSpaceRoot() {
         } else if (topicId != null && selectedUris.isNotEmpty()) {
             toast("The vault was locked. Unlock it before importing files.")
         }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { selectedUris ->
+        handleImportUris(selectedUris)
+    }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val resultIntent = result.data
+        val selectedUris = if (result.resultCode == Activity.RESULT_OK) {
+            buildList {
+                resultIntent?.clipData?.let { clip ->
+                    for (index in 0 until clip.itemCount) {
+                        clip.getItemAt(index).uri?.let(::add)
+                    }
+                }
+                resultIntent?.data?.let(::add)
+            }.distinct()
+        } else {
+            emptyList()
+        }
+        handleImportUris(selectedUris)
+    }
+
+    val filePickerPreferences = remember(context) {
+        context.getSharedPreferences(FILE_PICKER_PREFERENCES, Context.MODE_PRIVATE)
     }
 
     val exportFileLauncher = rememberLauncherForActivityResult(
@@ -270,13 +317,88 @@ private fun PrivateSpaceRoot() {
         }
     }
 
-    fun launchImport(topicId: String) {
-        pendingImportTopic = topicId
+    fun launchSystemDocumentPicker() {
         activity?.suppressAutoLockForPicker = true
         runCatching { importLauncher.launch(arrayOf("*/*")) }.onFailure {
             activity?.suppressAutoLockForPicker = false
             pendingImportTopic = null
-            toast("Could not open the document picker.")
+            toast("Could not open the Android document picker.")
+        }
+    }
+
+    fun launchFilePickerTarget(target: FilePickerTarget, rememberChoice: Boolean): Boolean {
+        if (rememberChoice) {
+            filePickerPreferences.edit()
+                .putString(FILE_PICKER_PREFERENCE, target.component.flattenToString())
+                .apply()
+        }
+
+        activity?.suppressAutoLockForPicker = true
+        return runCatching {
+            filePickerLauncher.launch(Intent(target.intent))
+            true
+        }.getOrElse {
+            filePickerPreferences.edit().remove(FILE_PICKER_PREFERENCE).apply()
+            activity?.suppressAutoLockForPicker = false
+            false
+        }
+    }
+
+    fun launchImport(topicId: String) {
+        pendingImportTopic = topicId
+        val pickerIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        val preferredPackages = listOf(
+            "com.sec.android.app.myfiles",
+            "com.alphainventor.filemanager"
+        )
+        val targets = runCatching {
+            context.packageManager
+                .queryIntentActivities(pickerIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                .mapNotNull { resolved ->
+                    val info = resolved.activityInfo ?: return@mapNotNull null
+                    val component = ComponentName(info.packageName, info.name)
+                    val label = runCatching {
+                        resolved.loadLabel(context.packageManager).toString()
+                    }.getOrNull()?.takeIf { it.isNotBlank() }
+                        ?: runCatching { info.loadLabel(context.packageManager).toString() }
+                            .getOrNull()?.takeIf { it.isNotBlank() }
+                        ?: info.packageName
+                    FilePickerTarget(
+                        label = label,
+                        component = component,
+                        intent = Intent(pickerIntent).setComponent(component)
+                    )
+                }
+                .distinctBy { it.component }
+                .sortedWith(
+                    compareBy<FilePickerTarget> {
+                        val index = preferredPackages.indexOf(it.component.packageName)
+                        if (index < 0) preferredPackages.size else index
+                    }.thenBy { it.label.lowercase() }
+                )
+        }.getOrDefault(emptyList())
+
+        val savedComponent = filePickerPreferences
+            .getString(FILE_PICKER_PREFERENCE, null)
+            ?.let(ComponentName::unflattenFromString)
+        if (savedComponent != null) {
+            val savedTarget = targets.firstOrNull { it.component == savedComponent }
+            if (savedTarget != null && launchFilePickerTarget(savedTarget, rememberChoice = false)) {
+                return
+            }
+            filePickerPreferences.edit().remove(FILE_PICKER_PREFERENCE).apply()
+        }
+
+        if (targets.isNotEmpty()) {
+            pendingFilePickerTargets = targets
+        } else {
+            launchSystemDocumentPicker()
         }
     }
 
@@ -667,7 +789,129 @@ private fun PrivateSpaceRoot() {
         }
     }
 
+    pendingFilePickerTargets?.let { targets ->
+        FilePickerChoiceDialog(
+            targets = targets,
+            onDismiss = {
+                pendingFilePickerTargets = null
+                pendingImportTopic = null
+            },
+            onChoice = { target, rememberChoice ->
+                pendingFilePickerTargets = null
+                if (!launchFilePickerTarget(target, rememberChoice)) {
+                    toast("Could not open ${target.label}. Opening Android's document picker instead.")
+                    launchSystemDocumentPicker()
+                }
+            }
+        )
+    }
+
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cyan)
+}
+
+@Composable
+private fun FilePickerChoiceDialog(
+    targets: List<FilePickerTarget>,
+    onDismiss: () -> Unit,
+    onChoice: (FilePickerTarget, Boolean) -> Unit
+) {
+    var selectedIndex by remember(targets) { mutableIntStateOf(0) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "Select files with",
+                color = White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Choose an app to browse and select documents or photos.",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    targets.forEachIndexed { index, target ->
+                        val selected = selectedIndex == index
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) Blue.copy(alpha = 0.16f) else Panel2)
+                                .clickable { selectedIndex = index }
+                                .padding(horizontal = 12.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = if (selected) Cyan else Muted
+                            )
+                            Spacer(Modifier.width(11.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    target.label,
+                                    color = White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    target.component.packageName,
+                                    color = Muted,
+                                    fontSize = 9.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (selected) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = "Selected",
+                                    tint = Cyan
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onChoice(targets[selectedIndex], true) },
+                colors = ButtonDefaults.buttonColors(containerColor = Blue)
+            ) {
+                Text("Always", color = White)
+            }
+        },
+        dismissButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = Muted)
+                }
+                TextButton(onClick = { onChoice(targets[selectedIndex], false) }) {
+                    Text("Just once", color = Cyan)
+                }
+            }
+        },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = Panel,
+        titleContentColor = White,
+        textContentColor = Muted,
+        tonalElevation = 0.dp
+    )
 }
 
 @Composable
