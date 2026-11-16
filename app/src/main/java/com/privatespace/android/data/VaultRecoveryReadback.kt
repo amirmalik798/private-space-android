@@ -77,9 +77,37 @@ internal object VaultRecoveryReadback {
 
         throw IOException(
             "Android could not verify $operation in the selected folder. " +
+                safeFailureHint(lastFailure) + " " +
                 "Choose a writable folder on this device and try again. Your original vault has not been changed.",
             lastFailure
         )
+    }
+
+    /**
+     * Gives the user a useful diagnosis without displaying provider URIs,
+     * filenames, exception messages, passwords, or other potentially private data.
+     */
+    private fun safeFailureHint(failure: Exception?): String {
+        val causes = generateSequence(failure) { it.cause }.toList()
+        return when {
+            causes.any {
+                it.message?.contains("empty encrypted recovery record", ignoreCase = true) == true
+            } -> "The storage provider returned an empty file when the new encrypted file was read back."
+            causes.any {
+                it.message?.contains("exceeds its supported size", ignoreCase = true) == true
+            } -> "The storage provider returned more data than the encrypted-file size limit allows."
+            causes.any {
+                it.message?.contains("did not authenticate after writing", ignoreCase = true) == true
+            } -> "The file was read back, but its decrypted contents did not match what was written."
+            causes.any {
+                it.message?.contains("integrity check failed", ignoreCase = true) == true
+            } -> "The file was read back, but its encryption authentication check failed."
+            causes.any { it is SecurityException } ->
+                "Android denied access while reading the newly written file."
+            causes.any { it is IOException } ->
+                "Android could not read the newly written file back from the selected storage provider."
+            else -> "The newly written file could not be authenticated."
+        }
     }
 
     private fun pauseForProvider(delayMs: Long) {

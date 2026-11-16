@@ -124,6 +124,42 @@ class VaultRecoveryReadbackTest {
         }
     }
     @Test
+    fun reportsEmptyProviderReadbackWithoutExposingRawProviderError() {
+        var reads = 0
+        val failure = assertThrows(IOException::class.java) {
+            VaultRecoveryReadback.readVerifiedBytes(
+                operation = "the encrypted recovery index",
+                read = {
+                    reads++
+                    throw IOException("The storage provider returned an empty encrypted recovery record. private-uri")
+                },
+                verify = { true },
+                pause = {}
+            )
+        }
+
+        assertEquals(3, reads)
+        assertTrue(failure.message.orEmpty().contains("empty file"))
+        assertTrue(failure.message.orEmpty().contains("encrypted recovery index"))
+        assertTrue(!failure.message.orEmpty().contains("private-uri"))
+    }
+
+    @Test
+    fun classifiesAuthenticationFailureWithoutExposingSensitiveDetails() {
+        val failure = assertThrows(IOException::class.java) {
+            VaultRecoveryReadback.readVerifiedBytes(
+                operation = "the encrypted recovery index",
+                read = { byteArrayOf(1, 2, 3) },
+                verify = { throw IOException("Recovery vault integrity check failed. secret detail") },
+                pause = {}
+            )
+        }
+
+        assertTrue(failure.message.orEmpty().contains("authentication check failed"))
+        assertTrue(!failure.message.orEmpty().contains("secret detail"))
+    }
+
+    @Test
     fun readsBoundedBytesWithoutDependingOnProviderReportedLength() {
         val expected = byteArrayOf(9, 8, 7, 6, 5, 4)
         var offset = 0
