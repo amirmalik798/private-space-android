@@ -47,6 +47,23 @@ class PersistentVaultCryptoTest {
     }
 
     @Test
+    fun shortEncryptedRecoveryIndexRoundTripsExactly() {
+        val input = """{"version":1,"topics":[],"files":[],"trash":[]}""".toByteArray()
+        val aad = "private-space:metadata:v2".toByteArray()
+        val dataKey = PersistentVaultCrypto.newDataKey()
+        val encrypted = ByteArrayOutputStream()
+
+        PersistentVaultCrypto.encrypt(ByteArrayInputStream(input), encrypted, aad, dataKey)
+
+        val restored = ByteArrayOutputStream()
+        PersistentVaultCrypto.decrypt(ByteArrayInputStream(encrypted.toByteArray()), restored, aad, dataKey)
+
+        assertArrayEquals(input, restored.toByteArray())
+        assertEquals(input.size + 36, encrypted.size())
+        dataKey.fill(0)
+    }
+
+    @Test
     fun modifiedAuthenticationContextIsRejected() {
         val input = "private content".toByteArray()
         val dataKey = PersistentVaultCrypto.newDataKey()

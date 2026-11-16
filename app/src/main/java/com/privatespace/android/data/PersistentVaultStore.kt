@@ -156,22 +156,38 @@ internal class PersistentVaultStore private constructor(
         val document = directory.createFile(BINARY_MIME, name)
             ?: error("Could not create an encrypted recovery index. Check device storage.")
 
+        // SAF providers are not equally reliable when an encrypted record is
+        // emitted through several small writes. Build the bounded index envelope
+        // in memory, then send it to the provider as one contiguous write (the
+        // password-wrapped key files use this same single-write pattern).
+        val encryptedBuffer = WipingByteArrayOutputStream(clearIndex.size + CONTAINER_OVERHEAD)
+        val encryptedPayload = try {
+            PersistentVaultCrypto.encrypt(
+                ByteArrayInputStream(clearIndex),
+                encryptedBuffer,
+                aad,
+                requireKey()
+            )
+            encryptedBuffer.toByteArray()
+        } finally {
+            encryptedBuffer.wipe()
+        }
+
         try {
             val output = resolver.openOutputStream(document.uri, "w")
                 ?: error("Could not open the encrypted recovery index.")
             output.use {
-                PersistentVaultCrypto.encrypt(
-                    ByteArrayInputStream(clearIndex),
-                    it,
-                    aad,
-                    requireKey()
-                )
+                it.write(encryptedPayload)
+                it.flush()
             }
 
             val encryptedBytes = VaultRecoveryReadback.readVerifiedBytes(
                 operation = "the encrypted recovery index",
                 read = { readDocumentBytes(document, MAX_INDEX_BYTES + CONTAINER_OVERHEAD) },
                 verify = { candidate ->
+                    if (!candidate.contentEquals(encryptedPayload)) {
+                        throw IOException("The storage provider changed the encrypted recovery index after writing.")
+                    }
                     val verified = WipingByteArrayOutputStream(clearIndex.size)
                     try {
                         PersistentVaultCrypto.decrypt(
@@ -207,6 +223,8 @@ internal class PersistentVaultStore private constructor(
             // Leave a possibly partial file unreferenced. Its tag will fail and
             // the next save uses a new generation rather than overwriting it.
             throw failure
+        } finally {
+            encryptedPayload.fill(0)
         }
     }
 

@@ -102,6 +102,9 @@ internal object VaultRecoveryReadback {
                 it.message?.contains("exceeds its supported size", ignoreCase = true) == true
             } -> "The storage provider returned more data than the encrypted-file size limit allows."
             causes.any {
+                it.message?.contains("storage provider changed the encrypted recovery index", ignoreCase = true) == true
+            } -> "The storage provider changed the encrypted index bytes while saving the file."
+            causes.any {
                 it.message?.contains("did not authenticate after writing", ignoreCase = true) == true
             } -> "The file was read back, but its decrypted contents did not match what was written."
             causes.any {
