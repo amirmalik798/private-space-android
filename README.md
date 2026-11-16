@@ -1,6 +1,6 @@
 # Private Space
 
-## Encrypted recovery across reinstallations (0.12.0)
+## Encrypted recovery across reinstallations
 
 - Private Space can keep an optional encrypted recovery copy in a folder the user selects in this device's internal storage or SD card. The folder contains encrypted file payloads, an encrypted vault index, and password-protected recovery-key envelopes. It does not contain plaintext vault files or readable topic/file names.
 - The normal on-device working vault remains encrypted with an AES-256-GCM key held by Android Keystore. The app password is stored as a PBKDF2-HMAC-SHA256 password verifier; it is not the encryption key for the on-device working files.
