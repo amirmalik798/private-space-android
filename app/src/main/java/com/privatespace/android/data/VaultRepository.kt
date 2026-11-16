@@ -1538,7 +1538,7 @@ class VaultRepository(context: Context) {
                 require(parsed.map { it.id }.distinct().size == parsed.size) {
                     "The restore journal contains duplicate file identifiers."
                 }
-                transactionId to digest to parsed
+                Triple(transactionId, digest, parsed)
             } catch (failure: Throwable) {
                 journalBytes.fill(0)
                 throw IOException(
