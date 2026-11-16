@@ -368,7 +368,7 @@ class VaultRepository(context: Context) {
         }
         val clear = output.toByteArray()
         require(clear.size <= MAX_METADATA_BYTES) { "Vault index is larger than the supported limit." }
-        val json = JSONObject(clear.toString(Charsets.UTF_8))
+        val json = JSONObject(String(clear, Charsets.UTF_8))
         require(json.optInt("version") == 2) { "Unsupported vault index version." }
 
         val topicArray = json.getJSONArray("topics")
@@ -463,7 +463,20 @@ class VaultRepository(context: Context) {
     private fun migrateLegacyMetadataIfNeeded() {
         val hasBase = metadata.baseFile.exists()
         val hasBackup = File(metadata.baseFile.path + ".bak").exists()
-        if (hasBase || hasBackup) return
+        if (hasBase || hasBackup) {
+            // A prior migration may have committed the encrypted index but
+            // failed while removing the old plaintext preferences.
+            if (legacyPrefs.contains("topics") || legacyPrefs.contains("files")) {
+                loadIndex() // Verify the encrypted index before deleting the old copy.
+                check(
+                    legacyPrefs.edit()
+                        .remove("topics")
+                        .remove("files")
+                        .commit()
+                ) { "Could not remove the migrated plaintext index." }
+            }
+            return
+        }
         if (!legacyPrefs.contains("topics") && !legacyPrefs.contains("files")) return
 
         try {
