@@ -36,6 +36,17 @@ class VaultSessionPolicyTest {
     fun actualScreenLockLocksTheVault() {
         assertTrue(VaultSessionPolicy.shouldLockForScreenLock(isKeyguardLocked = true))
     }
+
+    @Test
+    fun deviceScreenOffSignalLocksEvenWhenActivityWasAlreadyBackgrounded() {
+        assertTrue(
+            VaultSessionPolicy.shouldLockForDeviceScreenOff("android.intent.action.SCREEN_OFF")
+        )
+        assertFalse(
+            VaultSessionPolicy.shouldLockForDeviceScreenOff("android.intent.action.SCREEN_ON")
+        )
+        assertFalse(VaultSessionPolicy.shouldLockForDeviceScreenOff(null))
+    }
     @Test
     fun recoverySetupIsNotOfferedAfterRestoreOrWhenStorageIsAlreadyActive() {
         assertFalse(

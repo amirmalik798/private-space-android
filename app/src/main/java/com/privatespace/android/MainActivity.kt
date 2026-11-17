@@ -2,11 +2,13 @@ package com.privatespace.android
 
 import android.app.Activity
 import android.app.KeyguardManager
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
@@ -64,6 +66,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.data.*
@@ -129,9 +132,11 @@ class MainActivity : ComponentActivity() {
         private set
     var foregroundGeneration: Long = 0L
         private set
+    private var screenOffReceiver: BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        registerScreenOffReceiver()
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         window.statusBarColor = android.graphics.Color.rgb(8, 13, 24)
         window.navigationBarColor = android.graphics.Color.rgb(8, 13, 24)
@@ -159,9 +164,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * ACTION_SCREEN_OFF is a protected system broadcast and must be received
+     * through a context-registered receiver. Register with the application
+     * context so it remains active after this Activity is paused or stopped.
+     *
+     * A normal app switch does not emit this action, so backgrounding alone
+     * continues to preserve the unlocked vault session.
+     */
+    private fun registerScreenOffReceiver() {
+        if (screenOffReceiver != null) return
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (VaultSessionPolicy.shouldLockForDeviceScreenOff(intent.action)) {
+                    // Route through the same callback used by the existing
+                    // onPause keyguard check and the in-app lock implementation.
+                    onVaultShouldLock?.invoke()
+                }
+            }
+        }
+
+        ContextCompat.registerReceiver(
+            applicationContext,
+            receiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        screenOffReceiver = receiver
+    }
+
     override fun onResume() {
         super.onResume()
         isResumedForVault = true
+    }
+
+    override fun onDestroy() {
+        val receiver = screenOffReceiver
+        screenOffReceiver = null
+        if (receiver != null) {
+            runCatching { applicationContext.unregisterReceiver(receiver) }
+        }
+        super.onDestroy()
     }
 
     override fun onPause() {
