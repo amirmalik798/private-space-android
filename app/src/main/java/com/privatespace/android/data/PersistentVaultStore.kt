@@ -122,7 +122,11 @@ internal class PersistentVaultStore private constructor(
                 }
             )
         } catch (failure: Throwable) {
-            runCatching { target.delete() }
+            runCatching {
+                if (!target.delete() && target.exists()) {
+                    throw IOException("Could not remove an incomplete encrypted recovery payload.")
+                }
+            }.onFailure(failure::addSuppressed)
             throw failure
         }
     }
@@ -613,10 +617,34 @@ internal class PersistentVaultStore private constructor(
         }
 
         private fun deleteDocumentTree(document: DocumentFile) {
-            if (document.isDirectory) {
-                document.listFiles().forEach(::deleteDocumentTree)
+            var firstFailure: Throwable? = null
+            val children = if (document.isDirectory) {
+                try {
+                    document.listFiles().toList()
+                } catch (failure: Throwable) {
+                    firstFailure = failure
+                    emptyList()
+                }
+            } else {
+                emptyList()
             }
-            document.delete()
+            children.forEach { child ->
+                try {
+                    deleteDocumentTree(child)
+                } catch (failure: Throwable) {
+                    val previous = firstFailure
+                    if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
+                }
+            }
+            try {
+                if (!document.delete() && document.exists()) {
+                    throw IOException("Could not remove recovery item '${document.name ?: "unknown"}'.")
+                }
+            } catch (failure: Throwable) {
+                val previous = firstFailure
+                if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
+            }
+            firstFailure?.let { throw IOException("The incomplete recovery folder could not be fully removed.", it) }
         }
 
         private fun writeKeyEnvelope(
