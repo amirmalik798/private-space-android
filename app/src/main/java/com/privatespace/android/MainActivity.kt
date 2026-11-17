@@ -388,7 +388,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     fun publishFileOperationProgress(token: Long, progress: VaultFileOperationProgress) {
         val now = System.currentTimeMillis()
         val previous = lastFileProgressPostAt.get()
-        val isFinal = progress.totalBytes > 0L && progress.completedBytes >= progress.totalBytes
+        val isFinal = (progress.totalBytes > 0L && progress.completedBytes >= progress.totalBytes) ||
+            (progress.totalFiles > 0 && progress.completedFiles >= progress.totalFiles)
         if (now - previous < 100L && !isFinal) return
         lastFileProgressPostAt.set(now)
         mainHandler.post {
