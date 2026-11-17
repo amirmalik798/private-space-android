@@ -660,12 +660,19 @@ class VaultRepository(context: Context) {
      * long as needed; outgoing copies are removed automatically after 30 minutes.
      */
     @Synchronized
-    fun prepareDecryptedFile(id: String): PreparedVaultFile {
+    fun prepareDecryptedFile(
+        id: String,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ): PreparedVaultFile {
         val record = findFile(id)
         val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
         val destination = File(session, VaultInputValidation.displayName(record.displayName))
         try {
-            decryptInto(record, destination)
+            onProgress(VaultFileOperationProgress("Decrypting", 0L, record.sizeBytes, currentFileName = record.displayName))
+            decryptInto(record, destination) { completed ->
+                onProgress(VaultFileOperationProgress("Decrypting", completed, record.sizeBytes, currentFileName = record.displayName))
+            }
+            onProgress(VaultFileOperationProgress("Decryption complete", record.sizeBytes, record.sizeBytes, currentFileName = record.displayName))
             return PreparedVaultFile(destination, record.mimeType)
         } catch (failure: Throwable) {
             runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
@@ -703,7 +710,10 @@ class VaultRepository(context: Context) {
      * FileProvider-exposed outgoing directory. It must be discarded on close.
      */
     @Synchronized
-    fun prepareMediaForViewing(id: String): PreparedVaultFile {
+    fun prepareMediaForViewing(
+        id: String,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ): PreparedVaultFile {
         val record = findFile(id)
         require(
             VaultFormatSupport.isImageMimeType(record.mimeType) ||
@@ -713,7 +723,11 @@ class VaultRepository(context: Context) {
         val session = createPrivateDirectory(staging, "viewer-${UUID.randomUUID()}")
         val destination = File(session, VaultInputValidation.displayName(record.displayName))
         try {
-            decryptInto(record, destination)
+            onProgress(VaultFileOperationProgress("Decrypting", 0L, record.sizeBytes, currentFileName = record.displayName))
+            decryptInto(record, destination) { completed ->
+                onProgress(VaultFileOperationProgress("Decrypting", completed, record.sizeBytes, currentFileName = record.displayName))
+            }
+            onProgress(VaultFileOperationProgress("Decryption complete", record.sizeBytes, record.sizeBytes, currentFileName = record.displayName))
             return PreparedVaultFile(destination, record.mimeType)
         } catch (failure: Throwable) {
             runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
@@ -967,50 +981,38 @@ class VaultRepository(context: Context) {
     }
 
     @Synchronized
-    fun exportToUri(id: String, destination: Uri) {
+    fun exportToUri(
+        id: String,
+        destination: Uri,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ) {
         val record = findFile(id)
-        val temporary = createAuthenticatedStagingCopy(record)
-        try {
-            val output = resolver.openOutputStream(destination, "w")
-                ?: error("Android could not open the export destination.")
-            output.use { target ->
-                FileInputStream(temporary).use { input -> input.copyTo(target, 64 * 1024) }
-            }
-        } catch (failure: Throwable) {
-            runCatching { DocumentFile.fromSingleUri(appContext, destination)?.delete() }
-            throw failure
-        } finally {
-            deleteTemporaryEntry(temporary)
-        }
+        exportRecordToUri(record, destination, onProgress)
     }
 
     @Synchronized
-    fun exportToDocument(id: String, destination: DocumentFile) {
+    fun exportToDocument(
+        id: String,
+        destination: DocumentFile,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ) {
         val record = findFile(id)
-        val temporary = createAuthenticatedStagingCopy(record)
-        try {
-            val output = resolver.openOutputStream(destination.uri, "w")
-                ?: error("Android could not open the export destination.")
-            output.use { target ->
-                FileInputStream(temporary).use { input -> input.copyTo(target, 64 * 1024) }
-            }
-        } catch (failure: Throwable) {
-            destination.delete()
-            throw failure
-        } finally {
-            deleteTemporaryEntry(temporary)
-        }
+        exportRecordToDocument(record, destination, onProgress)
     }
 
     @Synchronized
-    fun exportTopicToFolder(topicId: String, destination: DocumentFile) {
-        val index = synchronized(this) { loadIndex() }
+    fun exportTopicToFolder(
+        topicId: String,
+        destination: DocumentFile,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ) {
+        val index = loadIndex()
         val topic = index.topics.firstOrNull { it.id == topicId } ?: error("Topic not found.")
         val records = index.files.filter { it.topicId == topicId }
         val folderName = VaultExportLayout.topicFolder(topic).folderName
         val folder = createExactDirectory(destination, folderName)
         try {
-            exportRecords(records, folder)
+            exportRecords(records, folder, onProgress)
         } catch (failure: Throwable) {
             deleteDocumentTree(folder)
             throw failure
@@ -1022,7 +1024,11 @@ class VaultRepository(context: Context) {
      * destination. The folder is rolled back if any file fails to export.
      */
     @Synchronized
-    fun exportFilesToFolder(fileIds: List<String>, destination: DocumentFile) {
+    fun exportFilesToFolder(
+        fileIds: List<String>,
+        destination: DocumentFile,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ) {
         require(fileIds.isNotEmpty()) { "Select at least one file to export." }
         require(fileIds.distinct().size == fileIds.size) {
             "The export selection contains duplicate files."
@@ -1034,7 +1040,7 @@ class VaultRepository(context: Context) {
         }
         val folder = createExactDirectory(destination, "private-space-selection")
         try {
-            exportRecords(records, folder)
+            exportRecords(records, folder, onProgress)
         } catch (failure: Throwable) {
             deleteDocumentTree(folder)
             throw failure
@@ -1044,26 +1050,190 @@ class VaultRepository(context: Context) {
     /**
      * Exports the complete vault beneath a single, predictable root folder:
      * private-space-data/<topic name>/<original files>.
-     *
-     * The destination itself is never used as the export root, so the user
-     * always gets one self-contained folder they can move or back up.
      */
     @Synchronized
-    fun exportAllToFolder(destination: DocumentFile) {
-        val index = synchronized(this) { loadIndex() }
-        val rootFolderName = VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
-        val rootFolder = createExactDirectory(destination, rootFolderName)
+    fun exportAllToFolder(
+        destination: DocumentFile,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ) {
+        val index = loadIndex()
+        val records = index.files
+        val totalBytes = records.fold(0L) { total, record ->
+            Math.addExact(total, record.sizeBytes)
+        }
+        val totalFiles = records.size
+        val rootFolder = createExactDirectory(
+            destination,
+            VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
+        )
+        var completedBytes = 0L
+        var completedFiles = 0
         try {
             VaultExportLayout.allTopicFolders(index.topics).forEach { topicFolder ->
                 val folder = createExactDirectory(rootFolder, topicFolder.folderName)
-                exportRecords(
-                    index.files.filter { it.topicId == topicFolder.topicId },
-                    folder
+                val topicRecords = records.filter { it.topicId == topicFolder.topicId }
+                val result = exportRecords(
+                    topicRecords,
+                    folder,
+                    onProgress,
+                    totalBytes,
+                    totalFiles,
+                    completedBytes,
+                    completedFiles
                 )
+                completedBytes = result.first
+                completedFiles = result.second
             }
+            onProgress(
+                VaultFileOperationProgress(
+                    "Export complete",
+                    totalBytes,
+                    totalBytes,
+                    totalFiles,
+                    totalFiles
+                )
+            )
         } catch (failure: Throwable) {
             deleteDocumentTree(rootFolder)
             throw failure
+        }
+    }
+
+    private fun exportRecordToUri(
+        record: VaultFile,
+        destination: Uri,
+        onProgress: (VaultFileOperationProgress) -> Unit
+    ) {
+        val temporary = createAuthenticatedStagingCopy(record) { completed ->
+            onProgress(VaultFileOperationProgress("Decrypting", completed, record.sizeBytes, currentFileName = record.displayName))
+        }
+        try {
+            val output = resolver.openOutputStream(destination, "w")
+                ?: error("Android could not open the export destination.")
+            output.use { target ->
+                FileInputStream(temporary).use { input ->
+                    copyWithProgress(input, target) { completed ->
+                        onProgress(VaultFileOperationProgress("Writing export", completed, record.sizeBytes, currentFileName = record.displayName))
+                    }
+                }
+            }
+            onProgress(VaultFileOperationProgress("Export complete", record.sizeBytes, record.sizeBytes, 1, 1, record.displayName))
+        } catch (failure: Throwable) {
+            runCatching { DocumentFile.fromSingleUri(appContext, destination)?.delete() }
+                .onFailure(failure::addSuppressed)
+            throw failure
+        } finally {
+            deleteTemporaryEntry(temporary)
+        }
+    }
+
+    private fun exportRecordToDocument(
+        record: VaultFile,
+        destination: DocumentFile,
+        onProgress: (Long, String) -> Unit
+    ) {
+        val temporary = createAuthenticatedStagingCopy(record) { completed ->
+            onProgress(completed, "Decrypting")
+        }
+        try {
+            val output = resolver.openOutputStream(destination.uri, "w")
+                ?: error("Android could not open the export destination.")
+            output.use { target ->
+                FileInputStream(temporary).use { input ->
+                    copyWithProgress(input, target) { completed ->
+                        onProgress(completed, "Writing export")
+                    }
+                }
+            }
+        } catch (failure: Throwable) {
+            runCatching { destination.delete() }.onFailure(failure::addSuppressed)
+            throw failure
+        } finally {
+            deleteTemporaryEntry(temporary)
+        }
+    }
+
+    private fun exportRecords(
+        records: List<VaultFile>,
+        folder: DocumentFile,
+        onProgress: (VaultFileOperationProgress) -> Unit,
+        totalBytes: Long = records.fold(0L) { total, record -> Math.addExact(total, record.sizeBytes) },
+        totalFiles: Int = records.size,
+        completedBytesBefore: Long = 0L,
+        completedFilesBefore: Int = 0
+    ): Pair<Long, Int> {
+        val usedNames = mutableSetOf<String>()
+        var completedBytes = completedBytesBefore
+        var completedFiles = completedFilesBefore
+        records.forEach { record ->
+            val original = VaultInputValidation.displayName(record.displayName)
+            var candidate = original
+            var suffix = 2
+            while (!usedNames.add(candidate.lowercase(Locale.ROOT))) {
+                val dot = original.lastIndexOf('.')
+                candidate = if (dot > 0) {
+                    "${original.substring(0, dot)} ($suffix)${original.substring(dot)}"
+                } else {
+                    "$original ($suffix)"
+                }
+                suffix++
+            }
+            val target = folder.createFile(record.mimeType, candidate)
+                ?: error("Could not create an export for '$candidate'.")
+            onProgress(VaultFileOperationProgress(
+                "Decrypting",
+                completedBytes,
+                totalBytes,
+                completedFiles,
+                totalFiles,
+                record.displayName
+            ))
+            exportRecordToDocument(record, target) { currentBytes, phase ->
+                onProgress(
+                    VaultFileOperationProgress(
+                        phase,
+                        (completedBytes + currentBytes).coerceAtMost(totalBytes),
+                        totalBytes,
+                        completedFiles,
+                        totalFiles,
+                        record.displayName
+                    )
+                )
+            }
+            completedBytes = Math.addExact(completedBytes, record.sizeBytes)
+            completedFiles++
+            onProgress(
+                VaultFileOperationProgress(
+                    "Exporting files",
+                    completedBytes,
+                    totalBytes,
+                    completedFiles,
+                    totalFiles,
+                    record.displayName
+                )
+            )
+        }
+        return completedBytes to completedFiles
+    }
+
+    private fun copyWithProgress(
+        input: FileInputStream,
+        output: OutputStream,
+        onProgress: (Long) -> Unit
+    ) {
+        val buffer = ByteArray(64 * 1024)
+        var copied = 0L
+        try {
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                output.write(buffer, 0, count)
+                copied = Math.addExact(copied, count.toLong())
+                onProgress(copied)
+            }
+            output.flush()
+        } finally {
+            buffer.fill(0)
         }
     }
 
@@ -1115,10 +1285,13 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun createAuthenticatedStagingCopy(record: VaultFile): File {
+    private fun createAuthenticatedStagingCopy(
+        record: VaultFile,
+        onProgress: ((Long) -> Unit)? = null
+    ): File {
         val target = File(staging, "${UUID.randomUUID()}.tmp")
         try {
-            decryptInto(record, target)
+            decryptInto(record, target, onProgress)
             return target
         } catch (failure: Throwable) {
             runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
@@ -1126,7 +1299,11 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun decryptInto(record: VaultFile, target: File) {
+    private fun decryptInto(
+        record: VaultFile,
+        target: File,
+        onProgress: ((Long) -> Unit)? = null
+    ) {
         val source = encryptedFile(record.id)
         require(source.isFile) { "The encrypted file is missing from the vault." }
         try {
@@ -1134,7 +1311,10 @@ class VaultRepository(context: Context) {
                 FileOutputStream(target).use { clear ->
                     restrictFilePermissions(target)
                     val exactLength = ExactLengthOutputStream(clear, record.sizeBytes)
-                    VaultCrypto.decrypt(encrypted, exactLength, fileAad(record.id))
+                    val output = if (onProgress == null) exactLength else ProgressOutputStream(exactLength) { completed ->
+                        runCatching { onProgress(completed) }
+                    }
+                    VaultCrypto.decrypt(encrypted, output, fileAad(record.id))
                     // A valid authentication tag is necessary but the authenticated
                     // index size is also an invariant. Do not expose, share, or export
                     // a decrypted file unless both checks agree exactly.
