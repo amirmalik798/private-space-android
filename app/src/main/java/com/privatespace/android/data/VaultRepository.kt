@@ -11,6 +11,7 @@ import android.util.AtomicFile
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.security.VaultCrypto
+import com.privatespace.android.security.VaultImportControl
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -457,21 +458,36 @@ class VaultRepository(context: Context) {
     }
 
     @Synchronized
-    fun addFile(topicId: String, uri: Uri): VaultFile {
+    fun addFile(topicId: String, uri: Uri): VaultFile =
+        addFileWithProgress(topicId, uri, null) { _, _ -> }
+
+    /**
+     * Imports into an app-private encrypted temporary file. The file is only
+     * renamed and indexed after encryption, byte-count validation, fsync and
+     * optional recovery-vault persistence have all succeeded.
+     *
+     * The repository monitor serializes index mutations and import commits.
+     * Pause/stop are observed between bounded encryption chunks.
+     */
+    @Synchronized
+    fun addFileWithProgress(
+        topicId: String,
+        uri: Uri,
+        control: com.privatespace.android.security.VaultImportControl?,
+        onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> }
+    ): VaultFile {
         val index = loadIndex()
         require(index.topics.any { it.id == topicId }) { "The selected topic no longer exists." }
+        control?.awaitRunning()
 
         val displayName = readDisplayName(uri)
         val safeName = VaultInputValidation.displayName(displayName)
         val mime = resolveMimeType(uri, safeName)
         val reportedSize = readReportedSize(uri)
 
-        // No application-level file-size ceiling. Reject early only when the
-        // reported payload cannot fit in current private storage.
         if (reportedSize != null) {
-            val available = root.usableSpace
             val requiredStorage = VaultCrypto.encryptedContainerLength(reportedSize)
-            require(requiredStorage <= available) {
+            require(requiredStorage <= root.usableSpace) {
                 "There is not enough free storage for this file."
             }
         }
@@ -486,25 +502,41 @@ class VaultRepository(context: Context) {
                 ?: error("Android could not open the selected file.")
             var byteCount = 0L
             source.use { raw ->
-                val counted = UnboundedCountingInputStream(raw)
-                FileOutputStream(temporary).use { encrypted ->
-                    restrictFilePermissions(temporary)
-                    VaultCrypto.encrypt(counted, encrypted, fileAad(id))
-                    encrypted.fd.sync()
-                    byteCount = counted.bytesRead
+                control?.attach(raw)
+                try {
+                    val counted = UnboundedCountingInputStream(raw)
+                    FileOutputStream(temporary).use { encrypted ->
+                        restrictFilePermissions(temporary)
+                        if (control == null) {
+                            VaultCrypto.encrypt(counted, encrypted, fileAad(id))
+                        } else {
+                            VaultCrypto.encryptControlled(
+                                counted,
+                                encrypted,
+                                fileAad(id),
+                                control
+                            ) { completed ->
+                                onProgress(completed, reportedSize)
+                            }
+                        }
+                        encrypted.fd.sync()
+                        byteCount = counted.bytesRead
+                    }
+                } finally {
+                    control?.detach(raw)
                 }
             }
 
-            // The provider's reported size is only a hint until the stream has
-            // been consumed. Reject mismatches before the temp payload is made
-            // visible as a finalized vault record.
+            control?.awaitRunning()
             VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
+            onProgress(byteCount, reportedSize)
 
             atomicRename(temporary, target)
             finalized = true
             persistentStore?.let { store ->
                 persistLocalEncryptedPayload(store, id, target, byteCount)
             }
+
             val now = System.currentTimeMillis()
             val record = VaultFile(id, topicId, safeName, mime, byteCount, now)
             val changedTopics = index.topics.map {
@@ -513,15 +545,17 @@ class VaultRepository(context: Context) {
             try {
                 saveIndex(index.copy(topics = changedTopics, files = index.files + record))
             } catch (failure: Throwable) {
-                target.delete()
-                runCatching { syncDirectory(root) }
+                runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
+                runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
                 throw failure
             }
             return record
         } catch (failure: Throwable) {
-            temporary.delete()
-            if (finalized) target.delete()
-            runCatching { syncDirectory(root) }
+            runCatching { deleteTemporaryEntry(temporary) }.onFailure(failure::addSuppressed)
+            if (finalized) {
+                runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
+            }
+            runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
             throw failure
         }
     }
