@@ -998,41 +998,48 @@ class VaultRepository(context: Context) {
     ) {
         val record = findFile(id)
         val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
-        onProgress(
-            VaultFileOperationProgress(
-                "Decrypting",
-                0L,
-                totalWorkBytes,
-                currentFileName = record.displayName,
-                currentFileCompletedBytes = 0L,
-                currentFileTotalBytes = record.sizeBytes
-            )
-        )
-        exportRecordToDocument(record, destination) { currentBytes, phase ->
-            val phaseBase = if (phase == "Writing export") record.sizeBytes else 0L
+        try {
             onProgress(
                 VaultFileOperationProgress(
-                    phase,
-                    phaseBase + currentBytes,
+                    "Decrypting",
+                    0L,
                     totalWorkBytes,
                     currentFileName = record.displayName,
-                    currentFileCompletedBytes = currentBytes,
+                    currentFileCompletedBytes = 0L,
                     currentFileTotalBytes = record.sizeBytes
                 )
             )
-        }
-        onProgress(
-            VaultFileOperationProgress(
-                "Export complete",
-                totalWorkBytes,
-                totalWorkBytes,
-                1,
-                1,
-                record.displayName,
-                record.sizeBytes,
-                record.sizeBytes
+            exportRecordToDocument(record, destination) { currentBytes, phase ->
+                val phaseBase = if (phase == "Writing export") record.sizeBytes else 0L
+                onProgress(
+                    VaultFileOperationProgress(
+                        phase,
+                        phaseBase + currentBytes,
+                        totalWorkBytes,
+                        currentFileName = record.displayName,
+                        currentFileCompletedBytes = currentBytes,
+                        currentFileTotalBytes = record.sizeBytes
+                    )
+                )
+            }
+            onProgress(
+                VaultFileOperationProgress(
+                    "Export complete",
+                    totalWorkBytes,
+                    totalWorkBytes,
+                    1,
+                    1,
+                    record.displayName,
+                    record.sizeBytes,
+                    record.sizeBytes
+                )
             )
-        )
+        } catch (failure: Throwable) {
+            // Covers failures from the initial/final progress callback too, not
+            // only failures raised while decrypting or writing the document.
+            runCatching { destination.delete() }.onFailure(failure::addSuppressed)
+            throw failure
+        }
     }
 
     @Synchronized
