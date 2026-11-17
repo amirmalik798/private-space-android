@@ -421,6 +421,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun lockVault() {
+        // Stop any in-flight import/open/export before invalidating its UI token.
+        // In particular, an export must not continue releasing plaintext after
+        // the vault has been explicitly locked or locked by the screen policy.
+        fileOperationCancel?.invoke()
+        activeBatchImportControl?.stop()
         repository.lockPersistentStorage()
         fileOperationToken += 1L
         fileOperationProgress = null
