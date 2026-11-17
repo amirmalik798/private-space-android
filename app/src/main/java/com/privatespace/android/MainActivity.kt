@@ -4488,14 +4488,31 @@ private fun ConfirmDialog(
     onCancel: () -> Unit,
     onConfirm: () -> Unit
 ) {
+    var confirmationSubmitted by remember(title, message, confirmLabel) {
+        mutableStateOf(false)
+    }
+
     AlertDialog(
-        onDismissRequest = onCancel,
+        onDismissRequest = { if (!confirmationSubmitted) onCancel() },
         icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Red) },
         title = { Text(title, fontWeight = FontWeight.Bold) },
-        text = { Text(message, color = Muted, lineHeight = 19.sp) },
+        text = {
+            Text(
+                message,
+                modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
+                color = Muted,
+                lineHeight = 19.sp
+            )
+        },
         confirmButton = {
             Button(
-                onClick = onConfirm,
+                enabled = !confirmationSubmitted,
+                onClick = {
+                    if (!confirmationSubmitted) {
+                        confirmationSubmitted = true
+                        onConfirm()
+                    }
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Ink),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -4505,7 +4522,10 @@ private fun ConfirmDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onCancel) {
+            TextButton(
+                enabled = !confirmationSubmitted,
+                onClick = { if (!confirmationSubmitted) onCancel() }
+            ) {
                 Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
                 Text("Keep it")
