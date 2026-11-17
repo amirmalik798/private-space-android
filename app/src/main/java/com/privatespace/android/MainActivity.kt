@@ -183,6 +183,14 @@ class MainActivity : ComponentActivity() {
         isResumedForVault = false
         super.onStop()
     }
+
+    override fun onDestroy() {
+        // The application-level operation scope must not outlive the Activity
+        // session that owns the unlocked UI state. Backgrounding alone does
+        // not destroy this Activity, so valid background work can continue.
+        VaultOperationRuntime.cancelAll()
+        super.onDestroy()
+    }
 }
 
 private data class FilePickerTarget(
