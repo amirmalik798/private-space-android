@@ -550,7 +550,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             },
                             onFinalizing = {
                                 mainHandler.post {
-                                    if (unlocked) updateImportItem(next.id) {
+                                    if (unlocked && importControls[next.id] === control) updateImportItem(next.id) {
                                         it.copy(status = VaultImportStatus.FINALIZING)
                                     }
                                 }
