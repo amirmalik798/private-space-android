@@ -10,7 +10,9 @@ data class VaultFileOperationProgress(
     val totalBytes: Long,
     val completedFiles: Int = 0,
     val totalFiles: Int = 1,
-    val currentFileName: String = ""
+    val currentFileName: String = "",
+    val currentFileCompletedBytes: Long = completedBytes,
+    val currentFileTotalBytes: Long = totalBytes
 ) {
     val fraction: Float
         get() = if (totalBytes <= 0L) 0f
