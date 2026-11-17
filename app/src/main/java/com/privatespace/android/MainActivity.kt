@@ -431,7 +431,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileOperationProgress = null
         fileOperationTitle = ""
         fileOperationCancel = null
-        activeBatchImportControl?.stop()
         activeBatchImportControl = null
         restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
