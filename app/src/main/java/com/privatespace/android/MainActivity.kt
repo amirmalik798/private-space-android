@@ -1935,6 +1935,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
     }
 
+    fileOperationProgress?.let { progress ->
+        VaultFileOperationProgressDialog(
+            title = fileOperationTitle,
+            progress = progress
+        )
+    }
+
     if (showRecoverySetup) {
         AlertDialog(
             onDismissRequest = {},
@@ -3245,6 +3252,102 @@ private fun TopicScreen(
         )
     }
 
+}
+
+@Composable
+private fun VaultFileOperationProgressDialog(
+    title: String,
+    progress: VaultFileOperationProgress
+) {
+    val hasDeterminateProgress = progress.totalBytes > 0L
+    val percent = if (hasDeterminateProgress) (progress.fraction * 100f).toInt() else null
+    Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 26.dp),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            border = BorderStroke(1.dp, Line)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = Cyan
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(title, color = White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(progress.phase, color = Cyan, fontSize = 11.sp)
+                    }
+                }
+                if (hasDeterminateProgress) {
+                    LinearProgressIndicator(
+                        progress = progress.fraction,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Cyan,
+                        trackColor = Panel2
+                    )
+                    Text(
+                        "${percent}%  ·  ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)} work",
+                        color = White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Cyan,
+                        trackColor = Panel2
+                    )
+                    Text("Preparing operation…", color = Muted, fontSize = 11.sp)
+                }
+                if (progress.totalFiles > 1) {
+                    Text(
+                        "Files: ${progress.completedFiles} / ${progress.totalFiles}",
+                        color = Muted,
+                        fontSize = 11.sp
+                    )
+                }
+                if (progress.currentFileName.isNotBlank()) {
+                    Text(
+                        progress.currentFileName,
+                        color = White,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (progress.currentFileTotalBytes > 0L) {
+                        val fileFraction = (
+                            progress.currentFileCompletedBytes.toDouble() /
+                                progress.currentFileTotalBytes.toDouble()
+                            ).toFloat().coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = fileFraction,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Green,
+                            trackColor = Panel2
+                        )
+                        Text(
+                            "${formatBytes(progress.currentFileCompletedBytes)} / ${formatBytes(progress.currentFileTotalBytes)}",
+                            color = Muted,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
