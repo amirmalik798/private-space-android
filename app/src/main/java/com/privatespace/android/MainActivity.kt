@@ -3136,6 +3136,157 @@ private fun TopicScreen(
 }
 
 @Composable
+private fun VaultImportQueueRow(
+    item: VaultImportQueueItem,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onStop: () -> Unit,
+    onRestart: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var menuExpanded by remember(item.id) { mutableStateOf(false) }
+    val fraction = item.totalBytes?.takeIf { it > 0L }?.let {
+        (item.completedBytes.toDouble() / it.toDouble()).toFloat().coerceIn(0f, 1f)
+    }
+    val statusLabel = when (item.status) {
+        VaultImportStatus.QUEUED -> "Waiting"
+        VaultImportStatus.RUNNING -> "Encrypting"
+        VaultImportStatus.PAUSED -> "Paused"
+        VaultImportStatus.COMPLETED -> "Added securely"
+        VaultImportStatus.FAILED -> "Failed"
+        VaultImportStatus.STOPPED -> "Stopped"
+    }
+    val statusColor = when (item.status) {
+        VaultImportStatus.COMPLETED -> Green
+        VaultImportStatus.FAILED, VaultImportStatus.STOPPED -> Red
+        VaultImportStatus.PAUSED -> Gold
+        else -> Cyan
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        border = BorderStroke(1.dp, Line)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    when (item.status) {
+                        VaultImportStatus.COMPLETED -> Icons.Default.CheckCircle
+                        VaultImportStatus.FAILED, VaultImportStatus.STOPPED -> Icons.Default.ErrorOutline
+                        VaultImportStatus.PAUSED -> Icons.Default.PauseCircleOutline
+                        else -> Icons.Default.Lock
+                    },
+                    contentDescription = null,
+                    tint = statusColor,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(9.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        item.displayName,
+                        color = White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(statusLabel, color = statusColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Import actions for ${item.displayName}", tint = Muted)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        containerColor = Panel
+                    ) {
+                        when (item.status) {
+                            VaultImportStatus.QUEUED, VaultImportStatus.RUNNING -> {
+                                DropdownMenuItem(
+                                    text = { Text("Pause") },
+                                    leadingIcon = { Icon(Icons.Default.Pause, contentDescription = null) },
+                                    onClick = { menuExpanded = false; onPause() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Stop", color = Red) },
+                                    leadingIcon = { Icon(Icons.Default.Stop, contentDescription = null, tint = Red) },
+                                    onClick = { menuExpanded = false; onStop() }
+                                )
+                            }
+                            VaultImportStatus.PAUSED -> {
+                                DropdownMenuItem(
+                                    text = { Text("Resume") },
+                                    leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Cyan) },
+                                    onClick = { menuExpanded = false; onResume() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Stop", color = Red) },
+                                    leadingIcon = { Icon(Icons.Default.Stop, contentDescription = null, tint = Red) },
+                                    onClick = { menuExpanded = false; onStop() }
+                                )
+                            }
+                            VaultImportStatus.FAILED, VaultImportStatus.STOPPED -> {
+                                DropdownMenuItem(
+                                    text = { Text("Restart") },
+                                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = Cyan) },
+                                    onClick = { menuExpanded = false; onRestart() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Dismiss") },
+                                    leadingIcon = { Icon(Icons.Default.Close, contentDescription = null) },
+                                    onClick = { menuExpanded = false; onDismiss() }
+                                )
+                            }
+                            VaultImportStatus.COMPLETED -> {
+                                DropdownMenuItem(
+                                    text = { Text("Dismiss") },
+                                    leadingIcon = { Icon(Icons.Default.Close, contentDescription = null) },
+                                    onClick = { menuExpanded = false; onDismiss() }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (item.status != VaultImportStatus.QUEUED &&
+                item.status != VaultImportStatus.STOPPED &&
+                item.status != VaultImportStatus.FAILED
+            ) {
+                if (fraction == null && item.status != VaultImportStatus.COMPLETED) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Cyan)
+                } else {
+                    LinearProgressIndicator(
+                        progress = { if (item.status == VaultImportStatus.COMPLETED) 1f else fraction ?: 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = statusColor,
+                        trackColor = Panel2
+                    )
+                }
+            }
+            if (item.totalBytes != null && item.totalBytes > 0L) {
+                Text(
+                    "${formatBytes(item.completedBytes)} of ${formatBytes(item.totalBytes)}",
+                    color = Muted,
+                    fontSize = 10.sp,
+                    fontFeatureSettings = "tnum"
+                )
+            } else if (item.completedBytes > 0L) {
+                Text("${formatBytes(item.completedBytes)} processed", color = Muted, fontSize = 10.sp)
+            }
+            item.error?.let { message ->
+                Text(message, color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
 private fun TopicDetailsDialog(
     fileCount: Int,
     storageBytes: Long,
