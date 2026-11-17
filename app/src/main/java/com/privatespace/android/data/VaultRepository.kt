@@ -538,6 +538,7 @@ class VaultRepository(context: Context) {
             atomicRename(temporary, target)
             finalized = true
             val record = synchronized(this) {
+                control?.awaitRunning()
                 val latestIndex = loadIndex()
                 require(latestIndex.topics.any { it.id == topicId }) {
                     "The selected topic was removed before this file could be added."
