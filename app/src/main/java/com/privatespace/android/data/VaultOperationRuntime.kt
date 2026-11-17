@@ -11,7 +11,6 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -69,7 +68,9 @@ object VaultOperationRuntime {
                 operations[operationId] = ActiveOperation(job, onCancel)
             }
         } catch (failure: Throwable) {
-            job.cancel(CancellationException("Foreground service could not be started.", failure))
+            val cancellation = CancellationException("Foreground service could not be started.")
+            cancellation.initCause(failure)
+            job.cancel(cancellation)
             throw failure
         }
         job.start()
