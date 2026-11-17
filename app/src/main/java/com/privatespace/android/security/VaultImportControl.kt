@@ -17,31 +17,47 @@ class VaultImportControl {
     private val changed = lock.newCondition()
     private var paused = false
     private var stopped = false
+    private var finalizing = false
     private var source: InputStream? = null
 
     val isPaused: Boolean get() = lock.withLock { paused }
     val isStopped: Boolean get() = lock.withLock { stopped }
+    val isFinalizing: Boolean get() = lock.withLock { finalizing }
 
     fun pause() = lock.withLock {
-        if (!stopped) paused = true
+        if (!stopped && !finalizing) paused = true
     }
 
     fun resume() = lock.withLock {
-        if (!stopped) {
+        if (!stopped && !finalizing) {
             paused = false
             changed.signalAll()
         }
     }
 
-    fun stop() {
+    /**
+     * Atomically closes the user-cancellable phase. Once finalization begins,
+     * the encrypted payload is being committed and stop is no longer accepted.
+     */
+    @Throws(IOException::class)
+    fun beginFinalizing() = lock.withLock {
+        if (stopped) throw IOException("Import stopped by the user.")
+        finalizing = true
+        paused = false
+        changed.signalAll()
+    }
+
+    /** Returns false when the file has already entered its atomic commit phase. */
+    fun stop(): Boolean {
         val toClose = lock.withLock {
-            if (stopped) return
+            if (stopped || finalizing) return false
             stopped = true
             paused = false
             changed.signalAll()
             source
         }
         runCatching { toClose?.close() }
+        return true
     }
 
     @Throws(IOException::class)
