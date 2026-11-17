@@ -75,6 +75,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.DateFormat
@@ -352,8 +353,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var pendingImportTopic by remember { mutableStateOf<String?>(null) }
     var importQueue by remember { mutableStateOf<List<VaultImportQueueItem>>(emptyList()) }
     var importControls by remember { mutableStateOf<Map<String, VaultImportControl>>(emptyMap()) }
-    var importWorkerRunning by remember { mutableStateOf(false) }
-    var activeImportId by remember { mutableStateOf<String?>(null) }
+    var activeImportJobs by remember { mutableStateOf<Map<String, Job>>(emptyMap()) }
     var pendingFilePickerTargets by remember { mutableStateOf<List<FilePickerTarget>?>(null) }
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
     var pendingExportTopic by remember { mutableStateOf<String?>(null) }
@@ -414,8 +414,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         importControls.values.forEach(VaultImportControl::stop)
         importControls = emptyMap()
         importQueue = emptyList()
-        importWorkerRunning = false
-        activeImportId = null
+        activeImportJobs = emptyMap()
         pendingImportTopic = null
         pendingFilePickerTargets = null
         pendingExportFile = null
@@ -513,76 +512,81 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         importQueue = importQueue.map { item -> if (item.id == id) transform(item) else item }
     }
 
-    fun ensureImportWorker() {
-        if (importWorkerRunning || !unlocked) return
-        val next = importQueue.firstOrNull { it.status == VaultImportStatus.QUEUED } ?: return
-        val control = importControls[next.id] ?: VaultImportControl().also {
-            importControls = importControls + (next.id to it)
-        }
-        importWorkerRunning = true
-        activeImportId = next.id
-        updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
-        scope.launch {
-            var failure: Exception? = null
-            try {
-                val importedFile = withContext(Dispatchers.IO) {
-                    var lastProgressPostAt = 0L
-                    repository.addFileWithProgress(
-                        next.topicId,
-                        next.uri,
-                        control,
-                        onProgress = { completed, total ->
-                            val now = System.currentTimeMillis()
-                            if (now - lastProgressPostAt >= 150L || (total != null && completed >= total)) {
-                                lastProgressPostAt = now
+    fun ensureImportWorkers() {
+        if (!unlocked) return
+        val availableSlots = (2 - activeImportJobs.size).coerceAtLeast(0)
+        if (availableSlots == 0) return
+        val candidates = importQueue
+            .filter { it.status == VaultImportStatus.QUEUED && it.id !in activeImportJobs }
+            .take(availableSlots)
+
+        candidates.forEach { next ->
+            val control = importControls[next.id] ?: VaultImportControl().also {
+                importControls = importControls + (next.id to it)
+            }
+            updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
+            val job = scope.launch {
+                var failure: Exception? = null
+                try {
+                    val importedFile = withContext(Dispatchers.IO) {
+                        var lastProgressPostAt = 0L
+                        repository.addFileWithProgress(
+                            next.topicId,
+                            next.uri,
+                            control,
+                            onProgress = { completed, total ->
+                                val now = System.currentTimeMillis()
+                                if (now - lastProgressPostAt >= 150L || (total != null && completed >= total)) {
+                                    lastProgressPostAt = now
+                                    mainHandler.post {
+                                        if (unlocked) updateImportItem(next.id) {
+                                            it.copy(
+                                                completedBytes = completed.coerceAtLeast(0L),
+                                                totalBytes = total?.takeIf { value -> value >= 0L }
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            onFinalizing = {
                                 mainHandler.post {
                                     if (unlocked) updateImportItem(next.id) {
-                                        it.copy(
-                                            completedBytes = completed.coerceAtLeast(0L),
-                                            totalBytes = total?.takeIf { value -> value >= 0L }
-                                        )
+                                        it.copy(status = VaultImportStatus.FINALIZING)
                                     }
                                 }
                             }
-                        },
-                        onFinalizing = {
-                            mainHandler.post {
-                                if (unlocked) updateImportItem(next.id) {
-                                    it.copy(status = VaultImportStatus.FINALIZING)
-                                }
-                            }
-                        }
-                    )
-                }
-                if (unlocked) {
-                    updateImportItem(next.id) {
-                        it.copy(
-                            displayName = importedFile.displayName,
-                            status = VaultImportStatus.COMPLETED,
-                            completedBytes = it.totalBytes?.takeIf { total -> total > 0L } ?: it.completedBytes,
-                            error = null
                         )
                     }
-                    refreshVault()
+                    if (unlocked) {
+                        updateImportItem(next.id) {
+                            it.copy(
+                                displayName = importedFile.displayName,
+                                status = VaultImportStatus.COMPLETED,
+                                completedBytes = it.totalBytes?.takeIf { total -> total > 0L } ?: it.completedBytes,
+                                error = null
+                            )
+                        }
+                        refreshVault()
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (caught: Exception) {
+                    failure = caught
+                    if (unlocked) updateImportItem(next.id) {
+                        it.copy(
+                            status = if (control.isStopped) VaultImportStatus.STOPPED else VaultImportStatus.FAILED,
+                            error = if (control.isStopped) null else caught.message ?: "Import failed."
+                        )
+                    }
+                } finally {
+                    activeImportJobs = activeImportJobs - next.id
+                    if (failure != null && unlocked && !control.isStopped) {
+                        toast(failure?.message ?: "A file could not be imported.")
+                    }
+                    ensureImportWorkers()
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (caught: Exception) {
-                failure = caught
-                if (unlocked) updateImportItem(next.id) {
-                    it.copy(
-                        status = if (control.isStopped) VaultImportStatus.STOPPED else VaultImportStatus.FAILED,
-                        error = if (control.isStopped) null else caught.message ?: "Import failed."
-                    )
-                }
-            } finally {
-                importWorkerRunning = false
-                if (activeImportId == next.id) activeImportId = null
-                if (failure != null && unlocked) {
-                    toast(failure?.message ?: "A file could not be imported.")
-                }
-                ensureImportWorker()
             }
+            activeImportJobs = activeImportJobs + (next.id to job)
         }
     }
 
@@ -596,8 +600,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val item = importQueue.firstOrNull { it.id == id } ?: return
         if (item.status != VaultImportStatus.PAUSED) return
         importControls[id]?.resume()
-        updateImportItem(id) { it.copy(status = if (activeImportId == id) VaultImportStatus.RUNNING else VaultImportStatus.QUEUED) }
-        ensureImportWorker()
+        updateImportItem(id) { it.copy(status = if (id in activeImportJobs) VaultImportStatus.RUNNING else VaultImportStatus.QUEUED) }
+        ensureImportWorkers()
     }
 
     fun stopImport(id: String) {
@@ -618,7 +622,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 error = null
             )
         }
-        ensureImportWorker()
+        ensureImportWorkers()
     }
 
     fun dismissImport(id: String) {
@@ -645,7 +649,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             newItems.forEach { item ->
                 importControls = importControls + (item.id to VaultImportControl())
             }
-            ensureImportWorker()
+            ensureImportWorkers()
         } else if (topicId != null && selectedUris.isNotEmpty()) {
             toast("The vault was locked. Unlock it before importing files.")
         }
