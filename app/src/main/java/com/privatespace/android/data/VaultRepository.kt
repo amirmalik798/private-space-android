@@ -1393,7 +1393,16 @@ class VaultRepository(context: Context) {
                     restrictFilePermissions(target)
                     val exactLength = ExactLengthOutputStream(clear, record.sizeBytes)
                     val output = if (onProgress == null) exactLength else ProgressOutputStream(exactLength) { completed ->
-                        runCatching { onProgress(completed) }
+                        try {
+                            onProgress(completed)
+                        } catch (cancelled: java.util.concurrent.CancellationException) {
+                            // Cancellation must interrupt long decryptions promptly.
+                            // Ordinary observer/UI failures remain isolated from
+                            // the integrity-checked storage operation.
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Progress reporting must never compromise file integrity.
+                        }
                     }
                     VaultCrypto.decrypt(encrypted, output, fileAad(record.id))
                     // A valid authentication tag is necessary but the authenticated
