@@ -81,6 +81,7 @@ import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val Ink = Color(0xFF080D18)
 private val Panel = Color(0xFF111B2D)
@@ -912,9 +913,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 busy = true
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
+                val cancelRequested = AtomicBoolean(false)
+                fileOperationCancel = { cancelRequested.set(true) }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         repository.exportToUri(fileId, destination) { progress ->
+                            if (cancelRequested.get()) throw CancellationException("Export cancelled.")
                             publishFileOperationProgress(operationToken, progress)
                         }
                     }
@@ -922,7 +926,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 finishFileOperation(operationToken)
                 busy = false
                 result.onSuccess { toast("File exported. The exported copy is outside Private Space protection.") }
-                    .onFailure { toast(it.message ?: "Export failed.") }
+                    .onFailure {
+                        toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed.")
+                    }
             }
         } else if (destination != null && fileId != null) {
             runCatching { DocumentFile.fromSingleUri(context, destination)?.delete() }
@@ -951,11 +957,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     }
                 }
                 val operationToken = beginFileOperation(operationTitle)
+                val cancelRequested = AtomicBoolean(false)
+                fileOperationCancel = { cancelRequested.set(true) }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         val folder = DocumentFile.fromTreeUri(context, destination)
                             ?: error("The selected folder is unavailable.")
                         val progressCallback: (VaultFileOperationProgress) -> Unit = { progress ->
+                            if (cancelRequested.get()) throw CancellationException("Export cancelled.")
                             publishFileOperationProgress(operationToken, progress)
                         }
                         when {
@@ -974,7 +983,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 result.onSuccess {
                     toast("Export complete. Exported files are outside Private Space protection.")
                 }.onFailure {
-                    toast(it.message ?: "Export failed. Check the selected folder.")
+                    toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed. Check the selected folder.")
                 }
             }
         } else if (destination != null) {
@@ -1137,15 +1146,19 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             currentFileCompletedBytes = 0L,
             currentFileTotalBytes = file.sizeBytes
         )
+        val cancelRequested = AtomicBoolean(false)
+        fileOperationCancel = { cancelRequested.set(true) }
         scope.launch {
             var prepared: PreparedVaultFile? = null
             var handedOff = false
             try {
                 prepared = withContext(Dispatchers.IO) {
                     repository.prepareDecryptedFile(file.id) { progress ->
+                        if (cancelRequested.get()) throw CancellationException("Opening cancelled.")
                         publishFileOperationProgress(operationToken, progress)
                     }
                 }
+                if (cancelRequested.get()) throw CancellationException("Opening cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
                         activity?.isResumedForVault == true
@@ -1198,7 +1211,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     )
                 }
             } catch (cancelled: CancellationException) {
-                throw cancelled
+                toast("Opening file cancelled.")
             } catch (memoryFailure: OutOfMemoryError) {
                 toast("There is not enough available memory to prepare this file.")
             } catch (failure: Exception) {
