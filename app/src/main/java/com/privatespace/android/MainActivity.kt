@@ -2945,7 +2945,10 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
         icon = { Icon(Icons.Default.Shield, contentDescription = null, tint = Green) },
         title = { Text("About your vault", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
                 SecurityInfoRow(
                     icon = Icons.Default.Lock,
                     title = "Encrypted on this device",
@@ -4382,7 +4385,10 @@ private fun ChangePasswordDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(11.dp)
+            ) {
                 OutlinedTextField(
                     value = oldPassword,
                     onValueChange = { oldPassword = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
