@@ -947,9 +947,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed.")
                     }
             }
-        } else if (destination != null && fileId != null) {
+        } else if (destination != null) {
+            // CreateDocument creates the destination before returning its URI.
+            // If the vault was locked while the picker was open, lockVault()
+            // clears pendingExportFile; still remove the unapproved empty target.
             runCatching { DocumentFile.fromSingleUri(context, destination)?.delete() }
-            toast("The vault was locked. Unlock it and start the export again.")
+            if (fileId != null || !unlocked) {
+                toast("The vault was locked. Unlock it and start the export again.")
+            }
         }
     }
 
