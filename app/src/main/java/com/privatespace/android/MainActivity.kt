@@ -842,7 +842,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 // file from the refreshed topic snapshot.
                 toast("The current file is being securely finalized. Remaining files will be cancelled.")
             } else {
-                job.cancel()
+                job?.cancel()
             }
         }) else null
     }
