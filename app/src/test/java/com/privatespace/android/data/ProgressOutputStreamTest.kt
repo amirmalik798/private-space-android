@@ -11,7 +11,7 @@ class ProgressOutputStreamTest {
         val expected = ByteArray(150_321) { (it % 251).toByte() }
         val destination = ByteArrayOutputStream()
         val updates = mutableListOf<Long>()
-        val output = ProgressOutputStream(destination, updates::add)
+        val output = ProgressOutputStream(destination) { updates += it }
 
         output.write(expected, 0, 65_536)
         output.write(expected, 65_536, expected.size - 65_536)
