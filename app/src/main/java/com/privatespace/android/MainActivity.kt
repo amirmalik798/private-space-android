@@ -1674,14 +1674,19 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
 
+    // Index files by topic once per vault snapshot; repeated filtering in
+    // topic cards and the active-topic view becomes expensive for large vaults.
+    val filesByTopic = remember(vaultFiles) {
+        vaultFiles.groupBy { it.topicId }
+    }
     val activeTopic = topics.firstOrNull { it.id == activeTopicId }
     val activeTopicFiles = activeTopic?.let { topic ->
-        val topicFiles = vaultFiles.filter { it.topicId == topic.id }
+        val topicFiles = filesByTopic[topic.id].orEmpty()
         if (topicFilesNewestFirst) VaultFileOrdering.newestFirst(topicFiles)
         else VaultFileOrdering.oldestFirst(topicFiles)
     } ?: emptyList()
     val topicImageFiles = activeTopic?.let { topic ->
-        VaultMediaNavigation.mediaFilesInTopic(vaultFiles, topic.id)
+        VaultMediaNavigation.mediaFilesInTopic(filesByTopic[topic.id].orEmpty(), topic.id)
             .filter { VaultFormatSupport.isImageMimeType(it.mimeType) }
     } ?: emptyList()
     val activeMedia = activeMediaId?.let { mediaId ->
@@ -1918,7 +1923,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
                 else -> {
                     items(filteredTopics, key = { it.id }) { topic ->
-                        val topicFiles = vaultFiles.filter { it.topicId == topic.id }
+                        val topicFiles = filesByTopic[topic.id].orEmpty()
                         val summary = TopicSummary(
                             topic,
                             topicFiles.size,

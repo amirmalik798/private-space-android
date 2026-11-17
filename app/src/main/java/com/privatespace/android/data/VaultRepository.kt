@@ -1104,6 +1104,9 @@ class VaultRepository(context: Context) {
     ) {
         val index = loadIndex()
         val records = index.files
+        // Group once instead of rescanning every file for every topic. This keeps
+        // full-vault export close to O(topics + files) for large vaults.
+        val recordsByTopic = records.groupBy { it.topicId }
         val totalBytes = records.fold(0L) { total, record ->
             Math.addExact(total, record.sizeBytes)
         }
@@ -1118,7 +1121,7 @@ class VaultRepository(context: Context) {
         try {
             VaultExportLayout.allTopicFolders(index.topics).forEach { topicFolder ->
                 val folder = createExactDirectory(rootFolder, topicFolder.folderName)
-                val topicRecords = records.filter { it.topicId == topicFolder.topicId }
+                val topicRecords = recordsByTopic[topicFolder.topicId].orEmpty()
                 val result = exportRecords(
                     topicRecords,
                     folder,
