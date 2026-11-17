@@ -619,7 +619,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun restartImport(id: String) {
         val item = importQueue.firstOrNull { it.id == id } ?: return
-        if (item.status !in setOf(VaultImportStatus.STOPPED, VaultImportStatus.FAILED)) return
+        if (item.status in setOf(VaultImportStatus.COMPLETED, VaultImportStatus.FINALIZING)) return
+        val previousControl = importControls[id]
+        if (previousControl?.isFinalizing == true) return
+        if (previousControl != null) {
+            val accepted = previousControl.stop()
+            if (!accepted && previousControl.isFinalizing) return
+        }
         val control = VaultImportControl()
         importControls = importControls + (id to control)
         updateImportItem(id) {
@@ -3259,6 +3265,11 @@ private fun VaultImportQueueRow(
                                     leadingIcon = { Icon(Icons.Default.Stop, contentDescription = null, tint = Red) },
                                     onClick = { menuExpanded = false; onStop() }
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Restart from beginning") },
+                                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = Cyan) },
+                                    onClick = { menuExpanded = false; onRestart() }
+                                )
                             }
                             VaultImportStatus.PAUSED -> {
                                 DropdownMenuItem(
@@ -3270,6 +3281,11 @@ private fun VaultImportQueueRow(
                                     text = { Text("Stop", color = Red) },
                                     leadingIcon = { Icon(Icons.Default.Stop, contentDescription = null, tint = Red) },
                                     onClick = { menuExpanded = false; onStop() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Restart from beginning") },
+                                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = Cyan) },
+                                    onClick = { menuExpanded = false; onRestart() }
                                 )
                             }
                             VaultImportStatus.FAILED, VaultImportStatus.STOPPED -> {
