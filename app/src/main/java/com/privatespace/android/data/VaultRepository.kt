@@ -1106,23 +1106,34 @@ class VaultRepository(context: Context) {
         onProgress: (VaultFileOperationProgress) -> Unit
     ) {
         val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
-        val temporary = createAuthenticatedStagingCopy(record) { completed ->
-            onProgress(
-                VaultFileOperationProgress(
-                    "Decrypting",
-                    completed,
-                    totalWorkBytes,
-                    currentFileName = record.displayName,
-                    currentFileCompletedBytes = completed,
-                    currentFileTotalBytes = record.sizeBytes
-                )
+        onProgress(
+            VaultFileOperationProgress(
+                "Decrypting",
+                0L,
+                totalWorkBytes,
+                currentFileName = record.displayName,
+                currentFileCompletedBytes = 0L,
+                currentFileTotalBytes = record.sizeBytes
             )
-        }
+        )
+        var temporary: File? = null
         try {
+            temporary = createAuthenticatedStagingCopy(record) { completed ->
+                onProgress(
+                    VaultFileOperationProgress(
+                        "Decrypting",
+                        completed,
+                        totalWorkBytes,
+                        currentFileName = record.displayName,
+                        currentFileCompletedBytes = completed,
+                        currentFileTotalBytes = record.sizeBytes
+                    )
+                )
+            }
             val output = resolver.openOutputStream(destination, "w")
                 ?: error("Android could not open the export destination.")
             output.use { target ->
-                FileInputStream(temporary).use { input ->
+                FileInputStream(temporary!!).use { input ->
                     copyWithProgress(input, target) { completed ->
                         onProgress(
                             VaultFileOperationProgress(
@@ -1143,7 +1154,7 @@ class VaultRepository(context: Context) {
                 .onFailure(failure::addSuppressed)
             throw failure
         } finally {
-            deleteTemporaryEntry(temporary)
+            temporary?.let(::deleteTemporaryEntry)
         }
     }
 
