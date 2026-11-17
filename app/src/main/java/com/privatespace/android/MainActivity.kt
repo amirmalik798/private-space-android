@@ -411,7 +411,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         showChangePassword = false
         topicToDelete = null
         fileToDelete = null
-        importControls.values.forEach(VaultImportControl::stop)
+        importControls.values.forEach { it.stop() }
         importControls = emptyMap()
         importQueue = emptyList()
         activeImportJobs = emptyMap()
@@ -592,8 +592,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun pauseImport(id: String) {
-        val item = importQueue.firstOrNull { it.id == id } ?: return
-        importControls[id]?.pause()
+        importQueue.firstOrNull { it.id == id } ?: return
+        val control = importControls[id]
+        if (control?.isFinalizing == true) return
+        control?.pause()
         updateImportItem(id) { it.copy(status = VaultImportStatus.PAUSED) }
     }
 
@@ -606,7 +608,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun stopImport(id: String) {
-        importControls[id]?.stop()
+        val control = importControls[id]
+        val accepted = control?.stop() ?: true
+        if (!accepted && control?.isFinalizing == true) {
+            toast("This file is already being finalized and can no longer be stopped.")
+            return
+        }
         updateImportItem(id) { it.copy(status = VaultImportStatus.STOPPED, error = null) }
     }
 
