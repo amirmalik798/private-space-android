@@ -658,7 +658,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     ensureImportWorkers()
                 }
             }
-            if (job?.isActive == true) activeImportJobs = activeImportJobs + (next.id to job)
+            job?.let { launchedJob ->
+                if (launchedJob.isActive) activeImportJobs = activeImportJobs + (next.id to launchedJob)
+            }
         }
     }
 
