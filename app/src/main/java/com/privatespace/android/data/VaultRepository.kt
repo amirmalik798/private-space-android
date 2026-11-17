@@ -1061,6 +1061,7 @@ class VaultRepository(context: Context) {
         val totalBytes = records.fold(0L) { total, record ->
             Math.addExact(total, record.sizeBytes)
         }
+        val totalWorkBytes = Math.multiplyExact(totalBytes, 2L)
         val totalFiles = records.size
         val rootFolder = createExactDirectory(
             destination,
@@ -1076,19 +1077,19 @@ class VaultRepository(context: Context) {
                     topicRecords,
                     folder,
                     onProgress,
-                    totalBytes,
+                    totalWorkBytes,
                     totalFiles,
-                    completedBytes,
+                    completedWorkBytes,
                     completedFiles
                 )
-                completedBytes = result.first
+                completedWorkBytes = result.first
                 completedFiles = result.second
             }
             onProgress(
                 VaultFileOperationProgress(
                     "Export complete",
-                    totalBytes,
-                    totalBytes,
+                    totalWorkBytes,
+                    totalWorkBytes,
                     totalFiles,
                     totalFiles
                 )
@@ -1104,8 +1105,18 @@ class VaultRepository(context: Context) {
         destination: Uri,
         onProgress: (VaultFileOperationProgress) -> Unit
     ) {
+        val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
         val temporary = createAuthenticatedStagingCopy(record) { completed ->
-            onProgress(VaultFileOperationProgress("Decrypting", completed, record.sizeBytes, currentFileName = record.displayName))
+            onProgress(
+                VaultFileOperationProgress(
+                    "Decrypting",
+                    completed,
+                    totalWorkBytes,
+                    currentFileName = record.displayName,
+                    currentFileCompletedBytes = completed,
+                    currentFileTotalBytes = record.sizeBytes
+                )
+            )
         }
         try {
             val output = resolver.openOutputStream(destination, "w")
@@ -1113,11 +1124,20 @@ class VaultRepository(context: Context) {
             output.use { target ->
                 FileInputStream(temporary).use { input ->
                     copyWithProgress(input, target) { completed ->
-                        onProgress(VaultFileOperationProgress("Writing export", completed, record.sizeBytes, currentFileName = record.displayName))
+                        onProgress(
+                            VaultFileOperationProgress(
+                                "Writing export",
+                                record.sizeBytes + completed,
+                                totalWorkBytes,
+                                currentFileName = record.displayName,
+                                currentFileCompletedBytes = completed,
+                                currentFileTotalBytes = record.sizeBytes
+                            )
+                        )
                     }
                 }
             }
-            onProgress(VaultFileOperationProgress("Export complete", record.sizeBytes, record.sizeBytes, 1, 1, record.displayName))
+            onProgress(VaultFileOperationProgress("Export complete", totalWorkBytes, totalWorkBytes, 1, 1, record.displayName, record.sizeBytes, record.sizeBytes))
         } catch (failure: Throwable) {
             runCatching { DocumentFile.fromSingleUri(appContext, destination)?.delete() }
                 .onFailure(failure::addSuppressed)
@@ -1157,13 +1177,16 @@ class VaultRepository(context: Context) {
         records: List<VaultFile>,
         folder: DocumentFile,
         onProgress: (VaultFileOperationProgress) -> Unit,
-        totalBytes: Long = records.fold(0L) { total, record -> Math.addExact(total, record.sizeBytes) },
+        totalWorkBytes: Long = Math.multiplyExact(
+            records.fold(0L) { total, record -> Math.addExact(total, record.sizeBytes) },
+            2L
+        ),
         totalFiles: Int = records.size,
-        completedBytesBefore: Long = 0L,
+        completedWorkBytesBefore: Long = 0L,
         completedFilesBefore: Int = 0
     ): Pair<Long, Int> {
         val usedNames = mutableSetOf<String>()
-        var completedBytes = completedBytesBefore
+        var completedWorkBytes = completedWorkBytesBefore
         var completedFiles = completedFilesBefore
         records.forEach { record ->
             val original = VaultInputValidation.displayName(record.displayName)
@@ -1180,40 +1203,52 @@ class VaultRepository(context: Context) {
             }
             val target = folder.createFile(record.mimeType, candidate)
                 ?: error("Could not create an export for '$candidate'.")
-            onProgress(VaultFileOperationProgress(
-                "Decrypting",
-                completedBytes,
-                totalBytes,
-                completedFiles,
-                totalFiles,
-                record.displayName
-            ))
+            onProgress(
+                VaultFileOperationProgress(
+                    "Decrypting",
+                    completedWorkBytes,
+                    totalWorkBytes,
+                    completedFiles,
+                    totalFiles,
+                    record.displayName,
+                    0L,
+                    record.sizeBytes
+                )
+            )
             exportRecordToDocument(record, target) { currentBytes, phase ->
+                val phaseBase = if (phase == "Writing export") record.sizeBytes else 0L
                 onProgress(
                     VaultFileOperationProgress(
                         phase,
-                        (completedBytes + currentBytes).coerceAtMost(totalBytes),
-                        totalBytes,
+                        (completedWorkBytes + phaseBase + currentBytes).coerceAtMost(totalWorkBytes),
+                        totalWorkBytes,
                         completedFiles,
                         totalFiles,
-                        record.displayName
+                        record.displayName,
+                        currentBytes,
+                        record.sizeBytes
                     )
                 )
             }
-            completedBytes = Math.addExact(completedBytes, record.sizeBytes)
+            completedWorkBytes = Math.addExact(
+                completedWorkBytes,
+                Math.multiplyExact(record.sizeBytes, 2L)
+            )
             completedFiles++
             onProgress(
                 VaultFileOperationProgress(
                     "Exporting files",
-                    completedBytes,
-                    totalBytes,
+                    completedWorkBytes,
+                    totalWorkBytes,
                     completedFiles,
                     totalFiles,
-                    record.displayName
+                    record.displayName,
+                    record.sizeBytes,
+                    record.sizeBytes
                 )
             )
         }
-        return completedBytes to completedFiles
+        return completedWorkBytes to completedFiles
     }
 
     private fun copyWithProgress(
