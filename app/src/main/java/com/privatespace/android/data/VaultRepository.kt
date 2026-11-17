@@ -976,18 +976,28 @@ class VaultRepository(context: Context) {
         return VaultMediaPreview(bitmap, durationMs)
     }
 
-    /** Prepares each topic file independently; a failure removes the whole temporary share set. */
+    /**
+     * Prepares each topic file independently; a failure or cooperative cancel
+     * removes the entire temporary share set before anything is handed off.
+     */
     @Synchronized
-    fun prepareTopicShare(topicId: String): List<PreparedVaultFile> {
+    fun prepareTopicShare(
+        topicId: String,
+        onProgress: (VaultFileOperationProgress) -> Unit = {}
+    ): List<PreparedVaultFile> {
         val index = synchronized(this) { loadIndex() }
         val records = index.files.filter { it.topicId == topicId }
         require(index.topics.any { it.id == topicId }) { "Topic not found." }
         require(records.isNotEmpty()) { "This topic has no files to share." }
+        val totalBytes = runCatching {
+            records.fold(0L) { total, record -> Math.addExact(total, record.sizeBytes) }
+        }.getOrNull() ?: 0L
 
         val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
+        var completedBytes = 0L
         try {
             val usedNames = mutableSetOf<String>()
-            return records.map { record ->
+            return records.mapIndexed { indexInTopic, record ->
                 val baseName = VaultInputValidation.displayName(record.displayName)
                 var candidate = baseName
                 var suffix = 2
@@ -1000,8 +1010,52 @@ class VaultRepository(context: Context) {
                     }
                     suffix++
                 }
+
+                onProgress(
+                    VaultFileOperationProgress(
+                        phase = "Preparing share",
+                        completedBytes = completedBytes,
+                        totalBytes = totalBytes,
+                        completedFiles = indexInTopic,
+                        totalFiles = records.size,
+                        currentFileName = record.displayName,
+                        currentFileCompletedBytes = 0L,
+                        currentFileTotalBytes = record.sizeBytes
+                    )
+                )
                 val stagedFile = File(session, candidate)
-                decryptInto(record, stagedFile)
+                decryptInto(record, stagedFile) { currentBytes ->
+                    val aggregate = runCatching {
+                        Math.addExact(completedBytes, currentBytes)
+                    }.getOrDefault(Long.MAX_VALUE)
+                    onProgress(
+                        VaultFileOperationProgress(
+                            phase = "Preparing share",
+                            completedBytes = aggregate,
+                            totalBytes = totalBytes,
+                            completedFiles = indexInTopic,
+                            totalFiles = records.size,
+                            currentFileName = record.displayName,
+                            currentFileCompletedBytes = currentBytes,
+                            currentFileTotalBytes = record.sizeBytes
+                        )
+                    )
+                }
+                completedBytes = runCatching {
+                    Math.addExact(completedBytes, record.sizeBytes)
+                }.getOrDefault(Long.MAX_VALUE)
+                onProgress(
+                    VaultFileOperationProgress(
+                        phase = "Share preparation complete",
+                        completedBytes = completedBytes,
+                        totalBytes = totalBytes,
+                        completedFiles = indexInTopic + 1,
+                        totalFiles = records.size,
+                        currentFileName = record.displayName,
+                        currentFileCompletedBytes = record.sizeBytes,
+                        currentFileTotalBytes = record.sizeBytes
+                    )
+                )
                 PreparedVaultFile(stagedFile, record.mimeType)
             }
         } catch (failure: Throwable) {

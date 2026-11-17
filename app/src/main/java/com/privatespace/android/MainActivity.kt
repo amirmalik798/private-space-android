@@ -1421,133 +1421,260 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun shareVaultFile(file: VaultFile) {
+        if (!unlocked || busy) {
+            if (busy) toast("Another file operation is already running.")
+            return
+        }
+        busy = true
+        val operationToken = beginFileOperation("Preparing to share ${file.displayName}")
+        val cancelRequested = AtomicBoolean(false)
+        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationProgress = VaultFileOperationProgress(
+            phase = "Preparing share",
+            completedBytes = 0L,
+            totalBytes = file.sizeBytes,
+            currentFileName = file.displayName,
+            currentFileCompletedBytes = 0L,
+            currentFileTotalBytes = file.sizeBytes
+        )
+
         scope.launch {
-            busy = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repository.prepareDecryptedFile(file.id) }
-            }
-            busy = false
-            result.onSuccess { prepared ->
+            var prepared: PreparedVaultFile? = null
+            var handedOff = false
+            try {
+                prepared = withContext(Dispatchers.IO) {
+                    repository.prepareDecryptedFile(file.id) { progress ->
+                        if (cancelRequested.get()) {
+                            throw CancellationException("Sharing cancelled.")
+                        }
+                        publishFileOperationProgress(
+                            operationToken,
+                            progress.copy(phase = "Preparing share")
+                        )
+                    }
+                }
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
                         activity?.isResumedForVault == true
                     )
-                ) {
-                    runCatching { repository.discardPreparedOutgoing(listOf(prepared)) }
-                    return@onSuccess
+                ) return@launch
+
+                val uri = FileProvider.getUriForFile(
+                    context, "com.privatespace.android.fileprovider", prepared.file
+                )
+                val sendIntent = Intent(Intent.ACTION_SEND)
+                    .setType(prepared.mimeType)
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
+                context.startActivity(Intent.createChooser(sendIntent, "Share file"))
+                handedOff = true
+            } catch (cancelled: CancellationException) {
+                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+            } catch (failure: Exception) {
+                toast(failure.message ?: "The file could not be prepared for sharing.")
+            } finally {
+                val staged = prepared
+                if (!handedOff && staged != null) {
+                    val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
+                        runCatching {
+                            repository.discardPreparedOutgoing(listOf(staged))
+                        }.exceptionOrNull()
+                    }
+                    if (cleanupFailure != null) {
+                        toast("A temporary decrypted copy could not be removed from private cache.")
+                    }
                 }
-                try {
-                    val uri = FileProvider.getUriForFile(
-                        context, "com.privatespace.android.fileprovider", prepared.file
-                    )
-                    val sendIntent = Intent(Intent.ACTION_SEND)
-                        .setType(prepared.mimeType)
-                        .putExtra(Intent.EXTRA_STREAM, uri)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                    context.startActivity(Intent.createChooser(sendIntent, "Share file"))
-                } catch (failure: Exception) {
-                    runCatching { repository.discardPreparedOutgoing(listOf(prepared)) }
-                    toast("Could not open the Android share sheet.")
-                }
-            }.onFailure {
-                toast(it.message ?: "The file could not be prepared for sharing.")
+                finishFileOperation(operationToken)
+                busy = false
             }
         }
     }
 
     fun shareWholeTopic(topicId: String) {
+        if (!unlocked || busy) {
+            if (busy) toast("Another file operation is already running.")
+            return
+        }
+        val topicName = topics.firstOrNull { it.id == topicId }?.name ?: "topic"
+        busy = true
+        val operationToken = beginFileOperation("Preparing to share $topicName")
+        val cancelRequested = AtomicBoolean(false)
+        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationProgress = VaultFileOperationProgress(
+            phase = "Preparing share",
+            completedBytes = 0L,
+            totalBytes = 0L,
+            totalFiles = 0,
+            currentFileName = topicName
+        )
+
         scope.launch {
-            busy = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repository.prepareTopicShare(topicId) }
-            }
-            busy = false
-            result.onSuccess { preparedFiles ->
+            var preparedFiles: List<PreparedVaultFile> = emptyList()
+            var handedOff = false
+            try {
+                preparedFiles = withContext(Dispatchers.IO) {
+                    repository.prepareTopicShare(topicId) { progress ->
+                        if (cancelRequested.get()) {
+                            throw CancellationException("Sharing cancelled.")
+                        }
+                        publishFileOperationProgress(operationToken, progress)
+                    }
+                }
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
                         activity?.isResumedForVault == true
                     )
-                ) {
-                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
-                    return@onSuccess
+                ) return@launch
+
+                val uris = preparedFiles.map { prepared ->
+                    FileProvider.getUriForFile(
+                        context, "com.privatespace.android.fileprovider", prepared.file
+                    )
                 }
-                try {
-                    val uris = preparedFiles.map { prepared ->
-                        FileProvider.getUriForFile(
-                            context, "com.privatespace.android.fileprovider", prepared.file
-                        )
+                val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE)
+                    .setType("*/*")
+                    .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val clip = ClipData.newUri(context.contentResolver, "Private Space files", uris.first())
+                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+                sendIntent.clipData = clip
+                context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
+                handedOff = true
+            } catch (cancelled: CancellationException) {
+                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+            } catch (failure: Exception) {
+                toast(failure.message ?: "The topic could not be prepared for sharing.")
+            } finally {
+                if (!handedOff && preparedFiles.isNotEmpty()) {
+                    val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
+                        runCatching {
+                            repository.discardPreparedOutgoing(preparedFiles)
+                        }.exceptionOrNull()
                     }
-                    val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE)
-                        .setType("*/*")
-                        .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    val clip = ClipData.newUri(context.contentResolver, "Private Space files", uris.first())
-                    uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
-                    sendIntent.clipData = clip
-                    context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
-                } catch (_: Exception) {
-                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
-                    toast("Could not prepare the topic for sharing.")
+                    if (cleanupFailure != null) {
+                        toast("Temporary decrypted copies could not be removed from private cache.")
+                    }
                 }
-            }.onFailure {
-                toast(it.message ?: "The topic could not be prepared for sharing.")
+                finishFileOperation(operationToken)
+                busy = false
             }
         }
     }
 
     fun shareVaultFiles(files: List<VaultFile>) {
         if (files.isEmpty()) return
+        if (!unlocked || busy) {
+            if (busy) toast("Another file operation is already running.")
+            return
+        }
+        val totalBytes = runCatching {
+            files.fold(0L) { total, file -> Math.addExact(total, file.sizeBytes) }
+        }.getOrNull() ?: 0L
+        busy = true
+        val operationToken = beginFileOperation("Preparing to share ${files.size} selected files")
+        val cancelRequested = AtomicBoolean(false)
+        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationProgress = VaultFileOperationProgress(
+            phase = "Preparing share",
+            completedBytes = 0L,
+            totalBytes = totalBytes,
+            totalFiles = files.size,
+            currentFileName = files.first().displayName,
+            currentFileTotalBytes = files.first().sizeBytes
+        )
+
         scope.launch {
-            busy = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val prepared = mutableListOf<PreparedVaultFile>()
-                    try {
-                        files.forEach { file -> prepared += repository.prepareDecryptedFile(file.id) }
-                        prepared
-                    } catch (failure: Throwable) {
-                        prepared.forEach { item ->
-                            runCatching { repository.discardPreparedOutgoing(listOf(item)) }
+            val preparedFiles = mutableListOf<PreparedVaultFile>()
+            var handedOff = false
+            var completedBytes = 0L
+            try {
+                withContext(Dispatchers.IO) {
+                    files.forEachIndexed { index, file ->
+                        if (cancelRequested.get()) {
+                            throw CancellationException("Sharing cancelled.")
                         }
-                        throw failure
+                        val prepared = repository.prepareDecryptedFile(file.id) { progress ->
+                            if (cancelRequested.get()) {
+                                throw CancellationException("Sharing cancelled.")
+                            }
+                            val aggregateBytes = runCatching {
+                                Math.addExact(completedBytes, progress.completedBytes)
+                            }.getOrDefault(Long.MAX_VALUE)
+                            publishFileOperationProgress(
+                                operationToken,
+                                progress.copy(
+                                    phase = "Preparing share",
+                                    completedBytes = aggregateBytes,
+                                    totalBytes = totalBytes,
+                                    completedFiles = index,
+                                    totalFiles = files.size
+                                )
+                            )
+                        }
+                        preparedFiles += prepared
+                        completedBytes = runCatching {
+                            Math.addExact(completedBytes, file.sizeBytes)
+                        }.getOrDefault(Long.MAX_VALUE)
+                        publishFileOperationProgress(
+                            operationToken,
+                            VaultFileOperationProgress(
+                                phase = "File prepared for sharing",
+                                completedBytes = completedBytes,
+                                totalBytes = totalBytes,
+                                completedFiles = index + 1,
+                                totalFiles = files.size,
+                                currentFileName = file.displayName,
+                                currentFileCompletedBytes = file.sizeBytes,
+                                currentFileTotalBytes = file.sizeBytes
+                            )
+                        )
                     }
                 }
-            }
-            busy = false
-            result.onSuccess { preparedFiles ->
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
                         activity?.isResumedForVault == true
                     )
-                ) {
-                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
-                    return@onSuccess
-                }
-                try {
-                    val uris = preparedFiles.map { prepared ->
-                        FileProvider.getUriForFile(
-                            context, "com.privatespace.android.fileprovider", prepared.file
-                        )
-                    }
-                    val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE)
-                        .setType("*/*")
-                        .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    val clip = ClipData.newUri(
-                        context.contentResolver,
-                        "Private Space selected files",
-                        uris.first()
+                ) return@launch
+
+                val uris = preparedFiles.map { prepared ->
+                    FileProvider.getUriForFile(
+                        context, "com.privatespace.android.fileprovider", prepared.file
                     )
-                    uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
-                    sendIntent.clipData = clip
-                    context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
-                } catch (_: Exception) {
-                    runCatching { repository.discardPreparedOutgoing(preparedFiles) }
-                    toast("Could not prepare the selected files for sharing.")
                 }
-            }.onFailure {
-                toast(it.message ?: "The selected files could not be prepared for sharing.")
+                val sendIntent = Intent(Intent.ACTION_SEND_MULTIPLE)
+                    .setType("*/*")
+                    .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val clip = ClipData.newUri(
+                    context.contentResolver,
+                    "Private Space selected files",
+                    uris.first()
+                )
+                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+                sendIntent.clipData = clip
+                context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
+                handedOff = true
+            } catch (cancelled: CancellationException) {
+                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+            } catch (failure: Exception) {
+                toast(failure.message ?: "The selected files could not be prepared for sharing.")
+            } finally {
+                if (!handedOff && preparedFiles.isNotEmpty()) {
+                    val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
+                        runCatching {
+                            repository.discardPreparedOutgoing(preparedFiles)
+                        }.exceptionOrNull()
+                    }
+                    if (cleanupFailure != null) {
+                        toast("Temporary decrypted copies could not be removed from private cache.")
+                    }
+                }
+                finishFileOperation(operationToken)
+                busy = false
             }
         }
     }
