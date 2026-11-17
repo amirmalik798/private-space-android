@@ -80,6 +80,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import java.util.concurrent.atomic.AtomicLong
 
 private val Ink = Color(0xFF080D18)
 private val Panel = Color(0xFF111B2D)
@@ -323,6 +324,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var fileOperationProgress by remember { mutableStateOf<VaultFileOperationProgress?>(null) }
     var fileOperationTitle by remember { mutableStateOf("") }
     var fileOperationToken by remember { mutableLongStateOf(0L) }
+    val lastFileProgressPostAt = remember { AtomicLong(0L) }
     var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
     var choosingExistingRecovery by remember { mutableStateOf(false) }
     var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
@@ -370,6 +372,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun beginFileOperation(title: String): Long {
         fileOperationToken += 1L
+        lastFileProgressPostAt.set(0L)
         fileOperationTitle = title
         fileOperationProgress = VaultFileOperationProgress(
             phase = "Preparing",
@@ -380,6 +383,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun publishFileOperationProgress(token: Long, progress: VaultFileOperationProgress) {
+        val now = System.currentTimeMillis()
+        val previous = lastFileProgressPostAt.get()
+        val isFinal = progress.totalBytes > 0L && progress.completedBytes >= progress.totalBytes
+        if (now - previous < 100L && !isFinal) return
+        lastFileProgressPostAt.set(now)
         mainHandler.post {
             if (unlocked && fileOperationToken == token) {
                 fileOperationProgress = progress
@@ -389,6 +397,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun finishFileOperation(token: Long) {
         if (fileOperationToken == token) {
+            fileOperationToken += 1L
             fileOperationProgress = null
             fileOperationTitle = ""
         }
