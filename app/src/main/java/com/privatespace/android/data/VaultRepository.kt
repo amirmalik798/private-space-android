@@ -1198,14 +1198,18 @@ class VaultRepository(context: Context) {
         destination: DocumentFile,
         onProgress: (Long, String) -> Unit
     ) {
-        val temporary = createAuthenticatedStagingCopy(record) { completed ->
-            onProgress(completed, "Decrypting")
-        }
+        var temporary: File? = null
         try {
+            // Include authenticated staging creation in the rollback scope. If
+            // decryption or its progress/cancellation callback fails, remove the
+            // already-created destination document as well as any staging copy.
+            temporary = createAuthenticatedStagingCopy(record) { completed ->
+                onProgress(completed, "Decrypting")
+            }
             val output = resolver.openOutputStream(destination.uri, "w")
                 ?: error("Android could not open the export destination.")
             output.use { target ->
-                FileInputStream(temporary).use { input ->
+                FileInputStream(temporary!!).use { input ->
                     copyWithProgress(input, target) { completed ->
                         onProgress(completed, "Writing export")
                     }
@@ -1215,7 +1219,13 @@ class VaultRepository(context: Context) {
             runCatching { destination.delete() }.onFailure(failure::addSuppressed)
             throw failure
         } finally {
-            deleteTemporaryEntry(temporary)
+            temporary?.let { staged ->
+                runCatching { deleteTemporaryEntry(staged) }.onFailure { cleanupFailure ->
+                    // Never hide an earlier export error, but do report cleanup
+                    // failure when the export itself otherwise succeeded.
+                    throw cleanupFailure
+                }
+            }
         }
     }
 
