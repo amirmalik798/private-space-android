@@ -424,6 +424,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         // Stop any in-flight import/open/export before invalidating its UI token.
         // In particular, an export must not continue releasing plaintext after
         // the vault has been explicitly locked or locked by the screen policy.
+        // Cancel operations owned by older Activity instances as well as this composition.
+        VaultOperationRuntime.cancelAll()
         fileOperationCancel?.invoke()
         activeBatchImportControl?.stop()
         repository.lockPersistentStorage()
@@ -578,7 +580,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 importControls = importControls + (next.id to it)
             }
             updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
-            val job = VaultOperationRuntime.launch(context, "Importing ${next.displayName}") {
+            val job = VaultOperationRuntime.launch(context, "Importing ${next.displayName}", onCancel = { control.stop() }) {
                 var failure: Exception? = null
                 try {
                     val importedFile = withContext(Dispatchers.IO) {
@@ -735,7 +737,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val cancelRequested = AtomicBoolean(false)
         val job = VaultOperationRuntime.launch(
             context,
-            if (uniqueUris.size == 1) "Importing ${names.first()}" else "Importing ${uniqueUris.size} files"
+            if (uniqueUris.size == 1) "Importing ${names.first()}" else "Importing ${uniqueUris.size} files",
+            onCancel = {
+                cancelRequested.set(true)
+                activeControl?.stop() ?: true
+            }
         ) {
             var completedBytes = 0L
             var completedFiles = 0
@@ -929,7 +935,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val fileId = pendingExportFile
         pendingExportFile = null
         if (destination != null && fileId != null && unlocked) {
-            VaultOperationRuntime.launch(context, "Exporting file") {
+            VaultOperationRuntime.launch(context, "Exporting file", onCancel = {
+                cancelRequested.set(true)
+                false
+            }) {
                 busy = true
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
@@ -971,7 +980,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         pendingExportAll = false
         pendingExportSelection = null
         if (destination != null && unlocked) {
-            VaultOperationRuntime.launch(context, "Exporting files") {
+            VaultOperationRuntime.launch(context, "Exporting files", onCancel = {
+                cancelRequested.set(true)
+                false
+            }) {
                 busy = true
                 val operationTitle = when {
                     allTopics -> "Exporting all topics"
