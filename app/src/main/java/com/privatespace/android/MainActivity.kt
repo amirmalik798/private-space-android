@@ -539,7 +539,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 if (now - lastProgressPostAt >= 150L || (total != null && completed >= total)) {
                                     lastProgressPostAt = now
                                     mainHandler.post {
-                                        if (unlocked) updateImportItem(next.id) {
+                                        if (unlocked && importControls[next.id] === control) updateImportItem(next.id) {
                                             it.copy(
                                                 completedBytes = completed.coerceAtLeast(0L),
                                                 totalBytes = total?.takeIf { value -> value >= 0L }
@@ -557,7 +557,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             }
                         )
                     }
-                    if (unlocked) {
+                    if (unlocked && importControls[next.id] === control) {
                         updateImportItem(next.id) {
                             it.copy(
                                 displayName = importedFile.displayName,
@@ -572,7 +572,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     throw cancelled
                 } catch (caught: Exception) {
                     failure = caught
-                    if (unlocked) updateImportItem(next.id) {
+                    if (unlocked && importControls[next.id] === control) updateImportItem(next.id) {
                         it.copy(
                             status = if (control.isStopped) VaultImportStatus.STOPPED else VaultImportStatus.FAILED,
                             error = if (control.isStopped) null else caught.message ?: "Import failed."
@@ -580,7 +580,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     }
                 } finally {
                     activeImportJobs = activeImportJobs - next.id
-                    if (failure != null && unlocked && !control.isStopped) {
+                    if (failure != null && unlocked && !control.isStopped && importControls[next.id] === control) {
                         toast(failure?.message ?: "A file could not be imported.")
                     }
                     ensureImportWorkers()
