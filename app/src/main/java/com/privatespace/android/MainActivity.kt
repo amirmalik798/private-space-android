@@ -324,6 +324,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var fileOperationProgress by remember { mutableStateOf<VaultFileOperationProgress?>(null) }
     var fileOperationTitle by remember { mutableStateOf("") }
     var fileOperationToken by remember { mutableLongStateOf(0L) }
+    var fileOperationCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var activeBatchImportControl by remember { mutableStateOf<VaultImportControl?>(null) }
     val lastFileProgressPostAt = remember { AtomicLong(0L) }
     var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
     var choosingExistingRecovery by remember { mutableStateOf(false) }
@@ -400,6 +402,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             fileOperationToken += 1L
             fileOperationProgress = null
             fileOperationTitle = ""
+            fileOperationCancel = null
         }
     }
 
@@ -420,6 +423,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileOperationToken += 1L
         fileOperationProgress = null
         fileOperationTitle = ""
+        fileOperationCancel = null
+        activeBatchImportControl?.stop()
+        activeBatchImportControl = null
         restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
         pendingRecoveryPassword = null
@@ -692,30 +698,102 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         pendingFilePickerTargets = null
         val topicId = pendingImportTopic
         pendingImportTopic = null
-        if (topicId != null && selectedUris.isNotEmpty() && unlocked) {
-            val newItems = selectedUris.mapIndexed { index, uri ->
-                VaultImportQueueItem(
-                    id = java.util.UUID.randomUUID().toString(),
-                    topicId = topicId,
-                    uri = uri,
-                    displayName = "Selected file ${index + 1}"
-                )
-            }
-            importQueue = importQueue + newItems
-            newItems.forEach { item ->
-                importControls = importControls + (item.id to VaultImportControl())
-                scope.launch {
-                    val resolvedName = withContext(Dispatchers.IO) {
-                        runCatching { DocumentFile.fromSingleUri(context, item.uri)?.name }.getOrNull()
-                    }
-                    if (!resolvedName.isNullOrBlank() && unlocked) {
-                        updateImportItem(item.id) { it.copy(displayName = resolvedName) }
-                    }
-                }
-            }
-            ensureImportWorkers()
-        } else if (topicId != null && selectedUris.isNotEmpty()) {
+        val uniqueUris = selectedUris.distinct()
+        if (topicId == null || uniqueUris.isEmpty()) return
+        if (!unlocked) {
             toast("The vault was locked. Unlock it before importing files.")
+            return
+        }
+        if (busy || fileOperationProgress != null) {
+            toast("Another file operation is already running.")
+            return
+        }
+        val names = uniqueUris.mapIndexed { index, uri ->
+            DocumentFile.fromSingleUri(context, uri)?.name?.takeIf { it.isNotBlank() }
+                ?: "Selected file ${index + 1}"
+        }
+        val sizes = uniqueUris.map { uri ->
+            runCatching { DocumentFile.fromSingleUri(context, uri)?.length() }
+                .getOrNull()?.takeIf { it > 0L }
+        }
+        val knownTotal = sizes.takeIf { values -> values.all { it != null } }
+            ?.fold(0L) { total, size -> total + (size ?: 0L) }
+        val token = beginFileOperation(if (uniqueUris.size == 1) "Adding ${names.first()} to topic" else "Adding ${uniqueUris.size} files to topic")
+        fileOperationProgress = VaultFileOperationProgress(
+            phase = "Preparing files", completedBytes = 0L, totalBytes = knownTotal ?: 0L,
+            totalFiles = uniqueUris.size, currentFileName = names.firstOrNull().orEmpty(),
+            currentFileTotalBytes = sizes.firstOrNull() ?: 0L
+        )
+        busy = true
+        var activeControl: VaultImportControl? = null
+        val job = scope.launch {
+            var completedBytes = 0L
+            var completedFiles = 0
+            var cancelled = false
+            try {
+                uniqueUris.forEachIndexed { index, uri ->
+                    if (!unlocked) throw CancellationException("Vault locked.")
+                    val control = VaultImportControl()
+                    activeControl = control
+                    activeBatchImportControl = control
+                    val fileSize = sizes[index] ?: 0L
+                    withContext(Dispatchers.IO) {
+                        repository.addFileWithProgress(topicId, uri, control,
+                            onProgress = { current, reportedTotal ->
+                                if (!control.isStopped) publishFileOperationProgress(token,
+                                    VaultFileOperationProgress(
+                                        phase = if (control.isFinalizing) "Finalizing encrypted file" else "Encrypting",
+                                        completedBytes = completedBytes + current.coerceAtLeast(0L),
+                                        totalBytes = knownTotal ?: 0L, completedFiles = completedFiles,
+                                        totalFiles = uniqueUris.size, currentFileName = names[index],
+                                        currentFileCompletedBytes = current.coerceAtLeast(0L),
+                                        currentFileTotalBytes = reportedTotal ?: fileSize
+                                    ))
+                            },
+                            onFinalizing = {
+                                publishFileOperationProgress(token, VaultFileOperationProgress(
+                                    phase = "Finalizing encrypted file",
+                                    completedBytes = completedBytes + fileSize, totalBytes = knownTotal ?: 0L,
+                                    completedFiles = completedFiles, totalFiles = uniqueUris.size,
+                                    currentFileName = names[index], currentFileCompletedBytes = fileSize,
+                                    currentFileTotalBytes = fileSize
+                                ))
+                            }
+                        )
+                    }
+                    completedBytes += fileSize
+                    completedFiles++
+                    activeControl = null
+                    activeBatchImportControl = null
+                    publishFileOperationProgress(token, VaultFileOperationProgress(
+                        phase = "File added securely", completedBytes = completedBytes,
+                        totalBytes = knownTotal ?: 0L, completedFiles = completedFiles,
+                        totalFiles = uniqueUris.size, currentFileName = names[index],
+                        currentFileCompletedBytes = fileSize, currentFileTotalBytes = fileSize
+                    ))
+                }
+                refreshVault()
+                toast(if (uniqueUris.size == 1) "File added securely to the topic." else "${completedFiles} files added securely to the topic.")
+            } catch (cancelledFailure: CancellationException) {
+                cancelled = true
+                throw cancelledFailure
+            } catch (failure: Exception) {
+                cancelled = activeControl?.isStopped == true
+                if (!cancelled) toast(failure.message ?: "One or more files could not be added.")
+                if (completedFiles > 0) refreshVault()
+            } finally {
+                activeBatchImportControl = null
+                activeControl = null
+                finishFileOperation(token)
+                busy = false
+                if (cancelled && unlocked) toast("Adding files was cancelled. Files already completed remain safely in the topic.")
+            }
+        }
+        fileOperationCancel = {
+            val control = activeBatchImportControl
+            if (control != null && !control.stop()) {
+                toast("The current file is being securely finalized and cannot be cancelled yet.")
+            } else job.cancel()
         }
     }
 
@@ -1633,7 +1711,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
             onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) },
             onDeleteTopic = { topicToDelete = activeTopic },
-            imports = importQueue.filter { it.topicId == activeTopic.id },
+            imports = emptyList(),
             onPauseImport = ::pauseImport,
             onResumeImport = ::resumeImport,
             onStopImport = ::stopImport,
@@ -1947,7 +2025,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     fileOperationProgress?.let { progress ->
         VaultFileOperationProgressDialog(
             title = fileOperationTitle,
-            progress = progress
+            progress = progress,
+            onCancel = { fileOperationCancel?.invoke() }
         )
     }
 
@@ -3266,7 +3345,8 @@ private fun TopicScreen(
 @Composable
 private fun VaultFileOperationProgressDialog(
     title: String,
-    progress: VaultFileOperationProgress
+    progress: VaultFileOperationProgress,
+    onCancel: () -> Unit
 ) {
     val hasDeterminateProgress = progress.totalBytes > 0L
     val percent = if (hasDeterminateProgress) (progress.fraction * 100f).toInt() else null
@@ -3353,6 +3433,9 @@ private fun VaultFileOperationProgressDialog(
                             fontSize = 10.sp
                         )
                     }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onCancel) { Text("Cancel", color = Red, fontWeight = FontWeight.SemiBold) }
                 }
             }
         }
