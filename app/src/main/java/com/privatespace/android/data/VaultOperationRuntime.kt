@@ -53,8 +53,6 @@ object VaultOperationRuntime {
     ): Job {
         val appContext = context.applicationContext
         val operationId = UUID.randomUUID().toString()
-        startForegroundService(appContext, title)
-
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 block()
@@ -62,8 +60,17 @@ object VaultOperationRuntime {
                 finish(appContext, operationId)
             }
         }
-        synchronized(lock) {
-            operations[operationId] = ActiveOperation(job, onCancel)
+        try {
+            synchronized(lock) {
+                // Serialize service start/stop with registry changes. Otherwise
+                // a finishing operation could stop the service just after a new
+                // operation has requested it.
+                startForegroundService(appContext, title)
+                operations[operationId] = ActiveOperation(job, onCancel)
+            }
+        } catch (failure: Throwable) {
+            job.cancel(CancellationException("Foreground service could not be started.", failure))
+            throw failure
         }
         job.start()
         return job
@@ -101,12 +108,11 @@ object VaultOperationRuntime {
     }
 
     private fun finish(context: Context, operationId: String) {
-        val shouldStop = synchronized(lock) {
+        synchronized(lock) {
             operations.remove(operationId)
-            operations.isEmpty()
-        }
-        if (shouldStop) {
-            context.stopService(Intent(context, VaultOperationForegroundService::class.java))
+            if (operations.isEmpty()) {
+                context.stopService(Intent(context, VaultOperationForegroundService::class.java))
+            }
         }
     }
 
