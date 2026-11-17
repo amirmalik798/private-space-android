@@ -48,8 +48,11 @@ object VaultOperationRuntime {
         context: Context,
         title: String,
         onCancel: () -> Boolean = { true },
+        onStartFailure: (RuntimeException) -> Unit = { failure ->
+            Log.e(TAG, "Vault operation could not start.", failure)
+        },
         block: suspend CoroutineScope.() -> Unit
-    ): Job {
+    ): Job? {
         val appContext = context.applicationContext
         val operationId = UUID.randomUUID().toString()
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -67,11 +70,11 @@ object VaultOperationRuntime {
                 startForegroundService(appContext, title)
                 operations[operationId] = ActiveOperation(job, onCancel)
             }
-        } catch (failure: Throwable) {
-            val cancellation = CancellationException("Foreground service could not be started.")
-            cancellation.initCause(failure)
-            job.cancel(cancellation)
-            throw failure
+        } catch (failure: RuntimeException) {
+            job.cancel(CancellationException("Foreground service could not be started."))
+            runCatching { onStartFailure(failure) }
+                .onFailure { Log.e(TAG, "Could not report a failed vault operation start.", it) }
+            return null
         }
         job.start()
         return job
