@@ -732,13 +732,16 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
         busy = true
         var activeControl: VaultImportControl? = null
+        val cancelRequested = AtomicBoolean(false)
         val job = scope.launch {
             var completedBytes = 0L
             var completedFiles = 0
             var cancelled = false
             try {
                 uniqueUris.forEachIndexed { index, uri ->
-                    if (!unlocked) throw CancellationException("Vault locked.")
+                    if (!unlocked || cancelRequested.get()) {
+                        throw CancellationException("Import cancelled before the next file.")
+                    }
                     val control = VaultImportControl()
                     activeControl = control
                     activeBatchImportControl = control
@@ -746,6 +749,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     withContext(Dispatchers.IO) {
                         repository.addFileWithProgress(topicId, uri, control,
                             onProgress = { current, reportedTotal ->
+                                if (cancelRequested.get()) throw CancellationException("Import cancelled.")
                                 if (!control.isStopped) publishFileOperationProgress(token,
                                     VaultFileOperationProgress(
                                         phase = if (control.isFinalizing) "Finalizing encrypted file" else "Encrypting",
@@ -782,9 +786,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 toast(if (uniqueUris.size == 1) "File added securely to the topic." else "${completedFiles} files added securely to the topic.")
             } catch (cancelledFailure: CancellationException) {
                 cancelled = true
+                if (completedFiles > 0) refreshVault()
                 throw cancelledFailure
             } catch (failure: Exception) {
-                cancelled = activeControl?.isStopped == true
+                cancelled = activeControl?.isStopped == true || cancelRequested.get()
                 if (!cancelled) toast(failure.message ?: "One or more files could not be added.")
                 if (completedFiles > 0) refreshVault()
             } finally {
@@ -796,10 +801,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             }
         }
         fileOperationCancel = {
+            cancelRequested.set(true)
             val control = activeBatchImportControl
             if (control != null && !control.stop()) {
-                toast("The current file is being securely finalized and cannot be cancelled yet.")
-            } else job.cancel()
+                // The active file has crossed its atomic commit boundary. Let it
+                // finish, then the loop guard prevents any following file from
+                // starting. Cancelling the coroutine here could hide a committed
+                // file from the refreshed topic snapshot.
+                toast("The current file is being securely finalized. Remaining files will be cancelled.")
+            } else {
+                job.cancel()
+            }
         }
     }
 
