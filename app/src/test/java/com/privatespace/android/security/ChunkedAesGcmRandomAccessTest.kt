@@ -42,8 +42,16 @@ class ChunkedAesGcmRandomAccessTest {
         val clear = ByteArray(ChunkedAesGcm.CHUNK_BYTES + 100) { it.toByte() }
         withEncryptedFile(clear) { file ->
             RandomAccessFile(file, "rw").use { encrypted ->
-                encrypted.seek(8L + 32L + 64L)
-                encrypted.write((encrypted.read().toInt() xor 0x40))
+                // Corrupt a known ciphertext byte, then seek back before writing.
+                // Keeping the read/write offsets explicit avoids depending on the
+                // RandomAccessFile cursor side effect inside the write expression.
+                val ciphertextOffset = 8L + 4L + 12L
+                encrypted.seek(ciphertextOffset)
+                val original = encrypted.read()
+                check(original >= 0) { "Expected encrypted frame data." }
+                encrypted.seek(ciphertextOffset)
+                encrypted.write(original xor 0x40)
+                encrypted.fd.sync()
             }
             val reader = VaultCrypto.openChunkedRandomAccessReaderForTest(
                 RandomAccessFile(file, "r"), clear.size.toLong(), aad, key
