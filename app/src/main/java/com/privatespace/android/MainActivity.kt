@@ -3308,7 +3308,7 @@ private fun VaultFileOperationProgressDialog(
                         trackColor = Panel2
                     )
                     Text(
-                        "${percent}%  ·  ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)} work",
+                        "${percent}%  ·  ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}${if (title.startsWith("Exporting")) " work" else ""}",
                         color = White,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
