@@ -1084,7 +1084,9 @@ class VaultRepository(context: Context) {
         try {
             exportRecords(records, folder, onProgress)
         } catch (failure: Throwable) {
-            deleteDocumentTree(folder)
+            // Match topic/all-vault export behavior: retain the original failure
+            // while reporting any failure to remove partial plaintext exports.
+            rollbackExportTree(folder, failure)
             throw failure
         }
     }
@@ -1147,19 +1149,23 @@ class VaultRepository(context: Context) {
         destination: Uri,
         onProgress: (VaultFileOperationProgress) -> Unit
     ) {
-        val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
-        onProgress(
-            VaultFileOperationProgress(
-                "Decrypting",
-                0L,
-                totalWorkBytes,
-                currentFileName = record.displayName,
-                currentFileCompletedBytes = 0L,
-                currentFileTotalBytes = record.sizeBytes
-            )
-        )
         var temporary: File? = null
+        var operationFailure: Throwable? = null
         try {
+            val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
+            // Keep the initial callback inside the rollback scope. A cancellation
+            // or observer failure can happen before staging has even started,
+            // but CreateDocument has already created the external destination.
+            onProgress(
+                VaultFileOperationProgress(
+                    "Decrypting",
+                    0L,
+                    totalWorkBytes,
+                    currentFileName = record.displayName,
+                    currentFileCompletedBytes = 0L,
+                    currentFileTotalBytes = record.sizeBytes
+                )
+            )
             temporary = createAuthenticatedStagingCopy(record) { completed ->
                 onProgress(
                     VaultFileOperationProgress(
@@ -1192,11 +1198,31 @@ class VaultRepository(context: Context) {
             }
             onProgress(VaultFileOperationProgress("Export complete", totalWorkBytes, totalWorkBytes, 1, 1, record.displayName, record.sizeBytes, record.sizeBytes))
         } catch (failure: Throwable) {
-            runCatching { DocumentFile.fromSingleUri(appContext, destination)?.delete() }
-                .onFailure(failure::addSuppressed)
+            operationFailure = failure
+            rollbackExportDocument(destination, failure)
             throw failure
         } finally {
-            temporary?.let(::deleteTemporaryEntry)
+            temporary?.let { staged ->
+                try {
+                    deleteTemporaryEntry(staged)
+                } catch (cleanupFailure: Throwable) {
+                    val primaryFailure = operationFailure
+                    if (primaryFailure != null) {
+                        primaryFailure.addSuppressed(cleanupFailure)
+                    } else {
+                        // Do not report a successful export while a plaintext
+                        // staging copy could not be removed. Roll back the
+                        // approved destination where the provider permits it.
+                        runCatching { removeExportDocument(destination) }
+                            .onFailure(cleanupFailure::addSuppressed)
+                        throw IOException(
+                            "Export could not be finalized because temporary plaintext cleanup failed. " +
+                                "The exported copy was removed where possible; inspect the destination before retrying.",
+                            cleanupFailure
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -1225,7 +1251,7 @@ class VaultRepository(context: Context) {
             }
         } catch (failure: Throwable) {
             operationFailure = failure
-            runCatching { destination.delete() }.onFailure(failure::addSuppressed)
+            rollbackExportDocument(destination, failure)
             throw failure
         } finally {
             temporary?.let { staged ->
@@ -1356,10 +1382,66 @@ class VaultRepository(context: Context) {
         val created = parent.createDirectory(folderName)
             ?: error("Could not create the folder '$folderName'. Check the selected location.")
         if (created.name != folderName) {
-            created.delete()
-            error("The selected storage provider could not create the folder '$folderName' with its exact name.")
+            val mismatch = IOException(
+                "The selected storage provider could not create the folder '$folderName' with its exact name."
+            )
+            try {
+                removeExportDocument(created)
+            } catch (cleanupFailure: Throwable) {
+                mismatch.addSuppressed(cleanupFailure)
+                throw IOException(
+                    "The storage provider created an unexpected export folder and it could not be removed. " +
+                        "Inspect the selected destination before continuing.",
+                    mismatch
+                )
+            }
+            throw mismatch
         }
         return created
+    }
+
+    /**
+     * Removes a single SAF export item and verifies provider refusal. DocumentFile
+     * can return false when a provider declines deletion; silently ignoring that
+     * result leaves an incomplete plaintext export behind.
+     */
+    private fun removeExportDocument(document: DocumentFile) {
+        VaultExportCleanup.deleteIfPresent(
+            delete = { document.delete() },
+            exists = { document.exists() }
+        )
+    }
+
+    private fun removeExportDocument(destination: Uri) {
+        val document = DocumentFile.fromSingleUri(appContext, destination)
+            ?: throw IOException("Android could not locate the incomplete export destination for cleanup.")
+        removeExportDocument(document)
+    }
+
+    private fun rollbackExportDocument(destination: DocumentFile, operationFailure: Throwable) {
+        try {
+            removeExportDocument(destination)
+        } catch (cleanupFailure: Throwable) {
+            operationFailure.addSuppressed(cleanupFailure)
+            throw IOException(
+                "Export failed and its incomplete destination could not be removed. " +
+                    "Inspect the selected destination and delete any partial export.",
+                operationFailure
+            )
+        }
+    }
+
+    private fun rollbackExportDocument(destination: Uri, operationFailure: Throwable) {
+        try {
+            removeExportDocument(destination)
+        } catch (cleanupFailure: Throwable) {
+            operationFailure.addSuppressed(cleanupFailure)
+            throw IOException(
+                "Export failed and its incomplete destination could not be removed. " +
+                    "Inspect the selected destination and delete any partial export.",
+                operationFailure
+            )
+        }
     }
 
     private fun deleteDocumentTree(directory: DocumentFile) {
