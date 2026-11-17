@@ -937,7 +937,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (destination != null && fileId != null && unlocked) {
             VaultOperationRuntime.launch(context, "Exporting file", onCancel = {
                 cancelRequested.set(true)
-                false
+                true
             }) {
                 busy = true
                 val file = vaultFiles.firstOrNull { it.id == fileId }
@@ -982,7 +982,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (destination != null && unlocked) {
             VaultOperationRuntime.launch(context, "Exporting files", onCancel = {
                 cancelRequested.set(true)
-                false
+                true
             }) {
                 busy = true
                 val operationTitle = when {
