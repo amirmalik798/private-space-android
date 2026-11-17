@@ -1199,6 +1199,7 @@ class VaultRepository(context: Context) {
         onProgress: (Long, String) -> Unit
     ) {
         var temporary: File? = null
+        var operationFailure: Throwable? = null
         try {
             // Include authenticated staging creation in the rollback scope. If
             // decryption or its progress/cancellation callback fails, remove the
@@ -1216,14 +1217,20 @@ class VaultRepository(context: Context) {
                 }
             }
         } catch (failure: Throwable) {
+            operationFailure = failure
             runCatching { destination.delete() }.onFailure(failure::addSuppressed)
             throw failure
         } finally {
             temporary?.let { staged ->
-                runCatching { deleteTemporaryEntry(staged) }.onFailure { cleanupFailure ->
-                    // Never hide an earlier export error, but do report cleanup
-                    // failure when the export itself otherwise succeeded.
-                    throw cleanupFailure
+                try {
+                    deleteTemporaryEntry(staged)
+                } catch (cleanupFailure: Throwable) {
+                    val primaryFailure = operationFailure
+                    if (primaryFailure != null) {
+                        primaryFailure.addSuppressed(cleanupFailure)
+                    } else {
+                        throw cleanupFailure
+                    }
                 }
             }
         }
