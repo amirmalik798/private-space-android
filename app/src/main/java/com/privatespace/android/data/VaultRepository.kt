@@ -1067,7 +1067,7 @@ class VaultRepository(context: Context) {
             destination,
             VaultExportLayout.ALL_TOPICS_ROOT_FOLDER_NAME
         )
-        var completedBytes = 0L
+        var completedWorkBytes = 0L
         var completedFiles = 0
         try {
             VaultExportLayout.allTopicFolders(index.topics).forEach { topicFolder ->
