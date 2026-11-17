@@ -68,6 +68,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.data.*
 import com.privatespace.android.security.PasswordManager
 import com.privatespace.android.security.VaultSessionPolicy
+import com.privatespace.android.security.VaultImportControl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -203,6 +204,19 @@ private data class PendingVaultRelease(
     val allTopics: Boolean = false
 )
 
+private enum class VaultImportStatus { QUEUED, RUNNING, PAUSED, COMPLETED, FAILED, STOPPED }
+
+private data class VaultImportQueueItem(
+    val id: String,
+    val topicId: String,
+    val uri: Uri,
+    val displayName: String,
+    val completedBytes: Long = 0L,
+    val totalBytes: Long? = null,
+    val status: VaultImportStatus = VaultImportStatus.QUEUED,
+    val error: String? = null
+)
+
 @Composable
 private fun PrivateSpaceRoot() {
     val context = LocalContext.current
@@ -336,6 +350,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
 
     var pendingImportTopic by remember { mutableStateOf<String?>(null) }
+    var importQueue by remember { mutableStateOf<List<VaultImportQueueItem>>(emptyList()) }
+    var importControls by remember { mutableStateOf<Map<String, VaultImportControl>>(emptyMap()) }
+    var importWorkerRunning by remember { mutableStateOf(false) }
     var pendingFilePickerTargets by remember { mutableStateOf<List<FilePickerTarget>?>(null) }
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
     var pendingExportTopic by remember { mutableStateOf<String?>(null) }
@@ -393,6 +410,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         showChangePassword = false
         topicToDelete = null
         fileToDelete = null
+        importControls.values.forEach(VaultImportControl::stop)
+        importControls = emptyMap()
+        importQueue = emptyList()
+        importWorkerRunning = false
         pendingImportTopic = null
         pendingFilePickerTargets = null
         pendingExportFile = null
@@ -486,28 +507,125 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         clockNow = System.currentTimeMillis()
     }
 
+    fun updateImportItem(id: String, transform: (VaultImportQueueItem) -> VaultImportQueueItem) {
+        importQueue = importQueue.map { item -> if (item.id == id) transform(item) else item }
+    }
+
+    fun ensureImportWorker() {
+        if (importWorkerRunning || !unlocked) return
+        val next = importQueue.firstOrNull { it.status == VaultImportStatus.QUEUED } ?: return
+        val control = importControls[next.id] ?: VaultImportControl().also {
+            importControls = importControls + (next.id to it)
+        }
+        importWorkerRunning = true
+        updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
+        scope.launch {
+            var failure: Exception? = null
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.addFileWithProgress(next.topicId, next.uri, control) { completed, total ->
+                        mainHandler.post {
+                            if (unlocked) updateImportItem(next.id) {
+                                it.copy(
+                                    completedBytes = completed.coerceAtLeast(0L),
+                                    totalBytes = total?.takeIf { value -> value >= 0L }
+                                )
+                            }
+                        }
+                    }
+                }
+                if (unlocked) {
+                    updateImportItem(next.id) {
+                        it.copy(
+                            status = VaultImportStatus.COMPLETED,
+                            completedBytes = it.totalBytes?.takeIf { total -> total > 0L } ?: it.completedBytes,
+                            error = null
+                        )
+                    }
+                    refreshVault()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (caught: Exception) {
+                failure = caught
+                if (unlocked) updateImportItem(next.id) {
+                    it.copy(
+                        status = if (control.isStopped) VaultImportStatus.STOPPED else VaultImportStatus.FAILED,
+                        error = if (control.isStopped) null else caught.message ?: "Import failed."
+                    )
+                }
+            } finally {
+                importWorkerRunning = false
+                if (failure != null && unlocked) {
+                    toast(failure?.message ?: "A file could not be imported.")
+                }
+                ensureImportWorker()
+            }
+        }
+    }
+
+    fun pauseImport(id: String) {
+        val item = importQueue.firstOrNull { it.id == id } ?: return
+        importControls[id]?.pause()
+        updateImportItem(id) { it.copy(status = VaultImportStatus.PAUSED) }
+    }
+
+    fun resumeImport(id: String) {
+        val item = importQueue.firstOrNull { it.id == id } ?: return
+        if (item.status != VaultImportStatus.PAUSED) return
+        importControls[id]?.resume()
+        updateImportItem(id) { it.copy(status = if (importWorkerRunning && importControls[id]?.isPaused == false) VaultImportStatus.RUNNING else VaultImportStatus.QUEUED) }
+        ensureImportWorker()
+    }
+
+    fun stopImport(id: String) {
+        importControls[id]?.stop()
+        updateImportItem(id) { it.copy(status = VaultImportStatus.STOPPED, error = null) }
+    }
+
+    fun restartImport(id: String) {
+        val item = importQueue.firstOrNull { it.id == id } ?: return
+        if (item.status !in setOf(VaultImportStatus.STOPPED, VaultImportStatus.FAILED)) return
+        val control = VaultImportControl()
+        importControls = importControls + (id to control)
+        updateImportItem(id) {
+            it.copy(
+                completedBytes = 0L,
+                totalBytes = null,
+                status = VaultImportStatus.QUEUED,
+                error = null
+            )
+        }
+        ensureImportWorker()
+    }
+
+    fun dismissImport(id: String) {
+        val item = importQueue.firstOrNull { it.id == id } ?: return
+        if (item.status in setOf(VaultImportStatus.RUNNING, VaultImportStatus.PAUSED, VaultImportStatus.QUEUED)) return
+        importQueue = importQueue.filterNot { it.id == id }
+        importControls = importControls - id
+    }
+
     fun handleImportUris(selectedUris: List<Uri>) {
         pendingFilePickerTargets = null
         val topicId = pendingImportTopic
         pendingImportTopic = null
         if (topicId != null && selectedUris.isNotEmpty() && unlocked) {
-            scope.launch {
-                busy = true
-                val results = withContext(Dispatchers.IO) {
-                    selectedUris.map { uri -> runCatching { repository.addFile(topicId, uri) } }
-                }
-                refreshVault()
-                busy = false
-                val succeeded = results.count { it.isSuccess }
-                val failed = results.size - succeeded
-                toast(
-                    when {
-                        failed == 0 -> "$succeeded file(s) added to the encrypted vault."
-                        succeeded == 0 -> "No files were added. Check file access and available storage."
-                        else -> "$succeeded file(s) added; $failed could not be imported."
-                    }
+            val newItems = selectedUris.mapIndexed { index, uri ->
+                val name = runCatching { DocumentFile.fromSingleUri(context, uri)?.name }
+                    .getOrNull()?.takeIf { it.isNotBlank() } ?: "Selected file ${index + 1}"
+                VaultImportQueueItem(
+                    id = java.util.UUID.randomUUID().toString(),
+                    topicId = topicId,
+                    uri = uri,
+                    displayName = name
                 )
             }
+            importQueue = importQueue + newItems
+            newItems.forEach { item ->
+                importControls = importControls + (item.id to VaultImportControl())
+            }
+            ensureImportWorker()
         } else if (topicId != null && selectedUris.isNotEmpty()) {
             toast("The vault was locked. Unlock it before importing files.")
         }
@@ -1393,7 +1511,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onExportSelected = { requestFileSelectionConfirmation(it, VaultReleaseAction.EXPORT) },
             onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
             onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) },
-            onDeleteTopic = { topicToDelete = activeTopic }
+            onDeleteTopic = { topicToDelete = activeTopic },
+            imports = importQueue.filter { it.topicId == activeTopic.id },
+            onPauseImport = ::pauseImport,
+            onResumeImport = ::resumeImport,
+            onStopImport = ::stopImport,
+            onRestartImport = ::restartImport,
+            onDismissImport = ::dismissImport
         )
     } else {
         Scaffold(
@@ -2624,7 +2748,13 @@ private fun TopicScreen(
     onExportSelected: (List<VaultFile>) -> Unit,
     onShareTopic: () -> Unit,
     onExportTopic: () -> Unit,
-    onDeleteTopic: () -> Unit
+    onDeleteTopic: () -> Unit,
+    imports: List<VaultImportQueueItem> = emptyList(),
+    onPauseImport: (String) -> Unit = {},
+    onResumeImport: (String) -> Unit = {},
+    onStopImport: (String) -> Unit = {},
+    onRestartImport: (String) -> Unit = {},
+    onDismissImport: (String) -> Unit = {}
 ) {
     var selectionMode by remember(topic.id) { mutableStateOf(false) }
     var selectedFileIds by remember(topic.id) { mutableStateOf<Set<String>>(emptySet()) }
@@ -2922,7 +3052,7 @@ private fun TopicScreen(
             }
 
             HorizontalDivider(color = Line.copy(alpha = 0.8f))
-            if (files.isEmpty() || filteredFiles.isEmpty()) {
+            if ((files.isEmpty() || filteredFiles.isEmpty()) && imports.isEmpty()) {
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
@@ -2960,6 +3090,16 @@ private fun TopicScreen(
                     contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
+                    items(imports, key = { "import-${it.id}" }) { item ->
+                        VaultImportQueueRow(
+                            item = item,
+                            onPause = { onPauseImport(item.id) },
+                            onResume = { onResumeImport(item.id) },
+                            onStop = { onStopImport(item.id) },
+                            onRestart = { onRestartImport(item.id) },
+                            onDismiss = { onDismissImport(item.id) }
+                        )
+                    }
                     items(filteredFiles, key = { it.id }) { file ->
                         VaultFileRow(
                             file = file,
