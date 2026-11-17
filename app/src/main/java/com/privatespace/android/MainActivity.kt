@@ -192,6 +192,76 @@ private data class FilePickerTarget(
     val intent: Intent
 )
 
+private data class HelpArticle(
+    val id: String,
+    val title: String,
+    val body: String,
+    val keywords: String
+)
+
+private val privateSpaceHelpArticles = listOf(
+    HelpArticle(
+        id = "getting-started",
+        title = "Create and unlock your vault",
+        body = "Create a strong vault password the first time you open Private Space. Enter it to unlock the vault on later visits. Your files remain encrypted in the app's private storage while they are in the vault.",
+        keywords = "password setup sign in unlock first launch"
+    ),
+    HelpArticle(
+        id = "recovery",
+        title = "Set up or restore an encrypted recovery copy",
+        body = "Recovery is optional. From the recovery prompt, choose a folder on this device to create an encrypted copy. Keep both that folder and the password used to protect it. Without a recovery copy, uninstalling the app or clearing its data can permanently remove the on-device vault. Private Space has no password reset or cloud recovery.",
+        keywords = "backup reinstall restore internal storage sd card forgotten password"
+    ),
+    HelpArticle(
+        id = "add-files",
+        title = "Add documents, photos and videos",
+        body = "Open a topic and choose Add file(s). You can select multiple items in the Android file picker. Private Space imports copies into the selected topic; it does not move or modify the original files.",
+        keywords = "import upload picker multiple files topic"
+    ),
+    HelpArticle(
+        id = "import-progress",
+        title = "Understand import progress and cancellation",
+        body = "The import dialog shows the current file, completed files and byte progress when the provider reports a file size. Choose Cancel to stop the remaining work. Files that were already securely added stay in the topic; an item being finalized is allowed to finish its safe commit.",
+        keywords = "progress loading cancel stop failed incomplete"
+    ),
+    HelpArticle(
+        id = "open-share-export",
+        title = "Understand Open, Share and Export",
+        body = "Open prepares a temporary decrypted copy for the viewer app you choose. Share and Export ask for confirmation first. Any copy received or saved by another app or destination is outside Private Space protection, and another app may retain it.",
+        keywords = "view open share send export download plaintext external app privacy"
+    ),
+    HelpArticle(
+        id = "recycle-bin",
+        title = "Restore a deleted file",
+        body = "Deleting a file or topic moves its files to the Recycle Bin. Open Recycle Bin from the dashboard and choose Restore to return a file to its original topic. If the original topic no longer exists, Private Space restores the topic as needed.",
+        keywords = "trash recycle bin undo recover restore deleted topic"
+    ),
+    HelpArticle(
+        id = "permanent-delete",
+        title = "Permanently delete a file",
+        body = "In Recycle Bin, choose Delete forever and confirm. This removes the vault copy and cannot be undone. It does not delete the original file outside Private Space or copies you previously shared or exported.",
+        keywords = "erase remove forever irreversible storage"
+    ),
+    HelpArticle(
+        id = "media-preview",
+        title = "Why a photo or video preview may be missing",
+        body = "Private Space limits thumbnail work to protect memory and avoid decrypting very large media files just to draw a list row. A missing preview does not mean the stored original is damaged. Opening a file also depends on a compatible viewer or media decoder being installed on your device.",
+        keywords = "thumbnail image video preview codec format playback memory"
+    ),
+    HelpArticle(
+        id = "change-password",
+        title = "Change your vault password",
+        body = "Open the dashboard menu and choose Change password. Enter your current password, then the new password twice. Keep the new password safe: it is also used to protect an enabled recovery copy. There is no password reset service.",
+        keywords = "change password rotate recovery security"
+    ),
+    HelpArticle(
+        id = "storage",
+        title = "Understand storage usage",
+        body = "Vault Details shows the encrypted storage used by the vault. Files in the Recycle Bin continue to use storage until they are permanently deleted. Exported copies use the destination's storage and are not counted as vault storage.",
+        keywords = "space capacity size encrypted files trash recycle"
+    )
+)
+
 private const val FILE_PICKER_PREFERENCES = "private_space_ui"
 private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_component"
 private const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
@@ -349,6 +419,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var mediaRequestToken by remember { mutableLongStateOf(0L) }
     var topicQuery by remember { mutableStateOf("")}
     var showVaultDetails by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
     var showSecurityInfo by remember { mutableStateOf(false) }
     var topMenuExpanded by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
@@ -452,6 +523,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         mediaViewerLoading = false
         topicQuery = ""
         showVaultDetails = false
+        showHelp = false
         showSecurityInfo = false
         topMenuExpanded = false
         topics = emptyList()
@@ -1907,6 +1979,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Help & how-to") },
+                                    leadingIcon = { Icon(Icons.Default.HelpOutline, contentDescription = null, tint = Cyan) },
+                                    onClick = {
+                                        topMenuExpanded = false
+                                        showHelp = true
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Security information") },
                                     leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
                                     onClick = {
@@ -2057,6 +2137,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             },
             onDeletePermanently = { trashEntryToPermanentlyDelete = it }
         )
+    }
+
+    if (showHelp) {
+        HelpDialog(onDismiss = { showHelp = false })
     }
 
     if (showSecurityInfo) {
@@ -2962,6 +3046,133 @@ private fun EmptySearchState(onClear: () -> Unit) {
             Icon(Icons.Default.Backspace, contentDescription = null, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(5.dp))
             Text("Clear search")
+        }
+    }
+}
+
+
+@Composable
+private fun HelpDialog(onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val filteredArticles = remember(query) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) {
+            privateSpaceHelpArticles
+        } else {
+            privateSpaceHelpArticles.filter { article ->
+                article.title.contains(normalizedQuery, ignoreCase = true) ||
+                    article.body.contains(normalizedQuery, ignoreCase = true) ||
+                    article.keywords.contains(normalizedQuery, ignoreCase = true)
+            }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
+                .fillMaxWidth()
+                .fillMaxHeight(0.90f)
+                .padding(horizontal = 12.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = Panel,
+            border = BorderStroke(1.dp, Line)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        modifier = Modifier.size(42.dp),
+                        shape = RoundedCornerShape(13.dp),
+                        color = Blue.copy(alpha = 0.18f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.HelpOutline,
+                                contentDescription = null,
+                                tint = Cyan,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text("Help & how-to", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
+                        Text("Guides for using your vault", color = Muted, fontSize = 11.sp)
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close help", tint = Muted)
+                    }
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it.take(100) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text("Search recovery, files, sharing…", color = Muted) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear help search", tint = Muted)
+                            }
+                        }
+                    }
+                )
+                Text(
+                    if (query.isBlank()) "${filteredArticles.size} help topics"
+                    else "${filteredArticles.size} matching topics",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+                if (filteredArticles.isEmpty()) {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.SearchOff, contentDescription = null, tint = Muted, modifier = Modifier.size(34.dp))
+                            Text("No matching help topics", color = White, fontWeight = FontWeight.SemiBold)
+                            Text("Try a different word, such as recovery or export.", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                            TextButton(onClick = { query = "" }) { Text("Show all help topics") }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filteredArticles, key = { it.id }) { article ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Panel2,
+                                shape = RoundedCornerShape(15.dp),
+                                border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(13.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Text(article.title, color = White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(article.body, color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
