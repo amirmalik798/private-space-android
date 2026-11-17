@@ -997,7 +997,42 @@ class VaultRepository(context: Context) {
         onProgress: (VaultFileOperationProgress) -> Unit = {}
     ) {
         val record = findFile(id)
-        exportRecordToDocument(record, destination, onProgress)
+        val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
+        onProgress(
+            VaultFileOperationProgress(
+                "Decrypting",
+                0L,
+                totalWorkBytes,
+                currentFileName = record.displayName,
+                currentFileCompletedBytes = 0L,
+                currentFileTotalBytes = record.sizeBytes
+            )
+        )
+        exportRecordToDocument(record, destination) { currentBytes, phase ->
+            val phaseBase = if (phase == "Writing export") record.sizeBytes else 0L
+            onProgress(
+                VaultFileOperationProgress(
+                    phase,
+                    phaseBase + currentBytes,
+                    totalWorkBytes,
+                    currentFileName = record.displayName,
+                    currentFileCompletedBytes = currentBytes,
+                    currentFileTotalBytes = record.sizeBytes
+                )
+            )
+        }
+        onProgress(
+            VaultFileOperationProgress(
+                "Export complete",
+                totalWorkBytes,
+                totalWorkBytes,
+                1,
+                1,
+                record.displayName,
+                record.sizeBytes,
+                record.sizeBytes
+            )
+        )
     }
 
     @Synchronized
