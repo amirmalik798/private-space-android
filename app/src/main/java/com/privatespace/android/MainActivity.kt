@@ -3273,8 +3273,7 @@ private fun VaultImportQueueRow(
                 Text(
                     "${formatBytes(item.completedBytes)} of ${formatBytes(item.totalBytes)}",
                     color = Muted,
-                    fontSize = 10.sp,
-                    fontFeatureSettings = "tnum"
+                    fontSize = 10.sp
                 )
             } else if (item.completedBytes > 0L) {
                 Text("${formatBytes(item.completedBytes)} processed", color = Muted, fontSize = 10.sp)
