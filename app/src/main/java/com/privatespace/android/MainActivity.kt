@@ -648,6 +648,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             importQueue = importQueue + newItems
             newItems.forEach { item ->
                 importControls = importControls + (item.id to VaultImportControl())
+                scope.launch {
+                    val resolvedName = withContext(Dispatchers.IO) {
+                        runCatching { DocumentFile.fromSingleUri(context, item.uri)?.name }.getOrNull()
+                    }
+                    if (!resolvedName.isNullOrBlank() && unlocked) {
+                        updateImportItem(item.id) { it.copy(displayName = resolvedName) }
+                    }
+                }
             }
             ensureImportWorkers()
         } else if (topicId != null && selectedUris.isNotEmpty()) {
@@ -3297,7 +3305,7 @@ private fun VaultImportQueueRow(
             }
             if (item.totalBytes != null && item.totalBytes > 0L) {
                 Text(
-                    "${formatBytes(item.completedBytes)} of ${formatBytes(item.totalBytes)}",
+                    "${fraction?.let { "${(it * 100f).toInt()}%  ·  " } ?: ""}${formatBytes(item.completedBytes)} of ${formatBytes(item.totalBytes)}",
                     color = Muted,
                     fontSize = 10.sp
                 )
