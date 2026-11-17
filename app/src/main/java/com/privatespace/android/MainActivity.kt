@@ -353,6 +353,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var importQueue by remember { mutableStateOf<List<VaultImportQueueItem>>(emptyList()) }
     var importControls by remember { mutableStateOf<Map<String, VaultImportControl>>(emptyMap()) }
     var importWorkerRunning by remember { mutableStateOf(false) }
+    var activeImportId by remember { mutableStateOf<String?>(null) }
     var pendingFilePickerTargets by remember { mutableStateOf<List<FilePickerTarget>?>(null) }
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
     var pendingExportTopic by remember { mutableStateOf<String?>(null) }
@@ -414,6 +415,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         importControls = emptyMap()
         importQueue = emptyList()
         importWorkerRunning = false
+        activeImportId = null
         pendingImportTopic = null
         pendingFilePickerTargets = null
         pendingExportFile = null
@@ -518,6 +520,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             importControls = importControls + (next.id to it)
         }
         importWorkerRunning = true
+        activeImportId = next.id
         updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
         scope.launch {
             var failure: Exception? = null
@@ -556,6 +559,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             } finally {
                 importWorkerRunning = false
+                if (activeImportId == next.id) activeImportId = null
                 if (failure != null && unlocked) {
                     toast(failure?.message ?: "A file could not be imported.")
                 }
@@ -574,7 +578,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val item = importQueue.firstOrNull { it.id == id } ?: return
         if (item.status != VaultImportStatus.PAUSED) return
         importControls[id]?.resume()
-        updateImportItem(id) { it.copy(status = if (importWorkerRunning && importControls[id]?.isPaused == false) VaultImportStatus.RUNNING else VaultImportStatus.QUEUED) }
+        updateImportItem(id) { it.copy(status = if (activeImportId == id) VaultImportStatus.RUNNING else VaultImportStatus.QUEUED) }
         ensureImportWorker()
     }
 
