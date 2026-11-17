@@ -2155,7 +2155,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Choose a folder on this device. Private Space will save an encrypted recovery copy there. Keep the folder and your vault password; both are needed to restore your data after reinstalling.",
+                        "Your vault is already secured on this device. Choose a folder to create an encrypted recovery copy. Without a recovery copy, uninstalling Private Space or clearing its app data can permanently remove your files.",
                         color = Muted
                     )
                     if (recoverySetupError.isNotBlank()) {
@@ -2183,6 +2183,20 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(7.dp))
                     Text(if (busy) "Preparing recovery…" else "Choose device folder")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        pendingRecoveryPassword?.fill('\u0000')
+                        pendingRecoveryPassword = null
+                        showRecoverySetup = false
+                        recoverySetupError = ""
+                        toast("Recovery setup skipped. Your vault remains on this device only.")
+                    }
+                ) {
+                    Text("Skip recovery", color = Muted)
                 }
             },
             shape = RoundedCornerShape(24.dp),
@@ -2800,7 +2814,13 @@ private fun VaultDetailsDialog(
             color = Panel,
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
         ) {
-            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp), color = Green.copy(alpha = 0.13f)) {
                         Box(contentAlignment = Alignment.Center) {
