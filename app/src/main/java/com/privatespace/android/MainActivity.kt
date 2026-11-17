@@ -2180,7 +2180,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     },
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(17.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                    } else {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    }
                     Spacer(Modifier.width(7.dp))
                     Text(if (busy) "Preparing recovery…" else "Choose device folder")
                 }
@@ -4282,6 +4290,19 @@ private fun TrashDialog(
                 }
                 Spacer(Modifier.height(14.dp))
                 HorizontalDivider(color = Line)
+                if (busy) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Cyan,
+                            trackColor = Panel2
+                        )
+                        Text("Updating Recycle Bin…", color = Muted, fontSize = 11.sp)
+                    }
+                }
                 if (entries.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Column(
@@ -4397,6 +4418,14 @@ private fun ChangePasswordDialog(
     var newVisible by remember { mutableStateOf(false) }
     var confirmationVisible by remember { mutableStateOf(false) }
 
+    LaunchedEffect(busy) {
+        if (busy) {
+            oldVisible = false
+            newVisible = false
+            confirmationVisible = false
+        }
+    }
+
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = {
@@ -4483,7 +4512,15 @@ private fun ChangePasswordDialog(
                 onClick = { onChange(oldPassword, newPassword) },
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                } else {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
                 Spacer(Modifier.width(7.dp))
                 Text(if (busy) "Saving…" else "Save password")
             }
