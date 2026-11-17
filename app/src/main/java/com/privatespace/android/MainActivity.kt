@@ -562,7 +562,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             it.copy(
                                 displayName = importedFile.displayName,
                                 status = VaultImportStatus.COMPLETED,
-                                completedBytes = it.totalBytes?.takeIf { total -> total > 0L } ?: it.completedBytes,
+                                completedBytes = importedFile.sizeBytes,
+                                totalBytes = importedFile.sizeBytes,
                                 error = null
                             )
                         }
