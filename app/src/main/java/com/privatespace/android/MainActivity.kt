@@ -204,7 +204,7 @@ private data class PendingVaultRelease(
     val allTopics: Boolean = false
 )
 
-private enum class VaultImportStatus { QUEUED, RUNNING, PAUSED, COMPLETED, FAILED, STOPPED }
+private enum class VaultImportStatus { QUEUED, RUNNING, PAUSED, FINALIZING, COMPLETED, FAILED, STOPPED }
 
 private data class VaultImportQueueItem(
     val id: String,
@@ -526,16 +526,33 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             var failure: Exception? = null
             try {
                 withContext(Dispatchers.IO) {
-                    repository.addFileWithProgress(next.topicId, next.uri, control) { completed, total ->
-                        mainHandler.post {
-                            if (unlocked) updateImportItem(next.id) {
-                                it.copy(
-                                    completedBytes = completed.coerceAtLeast(0L),
-                                    totalBytes = total?.takeIf { value -> value >= 0L }
-                                )
+                    var lastProgressPostAt = 0L
+                    repository.addFileWithProgress(
+                        next.topicId,
+                        next.uri,
+                        control,
+                        onProgress = { completed, total ->
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgressPostAt >= 150L || (total != null && completed >= total)) {
+                                lastProgressPostAt = now
+                                mainHandler.post {
+                                    if (unlocked) updateImportItem(next.id) {
+                                        it.copy(
+                                            completedBytes = completed.coerceAtLeast(0L),
+                                            totalBytes = total?.takeIf { value -> value >= 0L }
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        onFinalizing = {
+                            mainHandler.post {
+                                if (unlocked) updateImportItem(next.id) {
+                                    it.copy(status = VaultImportStatus.FINALIZING)
+                                }
                             }
                         }
-                    }
+                    )
                 }
                 if (unlocked) {
                     updateImportItem(next.id) {
@@ -3156,6 +3173,7 @@ private fun VaultImportQueueRow(
         VaultImportStatus.QUEUED -> "Waiting"
         VaultImportStatus.RUNNING -> "Encrypting"
         VaultImportStatus.PAUSED -> "Paused"
+        VaultImportStatus.FINALIZING -> "Finalizing encrypted file"
         VaultImportStatus.COMPLETED -> "Added securely"
         VaultImportStatus.FAILED -> "Failed"
         VaultImportStatus.STOPPED -> "Stopped"
@@ -3202,7 +3220,7 @@ private fun VaultImportQueueRow(
                     Text(statusLabel, color = statusColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
                 }
                 Box {
-                    IconButton(onClick = { menuExpanded = true }) {
+                    IconButton(onClick = { menuExpanded = true }, enabled = item.status != VaultImportStatus.FINALIZING) {
                         Icon(Icons.Default.MoreVert, contentDescription = "Import actions for ${item.displayName}", tint = Muted)
                     }
                     DropdownMenu(
