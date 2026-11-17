@@ -621,10 +621,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val item = importQueue.firstOrNull { it.id == id } ?: return
         if (item.status in setOf(VaultImportStatus.COMPLETED, VaultImportStatus.FINALIZING)) return
         val previousControl = importControls[id]
-        if (previousControl?.isFinalizing == true) return
+        val alreadyFailedOrStopped = item.status in setOf(VaultImportStatus.FAILED, VaultImportStatus.STOPPED)
+        if (previousControl?.isFinalizing == true && !alreadyFailedOrStopped) return
         if (previousControl != null) {
             val accepted = previousControl.stop()
-            if (!accepted && previousControl.isFinalizing) return
+            if (!accepted && previousControl.isFinalizing && !alreadyFailedOrStopped) return
         }
         val control = VaultImportControl()
         importControls = importControls + (id to control)
