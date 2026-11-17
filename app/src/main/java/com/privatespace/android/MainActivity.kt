@@ -578,7 +578,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 importControls = importControls + (next.id to it)
             }
             updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
-            val job = scope.launch {
+            val job = VaultOperationRuntime.launch(context, "Importing ${next.displayName}") {
                 var failure: Exception? = null
                 try {
                     val importedFile = withContext(Dispatchers.IO) {
@@ -733,7 +733,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         busy = true
         var activeControl: VaultImportControl? = null
         val cancelRequested = AtomicBoolean(false)
-        val job = scope.launch {
+        val job = VaultOperationRuntime.launch(
+            context,
+            if (uniqueUris.size == 1) "Importing ${names.first()}" else "Importing ${uniqueUris.size} files"
+        ) {
             var completedBytes = 0L
             var completedFiles = 0
             var cancelled = false
@@ -926,7 +929,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val fileId = pendingExportFile
         pendingExportFile = null
         if (destination != null && fileId != null && unlocked) {
-            scope.launch {
+            VaultOperationRuntime.launch(context, "Exporting file") {
                 busy = true
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
@@ -968,7 +971,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         pendingExportAll = false
         pendingExportSelection = null
         if (destination != null && unlocked) {
-            scope.launch {
+            VaultOperationRuntime.launch(context, "Exporting files") {
                 busy = true
                 val operationTitle = when {
                     allTopics -> "Exporting all topics"
