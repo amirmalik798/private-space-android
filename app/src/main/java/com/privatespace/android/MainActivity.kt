@@ -786,7 +786,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 toast(if (uniqueUris.size == 1) "File added securely to the topic." else "${completedFiles} files added securely to the topic.")
             } catch (cancelledFailure: CancellationException) {
                 cancelled = true
-                if (completedFiles > 0) refreshVault()
+                if (completedFiles > 0) withContext(NonCancellable) { refreshVault() }
                 throw cancelledFailure
             } catch (failure: Exception) {
                 cancelled = activeControl?.isStopped == true || cancelRequested.get()
