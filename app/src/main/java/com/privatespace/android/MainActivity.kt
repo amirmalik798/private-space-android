@@ -3265,6 +3265,7 @@ private fun VaultImportQueueRow(
                                     onClick = { menuExpanded = false; onDismiss() }
                                 )
                             }
+                            VaultImportStatus.FINALIZING -> Unit
                             VaultImportStatus.COMPLETED -> {
                                 DropdownMenuItem(
                                     text = { Text("Dismiss") },
@@ -3284,7 +3285,7 @@ private fun VaultImportQueueRow(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Cyan)
                 } else {
                     LinearProgressIndicator(
-                        progress = { if (item.status == VaultImportStatus.COMPLETED) 1f else fraction ?: 0f },
+                        progress = { if (item.status == VaultImportStatus.COMPLETED || item.status == VaultImportStatus.FINALIZING) 1f else fraction ?: 0f },
                         modifier = Modifier.fillMaxWidth(),
                         color = statusColor,
                         trackColor = Panel2
