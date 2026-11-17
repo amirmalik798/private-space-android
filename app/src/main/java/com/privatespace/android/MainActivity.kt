@@ -1736,21 +1736,29 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     val filesByTopic = remember(vaultFiles) {
         vaultFiles.groupBy { it.topicId }
     }
-    val activeTopic = topics.firstOrNull { it.id == activeTopicId }
-    val activeTopicFiles = activeTopic?.let { topic ->
-        val topicFiles = filesByTopic[topic.id].orEmpty()
-        if (topicFilesNewestFirst) VaultFileOrdering.newestFirst(topicFiles)
-        else VaultFileOrdering.oldestFirst(topicFiles)
-    } ?: emptyList()
-    val topicImageFiles = activeTopic?.let { topic ->
-        VaultMediaNavigation.mediaFilesInTopic(filesByTopic[topic.id].orEmpty(), topic.id)
-            .filter {
-                VaultFormatSupport.kindForFile(it.displayName, it.mimeType) ==
-                    VaultFormatSupport.FileKind.PHOTO
-            }
-    } ?: emptyList()
-    val activeMedia = activeMediaId?.let { mediaId ->
-        topicImageFiles.firstOrNull { it.id == mediaId }
+    val activeTopic = remember(topics, activeTopicId) {
+        topics.firstOrNull { it.id == activeTopicId }
+    }
+    // File lists are derived from the authenticated snapshot. Cache sorting and
+    // media classification until that snapshot, the active topic, or sort order
+    // actually changes; progress-dialog and unrelated UI state should not rescan.
+    val activeTopicFiles = remember(filesByTopic, activeTopic?.id, topicFilesNewestFirst) {
+        activeTopic?.let { topic ->
+            val topicFiles = filesByTopic[topic.id].orEmpty()
+            if (topicFilesNewestFirst) VaultFileOrdering.newestFirst(topicFiles)
+            else VaultFileOrdering.oldestFirst(topicFiles)
+        } ?: emptyList()
+    }
+    val topicImageFiles = remember(filesByTopic, activeTopic?.id) {
+        filesByTopic[activeTopic?.id].orEmpty().filter { file ->
+            VaultFormatSupport.kindForFile(file.displayName, file.mimeType) ==
+                VaultFormatSupport.FileKind.PHOTO
+        }
+    }
+    val activeMedia = remember(topicImageFiles, activeMediaId) {
+        activeMediaId?.let { mediaId ->
+            topicImageFiles.firstOrNull { it.id == mediaId }
+        }
     }
 
     LaunchedEffect(activeTopicId, topics) {
@@ -2238,7 +2246,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     topicToDelete?.let { topic ->
-        val fileCount = vaultFiles.count { it.topicId == topic.id }
+        val fileCount = filesByTopic[topic.id].orEmpty().size
         ConfirmDialog(
             title = "Delete topic?",
             message = if (fileCount == 0) {
@@ -3410,7 +3418,11 @@ private fun TopicScreen(
                     contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
-                    items(imports, key = { "import-${it.id}" }) { item ->
+                    items(
+                        imports,
+                        key = { "import-${it.id}" },
+                        contentType = { "import" }
+                    ) { item ->
                         VaultImportQueueRow(
                             item = item,
                             onPause = { onPauseImport(item.id) },
@@ -3420,7 +3432,11 @@ private fun TopicScreen(
                             onDismiss = { onDismissImport(item.id) }
                         )
                     }
-                    items(filteredFiles, key = { it.id }) { file ->
+                    items(
+                        filteredFiles,
+                        key = { it.id },
+                        contentType = { "vault-file" }
+                    ) { file ->
                         VaultFileRow(
                             file = file,
                             repository = repository,
