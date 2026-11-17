@@ -525,7 +525,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         scope.launch {
             var failure: Exception? = null
             try {
-                withContext(Dispatchers.IO) {
+                val importedFile = withContext(Dispatchers.IO) {
                     var lastProgressPostAt = 0L
                     repository.addFileWithProgress(
                         next.topicId,
@@ -557,6 +557,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 if (unlocked) {
                     updateImportItem(next.id) {
                         it.copy(
+                            displayName = importedFile.displayName,
                             status = VaultImportStatus.COMPLETED,
                             completedBytes = it.totalBytes?.takeIf { total -> total > 0L } ?: it.completedBytes,
                             error = null
@@ -633,13 +634,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         pendingImportTopic = null
         if (topicId != null && selectedUris.isNotEmpty() && unlocked) {
             val newItems = selectedUris.mapIndexed { index, uri ->
-                val name = runCatching { DocumentFile.fromSingleUri(context, uri)?.name }
-                    .getOrNull()?.takeIf { it.isNotBlank() } ?: "Selected file ${index + 1}"
                 VaultImportQueueItem(
                     id = java.util.UUID.randomUUID().toString(),
                     topicId = topicId,
                     uri = uri,
-                    displayName = name
+                    displayName = "Selected file ${index + 1}"
                 )
             }
             importQueue = importQueue + newItems
