@@ -588,7 +588,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 importControls = importControls + (next.id to it)
             }
             updateImportItem(next.id) { it.copy(status = VaultImportStatus.RUNNING, error = null) }
-            val job = VaultOperationRuntime.launch(context, "Importing ${next.displayName}", onCancel = { control.stop() }) {
+            val job = VaultOperationRuntime.launch(
+                context,
+                "Importing ${next.displayName}",
+                onCancel = { control.stop() },
+                onStartFailure = { failure ->
+                    updateImportItem(next.id) { it.copy(status = VaultImportStatus.FAILED, error = failure.message ?: "Import could not start.") }
+                    toast(failure.message ?: "Import could not start.")
+                }
+            ) {
                 var failure: Exception? = null
                 try {
                     val importedFile = withContext(Dispatchers.IO) {
@@ -650,7 +658,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     ensureImportWorkers()
                 }
             }
-            activeImportJobs = activeImportJobs + (next.id to job)
+            if (job?.isActive == true) activeImportJobs = activeImportJobs + (next.id to job)
         }
     }
 
@@ -749,6 +757,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onCancel = {
                 cancelRequested.set(true)
                 activeControl?.stop() ?: true
+            },
+            onStartFailure = { failure ->
+                finishFileOperation(token)
+                busy = false
+                toast(failure.message ?: "Import could not start.")
             }
         ) {
             var completedBytes = 0L
@@ -817,7 +830,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 if (cancelled && unlocked) toast("Adding files was cancelled. Files already completed remain safely in the topic.")
             }
         }
-        fileOperationCancel = {
+        fileOperationCancel = if (job != null) ({
             cancelRequested.set(true)
             val control = activeBatchImportControl
             if (control != null && !control.stop()) {
@@ -829,7 +842,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             } else {
                 job.cancel()
             }
-        }
+        }) else null
     }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -943,14 +956,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val fileId = pendingExportFile
         pendingExportFile = null
         if (destination != null && fileId != null && unlocked) {
+            val cancelRequested = AtomicBoolean(false)
             VaultOperationRuntime.launch(context, "Exporting file", onCancel = {
                 cancelRequested.set(true)
                 true
+            }, onStartFailure = { failure ->
+                runCatching { DocumentFile.fromSingleUri(context, destination)?.delete() }
+                toast(failure.message ?: "Export could not start.")
             }) {
                 busy = true
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
-                val cancelRequested = AtomicBoolean(false)
                 fileOperationCancel = { cancelRequested.set(true) }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
@@ -988,9 +1004,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         pendingExportAll = false
         pendingExportSelection = null
         if (destination != null && unlocked) {
+            val cancelRequested = AtomicBoolean(false)
             VaultOperationRuntime.launch(context, "Exporting files", onCancel = {
                 cancelRequested.set(true)
                 true
+            }, onStartFailure = { failure ->
+                toast(failure.message ?: "Export could not start.")
             }) {
                 busy = true
                 val operationTitle = when {
