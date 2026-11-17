@@ -1056,7 +1056,7 @@ class VaultRepository(context: Context) {
         try {
             exportRecords(records, folder, onProgress)
         } catch (failure: Throwable) {
-            deleteDocumentTree(folder)
+            rollbackExportTree(folder, failure)
             throw failure
         }
     }
@@ -1137,7 +1137,7 @@ class VaultRepository(context: Context) {
                 )
             )
         } catch (failure: Throwable) {
-            deleteDocumentTree(rootFolder)
+            rollbackExportTree(rootFolder, failure)
             throw failure
         }
     }
@@ -1363,10 +1363,46 @@ class VaultRepository(context: Context) {
     }
 
     private fun deleteDocumentTree(directory: DocumentFile) {
-        directory.listFiles().forEach { child ->
-            if (child.isDirectory) deleteDocumentTree(child) else child.delete()
+        var firstFailure: Throwable? = null
+        val children = try {
+            directory.listFiles().toList()
+        } catch (failure: Throwable) {
+            firstFailure = failure
+            emptyList()
         }
-        directory.delete()
+        children.forEach { child ->
+            try {
+                if (child.isDirectory) {
+                    deleteDocumentTree(child)
+                } else if (!child.delete() && child.exists()) {
+                    throw IOException("Could not remove partial export file '${child.name ?: "unknown"}'.")
+                }
+            } catch (failure: Throwable) {
+                val previous = firstFailure
+                if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
+            }
+        }
+        try {
+            if (!directory.delete() && directory.exists()) {
+                throw IOException("Could not remove partial export folder '${directory.name ?: "unknown"}'.")
+            }
+        } catch (failure: Throwable) {
+            val previous = firstFailure
+            if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
+        }
+        firstFailure?.let { throw IOException("The partial export could not be completely removed.", it) }
+    }
+
+    private fun rollbackExportTree(directory: DocumentFile, exportFailure: Throwable) {
+        try {
+            deleteDocumentTree(directory)
+        } catch (cleanupFailure: Throwable) {
+            exportFailure.addSuppressed(cleanupFailure)
+            throw IOException(
+                "Export failed and some partial files could not be removed. Inspect the destination folder and delete any incomplete exports.",
+                exportFailure
+            )
+        }
     }
 
     private fun exportRecords(records: List<VaultFile>, folder: DocumentFile) {
