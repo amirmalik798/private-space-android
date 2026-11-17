@@ -26,6 +26,8 @@ internal object VaultRecoveryReadback {
             try {
                 verify()
                 return
+            } catch (cancelled: java.util.concurrent.CancellationException) {
+                throw cancelled
             } catch (failure: Exception) {
                 lastFailure = failure
             }
@@ -64,6 +66,8 @@ internal object VaultRecoveryReadback {
                     return bytes
                 }
                 lastFailure = IOException("The encrypted recovery record did not authenticate after writing.")
+            } catch (cancelled: java.util.concurrent.CancellationException) {
+                throw cancelled
             } catch (failure: Exception) {
                 lastFailure = failure
             } finally {

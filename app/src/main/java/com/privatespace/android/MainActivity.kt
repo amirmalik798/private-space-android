@@ -432,6 +432,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
+    // Tracks long authentication/recovery work which must unwind on lock or Activity teardown.
+    val activeLifecycleCancellation = remember { AtomicReference<AtomicBoolean?>(null) }
+
     var unlocked by remember { mutableStateOf(false) }
     var setup by remember { mutableStateOf(!PasswordManager.configured(context)) }
     var password by remember { mutableStateOf("") }
@@ -539,6 +542,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun lockVault() {
+        // Stop authentication/recovery migrations before waiting for repository storage locks.
+        activeLifecycleCancellation.getAndSet(null)?.set(true)
         // Stop any in-flight import/open/export before invalidating its UI token.
         // In particular, an export must not continue releasing plaintext after
         // the vault has been explicitly locked or locked by the screen policy.
@@ -598,7 +603,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     DisposableEffect(activity) {
         activity?.onVaultShouldLock = { lockVault() }
-        onDispose { activity?.onVaultShouldLock = null }
+        onDispose {
+            activeLifecycleCancellation.getAndSet(null)?.set(true)
+            activity?.onVaultShouldLock = null
+        }
     }
 
     fun closeMediaViewer() {
@@ -1062,28 +1070,45 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 if (secret == null) {
                     recoverySetupError = "The setup session expired. Unlock Private Space again."
                 } else {
+                    val operationCancellation = AtomicBoolean(false)
+                    activeLifecycleCancellation.set(operationCancellation)
                     scope.launch {
-                        busy = true
-                        val result = withContext(Dispatchers.IO) {
-                            runCatching { repository.enablePersistentStorage(selectedTreeUri, secret) }
-                        }
-                        busy = false
-                        result.onSuccess {
-                            if (!unlocked || activity?.isResumedForVault != true) {
-                                repository.lockPersistentStorage()
+                        try {
+                            busy = true
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    repository.enablePersistentStorage(selectedTreeUri, secret) {
+                                        if (operationCancellation.get()) {
+                                            throw CancellationException("Recovery setup cancelled because the vault was locked.")
+                                        }
+                                    }
+                                }
+                            }
+                            if (operationCancellation.get()) return@launch
+                            busy = false
+                            result.onSuccess {
+                                if (!unlocked || activity?.isResumedForVault != true) {
+                                    repository.lockPersistentStorage()
+                                    pendingRecoveryPassword?.fill(0.toChar())
+                                    pendingRecoveryPassword = null
+                                    showRecoverySetup = false
+                                    return@onSuccess
+                                }
                                 pendingRecoveryPassword?.fill(0.toChar())
                                 pendingRecoveryPassword = null
                                 showRecoverySetup = false
-                                return@onSuccess
+                                recoverySetupError = ""
+                                toast("Encrypted recovery storage is ready. Your vault can now be restored after reinstalling Private Space.")
+                            }.onFailure {
+                                recoverySetupError = it.message ?: "Could not prepare encrypted recovery storage."
+                                toast(recoverySetupError)
                             }
-                            pendingRecoveryPassword?.fill(0.toChar())
-                            pendingRecoveryPassword = null
-                            showRecoverySetup = false
-                            recoverySetupError = ""
-                            toast("Encrypted recovery storage is ready. Your vault can now be restored after reinstalling Private Space.")
-                        }.onFailure {
-                            recoverySetupError = it.message ?: "Could not prepare encrypted recovery storage."
-                            toast(recoverySetupError)
+                        } catch (_: CancellationException) {
+                            // Locking is expected cancellation, not a recovery setup failure.
+                        } finally {
+                            secret.fill('\u0000')
+                            activeLifecycleCancellation.compareAndSet(operationCancellation, null)
+                            busy = false
                         }
                     }
                 }
@@ -1392,6 +1417,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 // Avoid resolveActivity pre-filtering on OEM builds because some
                 // Samsung handlers are not consistently reported by the resolver.
                 val launchCandidates = samsungIntents + baseIntent
+                repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
                 var launchFailure: Exception? = null
                 for (candidate in launchCandidates) {
                     try {
@@ -1514,6 +1540,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     .putExtra(Intent.EXTRA_STREAM, uri)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
+                repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
                 context.startActivity(Intent.createChooser(sendIntent, "Share file"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -1587,6 +1614,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 val clip = ClipData.newUri(context.contentResolver, "Private Space files", uris.first())
                 uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
                 sendIntent.clipData = clip
+                repository.markOutgoingHandedOff(preparedFiles)
                 context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -1702,6 +1730,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 )
                 uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
                 sendIntent.clipData = clip
+                repository.markOutgoingHandedOff(preparedFiles)
                 context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -1855,131 +1884,163 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val wasSetup = setup
             val restoreUri = recoveryTreeUri
             val authGeneration = activity?.foregroundGeneration
+            val operationCancellation = AtomicBoolean(false)
+            activeLifecycleCancellation.set(operationCancellation)
             scope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        when {
-                            restoreUri != null -> {
-                                if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
-                                    error("Too many attempts. Wait for the lockout to end.")
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            fun ensureAuthenticationActive() {
+                                if (operationCancellation.get()) {
+                                    throw CancellationException("Authentication cancelled because the vault was locked.")
                                 }
-                                try {
-                                    repository.restorePersistentVault(restoreUri, entered.toCharArray()) { progress ->
-                                        mainHandler.post { restoreProgress = progress }
+                            }
+                            ensureAuthenticationActive()
+                            when {
+                                restoreUri != null -> {
+                                    if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                                        error("Too many attempts. Wait for the lockout to end.")
                                     }
-                                } catch (failure: Throwable) {
-                                    PasswordManager.recordFailure(context)
-                                    throw failure
-                                }
-                                try {
-                                    PasswordManager.set(context, entered.toCharArray())
-                                    PasswordManager.clearFailures(context)
-                                } catch (failure: Throwable) {
-                                    repository.lockPersistentStorage()
-                                    throw failure
-                                }
-                                true to null
-                            }
-                            wasSetup -> {
-                                require(entered.length in PasswordManager.MIN_PASSWORD_LENGTH..PasswordManager.MAX_PASSWORD_LENGTH) {
-                                    "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters."
-                                }
-                                require(entered == confirm) { "Passwords do not match." }
-                                PasswordManager.set(context, entered.toCharArray())
-                                true to entered.toCharArray()
-                            }
-                            else -> {
-                                if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
-                                    error("Too many attempts. Wait for the lockout to end.")
-                                }
-                                val valid = PasswordManager.verify(context, entered.toCharArray())
-                                if (!valid) {
-                                    PasswordManager.recordFailure(context)
-                                    false to null
-                                } else {
-                                    PasswordManager.clearFailures(context)
-                                    val savedTree = repository.persistentStorageUri()
-                                    if (savedTree == null) {
-                                        true to entered.toCharArray()
-                                    } else {
-                                        try {
-                                            repository.openPersistentStorage(savedTree, entered.toCharArray()) { progress ->
-                                                mainHandler.post { restoreProgress = progress }
+                                    try {
+                                        repository.restorePersistentVault(restoreUri, entered.toCharArray()) { progress ->
+                                            ensureAuthenticationActive()
+                                            mainHandler.post {
+                                                if (!operationCancellation.get()) restoreProgress = progress
                                             }
-                                            true to null
-                                        } catch (_: Exception) {
-                                            // Local encrypted records remain intact. Let the
-                                            // user select a new recovery folder and migrate them.
+                                        }
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Throwable) {
+                                        PasswordManager.recordFailure(context)
+                                        throw failure
+                                    }
+                                    ensureAuthenticationActive()
+                                    try {
+                                        PasswordManager.set(context, entered.toCharArray())
+                                        PasswordManager.clearFailures(context)
+                                    } catch (failure: Throwable) {
+                                        repository.lockPersistentStorage()
+                                        throw failure
+                                    }
+                                    ensureAuthenticationActive()
+                                    true to null
+                                }
+                                wasSetup -> {
+                                    require(entered.length in PasswordManager.MIN_PASSWORD_LENGTH..PasswordManager.MAX_PASSWORD_LENGTH) {
+                                        "Use at least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters."
+                                    }
+                                    require(entered == confirm) { "Passwords do not match." }
+                                    PasswordManager.set(context, entered.toCharArray())
+                                    ensureAuthenticationActive()
+                                    true to entered.toCharArray()
+                                }
+                                else -> {
+                                    if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                                        error("Too many attempts. Wait for the lockout to end.")
+                                    }
+                                    val valid = PasswordManager.verify(context, entered.toCharArray())
+                                    ensureAuthenticationActive()
+                                    if (!valid) {
+                                        PasswordManager.recordFailure(context)
+                                        false to null
+                                    } else {
+                                        PasswordManager.clearFailures(context)
+                                        ensureAuthenticationActive()
+                                        val savedTree = repository.persistentStorageUri()
+                                        if (savedTree == null) {
                                             true to entered.toCharArray()
+                                        } else {
+                                            try {
+                                                repository.openPersistentStorage(savedTree, entered.toCharArray()) { progress ->
+                                                    ensureAuthenticationActive()
+                                                    mainHandler.post {
+                                                        if (!operationCancellation.get()) restoreProgress = progress
+                                                    }
+                                                }
+                                                ensureAuthenticationActive()
+                                                true to null
+                                            } catch (cancelled: CancellationException) {
+                                                throw cancelled
+                                            } catch (_: Exception) {
+                                                ensureAuthenticationActive()
+                                                true to entered.toCharArray()
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                busy = false
-                result.fold(
-                    onSuccess = { outcome ->
-                        val valid = outcome.first
-                        val recoveryPassword = outcome.second
-                        if (valid) {
-                            setup = false
-                            recoveryTreeUri = null
-                            password = ""
-                            confirmation = ""
-                            pendingRecoveryPassword?.fill(0.toChar())
-                            val shouldOfferRecoverySetup = VaultSessionPolicy.shouldOfferRecoverySetup(
-                                hasPendingRecoveryPassword = recoveryPassword != null,
-                                restoringExistingRecovery = restoreUri != null,
-                                recoveryStorageAlreadyActive = repository.hasActivePersistentStorage()
-                            )
-                            if (shouldOfferRecoverySetup) {
-                                pendingRecoveryPassword = recoveryPassword
-                            } else {
-                                recoveryPassword?.fill('\u0000')
-                                pendingRecoveryPassword = null
-                            }
-                            showRecoverySetup = shouldOfferRecoverySetup
-                            recoverySetupError = ""
-                            choosingExistingRecovery = false
-                            if (VaultSessionPolicy.mayCompleteUnlock(
-                                    authGeneration,
-                                    activity?.foregroundGeneration,
-                                    activity?.isResumedForVault == true
-                                )
-                            ) {
-                                unlocked = true
-                                authError = ""
-                            } else {
-                                repository.lockPersistentStorage()
+                    if (operationCancellation.get()) {
+                        result.getOrNull()?.second?.fill('\u0000')
+                        return@launch
+                    }
+                    busy = false
+                    result.fold(
+                        onSuccess = { outcome ->
+                            val valid = outcome.first
+                            val recoveryPassword = outcome.second
+                            if (valid) {
+                                setup = false
+                                recoveryTreeUri = null
+                                password = ""
+                                confirmation = ""
                                 pendingRecoveryPassword?.fill(0.toChar())
                                 pendingRecoveryPassword = null
-                                showRecoverySetup = false
-                                authError = "Private Space was interrupted. Enter your password again to unlock it."
+                                val shouldOfferRecoverySetup = VaultSessionPolicy.shouldOfferRecoverySetup(
+                                    hasPendingRecoveryPassword = recoveryPassword != null,
+                                    restoringExistingRecovery = restoreUri != null,
+                                    recoveryStorageAlreadyActive = repository.hasActivePersistentStorage()
+                                )
+                                if (shouldOfferRecoverySetup) {
+                                    pendingRecoveryPassword = recoveryPassword
+                                } else {
+                                    recoveryPassword?.fill('\u0000')
+                                    pendingRecoveryPassword = null
+                                }
+                                showRecoverySetup = shouldOfferRecoverySetup
+                                recoverySetupError = ""
+                                choosingExistingRecovery = false
+                                if (VaultSessionPolicy.mayCompleteUnlock(
+                                        authGeneration,
+                                        activity?.foregroundGeneration,
+                                        activity?.isResumedForVault == true
+                                    )
+                                ) {
+                                    unlocked = true
+                                    authError = ""
+                                } else {
+                                    repository.lockPersistentStorage()
+                                    pendingRecoveryPassword?.fill(0.toChar())
+                                    pendingRecoveryPassword = null
+                                    showRecoverySetup = false
+                                    authError = "Private Space was interrupted. Enter your password again to unlock it."
+                                }
+                            } else {
+                                lockUntil = PasswordManager.lockedUntil(context)
+                                password = ""
+                                authError = "Incorrect password."
                             }
-                        } else {
+                        },
+                        onFailure = {
+                            if (restoreUri != null) {
+                                repository.lockPersistentStorage()
+                                choosingExistingRecovery = false
+                            }
                             lockUntil = PasswordManager.lockedUntil(context)
+                            authError = it.message ?: "Authentication failed."
                             password = ""
-                            authError = "Incorrect password."
+                            confirmation = ""
                         }
-                    },
-                    onFailure = {
-                        if (restoreUri != null) {
-                            repository.lockPersistentStorage()
-                            choosingExistingRecovery = false
-                        }
-                        lockUntil = PasswordManager.lockedUntil(context)
-                        authError = it.message ?: "Authentication failed."
-                        password = ""
-                        confirmation = ""
-                    }
-                )
-                mainHandler.post { restoreProgress = null }
+                    )
+                } catch (_: CancellationException) {
+                    // Expected when the device is locked or the Activity is torn down.
+                } finally {
+                    activeLifecycleCancellation.compareAndSet(operationCancellation, null)
+                    busy = false
+                    restoreProgress = null
+                }
             }
-        }
-        return
-    }
 
 
     // Index files by topic once per vault snapshot; repeated filtering in

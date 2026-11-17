@@ -169,7 +169,6 @@ class VaultRepository(context: Context) {
 
         private const val MAX_METADATA_BYTES = 16 * 1024 * 1024
         private const val OUTGOING_TTL_MS = 30L * 60L * 1000L
-        private const val STAGING_TTL_MS = 24L * 60L * 60L * 1000L
         private const val METADATA_AAD = "private-space:metadata:v2"
         private const val RECOVERY_TREE_URI = "tree_uri"
         private const val RECOVERY_INDEX_DIGEST = "index_digest"
@@ -191,11 +190,9 @@ class VaultRepository(context: Context) {
             // No export, preview, or restore is active when a repository is
             // first created for this process. Remove all abandoned plaintext
             // staging left by a previous process before exposing the vault UI.
-            staging.listFiles()?.forEach { temporary ->
-                // Cache cleanup is best-effort: an undeletable private staging
-                // entry must not prevent the encrypted vault from opening.
-                runCatching { temporary.deleteRecursively() }
-            }
+            // Fail closed if any entry cannot be removed.
+            staging.listFiles()?.forEach(::deleteTemporaryEntry)
+            cleanupAbandonedOutgoingSessions()
             migrateLegacyMetadataIfNeeded()
 
             // Authenticate the committed index before recovering file operations.
@@ -209,8 +206,8 @@ class VaultRepository(context: Context) {
             }
             recoverInterruptedFileOperations(index, hasCommittedIndex)
 
-            // Remove abandoned plaintext staging by age, not eagerly: a recreated
-            // activity/repository must not delete an export still in progress.
+            // Completed external hand-offs retain the existing bounded TTL.
+            // Unhanded sessions were removed above before the UI started.
             cleanupExpiredOutgoing()
         } catch (failure: Exception) {
             initializationFailure = failure
@@ -257,18 +254,24 @@ class VaultRepository(context: Context) {
      * encrypted vault into it. Existing app-private data remains unchanged.
      */
     @Synchronized
-    fun enablePersistentStorage(treeUri: Uri, password: CharArray) {
+    fun enablePersistentStorage(
+        treeUri: Uri,
+        password: CharArray,
+        checkCancelled: () -> Unit = {}
+    ) {
         try {
+            checkCancelled()
             if (isAlreadyActiveFor(treeUri, password)) return
             val index = loadIndex()
             val store = PersistentVaultStore.create(appContext, treeUri, password)
             try {
                 (index.files + index.trash.map { it.file }).forEach { record ->
+                    checkCancelled()
                     val localFile = encryptedFile(record.id)
                     check(localFile.isFile) {
                         "A vault file is missing and cannot be protected for reinstall recovery."
                     }
-                    persistLocalEncryptedPayload(store, record.id, localFile, record.sizeBytes)
+                    persistLocalEncryptedPayload(store, record.id, localFile, record.sizeBytes, checkCancelled)
                 }
                 val clearIndex = serializeIndex(index)
                 val saved = try {
@@ -276,6 +279,7 @@ class VaultRepository(context: Context) {
                 } finally {
                     clearIndex.fill(0)
                 }
+                checkCancelled()
                 store.markReady()
                 saveRecoveryPreferences(treeUri, saved.encryptedDigest)
                 persistentStore = store
@@ -669,7 +673,7 @@ class VaultRepository(context: Context) {
         onProgress: (VaultFileOperationProgress) -> Unit = {}
     ): PreparedVaultFile {
         val record = findFile(id)
-        val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
+        val session = createOutgoingSession()
         val destination = File(session, VaultInputValidation.displayName(record.displayName))
         try {
             onProgress(VaultFileOperationProgress("Decrypting", 0L, record.sizeBytes, currentFileName = record.displayName))
@@ -707,6 +711,32 @@ class VaultRepository(context: Context) {
             sessions[session.canonicalPath] = session
         }
         sessions.values.forEach(::deleteTemporaryEntry)
+    }
+
+    /** Mark prepared plaintext as handed off, retaining it only for the existing TTL. */
+    @Synchronized
+    fun markOutgoingHandedOff(preparedFiles: Collection<PreparedVaultFile>) {
+        require(preparedFiles.isNotEmpty()) { "No prepared files were supplied for hand-off." }
+        val outgoingRoot = outgoing.canonicalFile
+        val sessions = linkedMapOf<String, File>()
+        preparedFiles.forEach { prepared ->
+            val canonicalFile = prepared.file.canonicalFile
+            val session = canonicalFile.parentFile
+                ?: throw IOException("The temporary outgoing file location is invalid.")
+            check(canonicalFile.isFile && session.parentFile?.canonicalFile == outgoingRoot) {
+                "Refusing to retain a file outside the private outgoing cache."
+            }
+            sessions[session.canonicalPath] = session
+        }
+        sessions.values.forEach { session ->
+            val pending = File(session, VaultOutgoingSessionPolicy.PENDING_MARKER)
+            val handedOff = File(session, VaultOutgoingSessionPolicy.HANDED_OFF_MARKER)
+            check(pending.isFile && !handedOff.exists()) {
+                "The prepared outgoing session is no longer pending."
+            }
+            Os.rename(pending.absolutePath, handedOff.absolutePath)
+            syncDirectory(session)
+        }
     }
 
     /**
@@ -993,7 +1023,7 @@ class VaultRepository(context: Context) {
             records.fold(0L) { total, record -> Math.addExact(total, record.sizeBytes) }
         }.getOrNull() ?: 0L
 
-        val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
+        val session = createOutgoingSession()
         var completedBytes = 0L
         try {
             val usedNames = mutableSetOf<String>()
@@ -1457,11 +1487,14 @@ class VaultRepository(context: Context) {
         }
     }
 
-    /** Deletes stale decrypted staging files, but keeps recent share payloads available to receiving apps. */
+    /**
+     * Expires handed-off plaintext copies without touching pending sessions.
+     * Staging is cleaned at process initialization and by each operation's own
+     * finally block; periodic deletion could remove a file still in use.
+     */
     @Synchronized
     fun cleanupExpiredOutgoing(now: Long = System.currentTimeMillis()) {
         deleteExpiredChildren(outgoing, now, OUTGOING_TTL_MS)
-        deleteExpiredChildren(staging, now, STAGING_TTL_MS)
     }
 
     private fun createExactDirectory(parent: DocumentFile, folderName: String): DocumentFile {
@@ -1906,12 +1939,14 @@ class VaultRepository(context: Context) {
         store: PersistentVaultStore,
         id: String,
         localEncrypted: File,
-        expectedPlainBytes: Long
+        expectedPlainBytes: Long,
+        checkCancelled: () -> Unit
     ) {
         val aad = fileAad(id)
-        FileInputStream(localEncrypted).use { localCiphertext ->
-            store.writePayload(id, expectedPlainBytes, aad) { recoveryEncryptor ->
-                VaultCrypto.decrypt(localCiphertext, recoveryEncryptor, aad)
+        FileInputStream(localEncrypted).use { rawCiphertext ->
+            val checkedCiphertext = CancellationCheckingInputStream(rawCiphertext, checkCancelled)
+            store.writePayload(id, expectedPlainBytes, aad, checkCancelled) { recoveryEncryptor ->
+                VaultCrypto.decrypt(checkedCiphertext, recoveryEncryptor, aad)
             }
         }
     }
@@ -1975,7 +2010,13 @@ class VaultRepository(context: Context) {
                 now - lastProgressAtNanos >= 500_000_000L
             ) {
                 lastProgressAtNanos = now
-                runCatching { onProgress(progress) }
+                try {
+                    onProgress(progress)
+                } catch (cancelled: java.util.concurrent.CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // Observer/UI failures remain isolated; explicit cancellation propagates.
+                }
             }
         }
         reportProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
@@ -2043,7 +2084,27 @@ class VaultRepository(context: Context) {
             // replaced. It lets the next process distinguish a committed restore
             // from a process death halfway through promotion.
             val restoreTransactionId = writeRestoreTransaction(index, records)
-            incomingFiles.forEach { (id, incoming) -> replaceRestoredPayload(id, incoming) }
+            incomingFiles.forEach { (id, incoming) ->
+                reportProgress(
+                    VaultRestoreProgress(
+                        completedBytes = totalBytes,
+                        totalBytes = totalBytes,
+                        completedFiles = records.size,
+                        totalFiles = records.size,
+                        currentFileName = "Finalizing restored files"
+                    )
+                )
+                replaceRestoredPayload(id, incoming)
+            }
+            reportProgress(
+                VaultRestoreProgress(
+                    completedBytes = totalBytes,
+                    totalBytes = totalBytes,
+                    completedFiles = records.size,
+                    totalFiles = records.size,
+                    currentFileName = "Committing restored vault"
+                )
+            )
             // The encrypted AtomicFile index is the commit point. Recovery compares
             // its authenticated contents with the journal before keeping or rolling
             // back any promoted payloads.
@@ -2501,7 +2562,29 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun createPrivateFile(file: File): File {
+    private fun createOutgoingSession(): File {
+        val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
+        try {
+            // Created before plaintext is written; startup removes sessions that
+            // never reached an external app hand-off.
+            createPrivateFile(File(session, VaultOutgoingSessionPolicy.PENDING_MARKER))
+            syncDirectory(session)
+            return session
+        } catch (failure: Throwable) {
+            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            throw failure
+        }
+    }
+
+    private fun cleanupAbandonedOutgoingSessions() {
+        outgoing.listFiles()?.forEach { session ->
+            if (VaultOutgoingSessionPolicy.shouldDeleteAtStartup(session)) {
+                deleteTemporaryEntry(session)
+            }
+        }
+    }
+
+    private fun createPrivateFile(file: File) {
         check(file.createNewFile()) { "Could not create a private temporary file." }
         try {
             restrictFilePermissions(file)
@@ -2617,6 +2700,9 @@ class VaultRepository(context: Context) {
 
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
         directory.listFiles()?.forEach { child ->
+            if (directory == outgoing && VaultOutgoingSessionPolicy.isPendingSession(child)) {
+                return@forEach
+            }
             val modified = child.lastModified()
             val ageIsUnknown = modified <= 0L
             val expired = modified > 0L && now >= modified && now - modified > ttlMs

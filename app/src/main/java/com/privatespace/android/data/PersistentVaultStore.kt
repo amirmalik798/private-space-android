@@ -78,8 +78,10 @@ internal class PersistentVaultStore private constructor(
         id: String,
         expectedPlainBytes: Long,
         aad: ByteArray,
+        checkCancelled: () -> Unit = {},
         writePlaintext: (OutputStream) -> Unit
     ) {
+        checkCancelled()
         requireValidId(id)
         require(expectedPlainBytes >= 0L) { "Invalid recovery payload size." }
         val name = payloadName(id)
@@ -98,7 +100,9 @@ internal class PersistentVaultStore private constructor(
                 try {
                     // The caller authenticates the original ciphertext while
                     // streaming clear bytes directly into this encryptor.
+                    checkCancelled()
                     writePlaintext(encryptedOutput)
+                    checkCancelled()
                     encryptedOutput.finish()
                 } catch (failure: Throwable) {
                     encryptedOutput.abort()
@@ -114,8 +118,9 @@ internal class PersistentVaultStore private constructor(
             VaultRecoveryReadback.verifyWithRetry(
                 operation = "the encrypted recovery file",
                 verify = {
+                    checkCancelled()
                     verifiedOutput.resetCount()
-                    decryptPayload(id, verifiedOutput, aad)
+                    decryptPayload(id, verifiedOutput, aad, checkCancelled)
                     if (verifiedOutput.bytesWritten != expectedPlainBytes) {
                         throw IOException("The encrypted recovery file contains an incomplete payload.")
                     }
@@ -132,13 +137,26 @@ internal class PersistentVaultStore private constructor(
     }
 
     @Synchronized
-    fun decryptPayload(id: String, output: OutputStream, aad: ByteArray) {
+    fun decryptPayload(
+        id: String,
+        output: OutputStream,
+        aad: ByteArray,
+        checkCancelled: () -> Unit = {}
+    ) {
+        checkCancelled()
         requireValidId(id)
         val document = findChild(payloadName(id))
             ?: throw IOException("An encrypted recovery file is missing.")
         val input = resolver.openInputStream(document.uri)
             ?: throw IOException("Could not read an encrypted recovery file.")
-        input.use { PersistentVaultCrypto.decrypt(it, output, aad, requireKey()) }
+        input.use { raw ->
+            PersistentVaultCrypto.decrypt(
+                CancellationCheckingInputStream(raw, checkCancelled),
+                output,
+                aad,
+                requireKey()
+            )
+        }
     }
 
     /**
