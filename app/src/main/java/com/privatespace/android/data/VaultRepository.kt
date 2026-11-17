@@ -533,6 +533,7 @@ class VaultRepository(context: Context) {
             control?.awaitRunning()
             VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
             onProgress(byteCount, reportedSize)
+            control?.beginFinalizing()
             onFinalizing()
 
             atomicRename(temporary, target)
