@@ -473,8 +473,9 @@ class VaultRepository(context: Context) {
     fun addFileWithProgress(
         topicId: String,
         uri: Uri,
-        control: com.privatespace.android.security.VaultImportControl?,
-        onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> }
+        control: VaultImportControl?,
+        onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> },
+        onFinalizing: () -> Unit = {}
     ): VaultFile {
         val index = loadIndex()
         require(index.topics.any { it.id == topicId }) { "The selected topic no longer exists." }
@@ -530,6 +531,7 @@ class VaultRepository(context: Context) {
             control?.awaitRunning()
             VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
             onProgress(byteCount, reportedSize)
+            onFinalizing()
 
             atomicRename(temporary, target)
             finalized = true
