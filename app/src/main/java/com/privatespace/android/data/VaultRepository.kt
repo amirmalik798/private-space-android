@@ -469,7 +469,6 @@ class VaultRepository(context: Context) {
      * The repository monitor serializes index mutations and import commits.
      * Pause/stop are observed between bounded encryption chunks.
      */
-    @Synchronized
     fun addFileWithProgress(
         topicId: String,
         uri: Uri,
@@ -477,8 +476,11 @@ class VaultRepository(context: Context) {
         onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> },
         onFinalizing: () -> Unit = {}
     ): VaultFile {
-        val index = loadIndex()
-        require(index.topics.any { it.id == topicId }) { "The selected topic no longer exists." }
+        synchronized(this) {
+            require(loadIndex().topics.any { it.id == topicId }) {
+                "The selected topic no longer exists."
+            }
+        }
         control?.awaitRunning()
 
         val displayName = readDisplayName(uri)
@@ -535,21 +537,24 @@ class VaultRepository(context: Context) {
 
             atomicRename(temporary, target)
             finalized = true
-            persistentStore?.let { store ->
-                persistLocalEncryptedPayload(store, id, target, byteCount)
-            }
-
-            val now = System.currentTimeMillis()
-            val record = VaultFile(id, topicId, safeName, mime, byteCount, now)
-            val changedTopics = index.topics.map {
-                if (it.id == topicId) it.copy(updatedAt = now) else it
-            }
-            try {
-                saveIndex(index.copy(topics = changedTopics, files = index.files + record))
-            } catch (failure: Throwable) {
-                runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
-                runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
-                throw failure
+            val record = synchronized(this) {
+                val latestIndex = loadIndex()
+                require(latestIndex.topics.any { it.id == topicId }) {
+                    "The selected topic was removed before this file could be added."
+                }
+                persistentStore?.let { store ->
+                    persistLocalEncryptedPayload(store, id, target, byteCount)
+                }
+                val now = System.currentTimeMillis()
+                val created = VaultFile(id, topicId, safeName, mime, byteCount, now)
+                val changedTopics = latestIndex.topics.map {
+                    if (it.id == topicId) it.copy(updatedAt = now) else it
+                }
+                saveIndex(latestIndex.copy(
+                    topics = changedTopics,
+                    files = latestIndex.files + created
+                ))
+                created
             }
             return record
         } catch (failure: Throwable) {
