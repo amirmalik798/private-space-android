@@ -1750,10 +1750,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         } ?: emptyList()
     }
     val topicImageFiles = remember(filesByTopic, activeTopic?.id) {
-        filesByTopic[activeTopic?.id].orEmpty().filter { file ->
-            VaultFormatSupport.kindForFile(file.displayName, file.mimeType) ==
-                VaultFormatSupport.FileKind.PHOTO
-        }
+        activeTopic?.let { topic ->
+            filesByTopic[topic.id].orEmpty().filter { file ->
+                VaultFormatSupport.kindForFile(file.displayName, file.mimeType) ==
+                    VaultFormatSupport.FileKind.PHOTO
+            }
+        } ?: emptyList()
     }
     val activeMedia = remember(topicImageFiles, activeMediaId) {
         activeMediaId?.let { mediaId ->
