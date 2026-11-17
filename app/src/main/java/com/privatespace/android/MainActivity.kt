@@ -320,6 +320,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var authError by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var restoreProgress by remember { mutableStateOf<VaultRestoreProgress?>(null) }
+    var fileOperationProgress by remember { mutableStateOf<VaultFileOperationProgress?>(null) }
+    var fileOperationTitle by remember { mutableStateOf("") }
+    var fileOperationToken by remember { mutableLongStateOf(0L) }
     var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
     var choosingExistingRecovery by remember { mutableStateOf(false) }
     var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
@@ -365,6 +368,32 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
     }
 
+    fun beginFileOperation(title: String): Long {
+        fileOperationToken += 1L
+        fileOperationTitle = title
+        fileOperationProgress = VaultFileOperationProgress(
+            phase = "Preparing",
+            completedBytes = 0L,
+            totalBytes = 0L
+        )
+        return fileOperationToken
+    }
+
+    fun publishFileOperationProgress(token: Long, progress: VaultFileOperationProgress) {
+        mainHandler.post {
+            if (unlocked && fileOperationToken == token) {
+                fileOperationProgress = progress
+            }
+        }
+    }
+
+    fun finishFileOperation(token: Long) {
+        if (fileOperationToken == token) {
+            fileOperationProgress = null
+            fileOperationTitle = ""
+        }
+    }
+
     fun discardViewerFile(prepared: PreparedVaultFile?) {
         if (prepared == null) return
         scope.launch {
@@ -379,6 +408,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun lockVault() {
         repository.lockPersistentStorage()
+        fileOperationToken += 1L
+        fileOperationProgress = null
+        fileOperationTitle = ""
         restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
         pendingRecoveryPassword = null
@@ -791,9 +823,16 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (destination != null && fileId != null && unlocked) {
             scope.launch {
                 busy = true
+                val file = vaultFiles.firstOrNull { it.id == fileId }
+                val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
                 val result = withContext(Dispatchers.IO) {
-                    runCatching { repository.exportToUri(fileId, destination) }
+                    runCatching {
+                        repository.exportToUri(fileId, destination) { progress ->
+                            publishFileOperationProgress(operationToken, progress)
+                        }
+                    }
                 }
+                finishFileOperation(operationToken)
                 busy = false
                 result.onSuccess { toast("File exported. The exported copy is outside Private Space protection.") }
                     .onFailure { toast(it.message ?: "Export failed.") }
@@ -816,20 +855,34 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (destination != null && unlocked) {
             scope.launch {
                 busy = true
+                val operationTitle = when {
+                    allTopics -> "Exporting all topics"
+                    selectedFileIds != null -> "Exporting ${selectedFileIds.size} selected files"
+                    else -> {
+                        val topicName = topics.firstOrNull { it.id == topicId }?.name ?: "topic"
+                        "Exporting $topicName"
+                    }
+                }
+                val operationToken = beginFileOperation(operationTitle)
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         val folder = DocumentFile.fromTreeUri(context, destination)
                             ?: error("The selected folder is unavailable.")
+                        val progressCallback: (VaultFileOperationProgress) -> Unit = { progress ->
+                            publishFileOperationProgress(operationToken, progress)
+                        }
                         when {
-                            allTopics -> repository.exportAllToFolder(folder)
-                            selectedFileIds != null -> repository.exportFilesToFolder(selectedFileIds, folder)
+                            allTopics -> repository.exportAllToFolder(folder, progressCallback)
+                            selectedFileIds != null -> repository.exportFilesToFolder(selectedFileIds, folder, progressCallback)
                             else -> repository.exportTopicToFolder(
                                 topicId ?: error("No topic was selected for export."),
-                                folder
+                                folder,
+                                progressCallback
                             )
                         }
                     }
                 }
+                finishFileOperation(operationToken)
                 busy = false
                 result.onSuccess {
                     toast("Export complete. Exported files are outside Private Space protection.")
@@ -988,12 +1041,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     ) {
         if (!unlocked || busy) return
         busy = true
+        val operationToken = beginFileOperation("Opening ${file.displayName}")
+        fileOperationProgress = VaultFileOperationProgress(
+            "Decrypting",
+            0L,
+            file.sizeBytes,
+            currentFileName = file.displayName,
+            currentFileCompletedBytes = 0L,
+            currentFileTotalBytes = file.sizeBytes
+        )
         scope.launch {
             var prepared: PreparedVaultFile? = null
             var handedOff = false
             try {
                 prepared = withContext(Dispatchers.IO) {
-                    repository.prepareDecryptedFile(file.id)
+                    repository.prepareDecryptedFile(file.id) { progress ->
+                        publishFileOperationProgress(operationToken, progress)
+                    }
                 }
                 if (!VaultSessionPolicy.mayReleasePlaintext(
                         unlocked,
@@ -1064,6 +1128,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         toast("A temporary decrypted copy could not be removed from private cache.")
                     }
                 }
+                finishFileOperation(operationToken)
                 busy = false
             }
         }
