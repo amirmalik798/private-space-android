@@ -208,6 +208,45 @@ object VaultCrypto {
     ): EncryptingOutputStream =
         EncryptingOutputStream(ChunkedAesGcm.encryptingOutputStream(output, aad, key, CHUNKED_MAGIC))
 
+    /**
+     * Import variant that reports exact plaintext bytes and observes user
+     * controls between bounded chunks. The destination must remain a private
+     * temporary file until finish() and the caller's size check both succeed.
+     */
+    @Throws(IOException::class, GeneralSecurityException::class)
+    fun encryptControlled(
+        input: InputStream,
+        output: OutputStream,
+        aad: ByteArray,
+        control: VaultImportControl,
+        onProgress: (Long) -> Unit
+    ) {
+        val encrypting = encryptingOutputStream(output, aad)
+        val buffer = ByteArray(BUFFER_SIZE)
+        var total = 0L
+        try {
+            while (true) {
+                control.awaitRunning()
+                val count = readChunkOrEof(input, buffer)
+                if (count < 0) break
+                try {
+                    encrypting.write(buffer, 0, count)
+                    total = Math.addExact(total, count.toLong())
+                    onProgress(total)
+                } finally {
+                    buffer.fill(0, 0, count)
+                }
+            }
+            control.awaitRunning()
+            encrypting.finish()
+        } catch (failure: Throwable) {
+            encrypting.abort()
+            throw failure
+        } finally {
+            buffer.fill(0)
+        }
+    }
+
     private fun encryptWithKey(
         input: InputStream,
         output: OutputStream,
