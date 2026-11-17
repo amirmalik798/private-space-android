@@ -53,6 +53,28 @@ class VaultImportControlTest {
     }
 
     @Test
+    fun stopIsRejectedAfterFinalizationBegins() {
+        val control = VaultImportControl()
+        control.beginFinalizing()
+        assertFalse(control.stop())
+        assertTrue(control.isFinalizing)
+        assertFalse(control.isStopped)
+    }
+
+    @Test
+    fun finalizationCannotBeginAfterStop() {
+        val control = VaultImportControl()
+        assertTrue(control.stop())
+        var rejected = false
+        try {
+            control.beginFinalizing()
+        } catch (_: IOException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+    }
+
+    @Test
     fun stopClosesAttachedSourceStream() {
         val control = VaultImportControl()
         var closed = false
