@@ -1021,7 +1021,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     }
                 }
                 val operationToken = beginFileOperation(operationTitle)
-                val cancelRequested = AtomicBoolean(false)
                 fileOperationCancel = { cancelRequested.set(true) }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
