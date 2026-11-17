@@ -131,6 +131,10 @@ class VaultRepository(context: Context) {
     private val root = File(appContext.filesDir, "vault")
     private val staging = File(appContext.cacheDir, "private-space-staging")
     private val outgoing = File(appContext.cacheDir, "outgoing")
+    // Thumbnail decoding must not hold the repository transaction lock: large
+    // vault index mutations and imports can continue while a preview is decoded.
+    // Keep preview work bounded to one decode at a time on memory-constrained devices.
+    private val mediaPreviewLock = Any()
     private val legacyPrefs = appContext.getSharedPreferences("private_space_vault", Context.MODE_PRIVATE)
     private val metadata = AtomicFile(File(root, "vault-index.enc"))
     private val recoveryPrefs = appContext.getSharedPreferences("private_space_recovery", Context.MODE_PRIVATE)
@@ -755,13 +759,39 @@ class VaultRepository(context: Context) {
      * No preview or duration is written to the index, and encrypted originals
      * are never modified.
      */
-    @Synchronized
     fun loadMediaPreview(id: String, maxDimensionPx: Int): VaultMediaPreview? {
-        val index = loadIndex()
-        val record = index.files.firstOrNull { it.id == id }
-            ?: index.trash.firstOrNull { it.file.id == id }?.file
-            ?: return null
+        // Keep the legacy ID-based API safe for callers that do not already hold
+        // an authenticated VaultSnapshot record. The expensive decode happens
+        // after releasing the repository lock.
+        val record = synchronized(this) {
+            val index = loadIndex()
+            index.files.firstOrNull { it.id == id }
+                ?: index.trash.firstOrNull { it.file.id == id }?.file
+        } ?: return null
 
+        return loadMediaPreview(record, maxDimensionPx)
+    }
+
+    /**
+     * Loads a preview for a file record obtained from the authenticated vault
+     * snapshot. The UI already owns this verified metadata, so re-decrypting and
+     * reparsing the entire index for every visible thumbnail is unnecessary.
+     *
+     * Payload authentication and bounded decoding are unchanged. A dedicated
+     * preview lock prevents concurrent codec allocations while leaving repository
+     * index transactions and import finalization unblocked.
+     */
+    internal fun loadMediaPreview(
+        record: VaultFile,
+        maxDimensionPx: Int
+    ): VaultMediaPreview? = synchronized(mediaPreviewLock) {
+        loadMediaPreviewRecord(record, maxDimensionPx)
+    }
+
+    private fun loadMediaPreviewRecord(
+        record: VaultFile,
+        maxDimensionPx: Int
+    ): VaultMediaPreview? {
         val kind = VaultFormatSupport.kindForFile(record.displayName, record.mimeType)
         val isImage = kind == VaultFormatSupport.FileKind.PHOTO
         val isVideo = kind == VaultFormatSupport.FileKind.VIDEO

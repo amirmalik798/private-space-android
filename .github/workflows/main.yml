@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Only the newest commit on a ref needs a full test/lint/APK run.
+# Cancelling superseded runs avoids wasting CI capacity on obsolete revisions.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-and-build:
     runs-on: ubuntu-24.04

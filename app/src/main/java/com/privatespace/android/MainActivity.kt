@@ -3916,7 +3916,7 @@ private fun rememberVaultMediaPreview(
         if (enabled && isPreviewable && previewState.value == null) {
             previewState.value = try {
                 withContext(Dispatchers.IO) {
-                    repository.loadMediaPreview(file.id, targetSizePx)
+                    repository.loadMediaPreview(file, targetSizePx)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
