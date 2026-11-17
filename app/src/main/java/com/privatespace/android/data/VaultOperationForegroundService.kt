@@ -47,6 +47,18 @@ class VaultOperationForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Android 15+ limits dataSync foreground services to six hours per
+     * rolling 24-hour period. Stop the service within the system grace period
+     * and request safe cancellation; operations already in an atomic commit
+     * phase are allowed to finish that phase.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        VaultOperationRuntime.cancelAll()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
