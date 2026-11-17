@@ -537,7 +537,7 @@ internal class PersistentVaultStore private constructor(
                 return PersistentVaultStore(context, folder, key, 0L, 2L)
             } catch (failure: Throwable) {
                 key.fill(0)
-                deleteDocumentTree(folder)
+                runCatching { deleteDocumentTree(folder) }.onFailure(failure::addSuppressed)
                 throw failure
             } finally {
                 verificationPassword.fill('\u0000')
