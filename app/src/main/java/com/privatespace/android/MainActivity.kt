@@ -442,6 +442,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileOperationTitle = ""
         fileOperationCancel = null
         activeBatchImportControl = null
+        busy = false
         restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
         pendingRecoveryPassword = null
@@ -970,20 +971,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
                 fileOperationCancel = { cancelRequested.set(true) }
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        repository.exportToUri(fileId, destination) { progress ->
-                            if (cancelRequested.get()) throw CancellationException("Export cancelled.")
-                            publishFileOperationProgress(operationToken, progress)
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            repository.exportToUri(fileId, destination) { progress ->
+                                if (cancelRequested.get()) throw CancellationException("Export cancelled.")
+                                publishFileOperationProgress(operationToken, progress)
+                            }
                         }
                     }
+                    result.onSuccess { toast("File exported. The exported copy is outside Private Space protection.") }
+                        .onFailure {
+                            toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed.")
+                        }
+                } finally {
+                    finishFileOperation(operationToken)
+                    busy = false
                 }
-                finishFileOperation(operationToken)
-                busy = false
-                result.onSuccess { toast("File exported. The exported copy is outside Private Space protection.") }
-                    .onFailure {
-                        toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed.")
-                    }
             }
         } else if (destination != null) {
             // CreateDocument creates the destination before returning its URI.
@@ -1024,31 +1028,34 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
                 val operationToken = beginFileOperation(operationTitle)
                 fileOperationCancel = { cancelRequested.set(true) }
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        val folder = DocumentFile.fromTreeUri(context, destination)
-                            ?: error("The selected folder is unavailable.")
-                        val progressCallback: (VaultFileOperationProgress) -> Unit = { progress ->
-                            if (cancelRequested.get()) throw CancellationException("Export cancelled.")
-                            publishFileOperationProgress(operationToken, progress)
-                        }
-                        when {
-                            allTopics -> repository.exportAllToFolder(folder, progressCallback)
-                            selectedFileIds != null -> repository.exportFilesToFolder(selectedFileIds, folder, progressCallback)
-                            else -> repository.exportTopicToFolder(
-                                topicId ?: error("No topic was selected for export."),
-                                folder,
-                                progressCallback
-                            )
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val folder = DocumentFile.fromTreeUri(context, destination)
+                                ?: error("The selected folder is unavailable.")
+                            val progressCallback: (VaultFileOperationProgress) -> Unit = { progress ->
+                                if (cancelRequested.get()) throw CancellationException("Export cancelled.")
+                                publishFileOperationProgress(operationToken, progress)
+                            }
+                            when {
+                                allTopics -> repository.exportAllToFolder(folder, progressCallback)
+                                selectedFileIds != null -> repository.exportFilesToFolder(selectedFileIds, folder, progressCallback)
+                                else -> repository.exportTopicToFolder(
+                                    topicId ?: error("No topic was selected for export."),
+                                    folder,
+                                    progressCallback
+                                )
+                            }
                         }
                     }
-                }
-                finishFileOperation(operationToken)
-                busy = false
-                result.onSuccess {
-                    toast("Export complete. Exported files are outside Private Space protection.")
-                }.onFailure {
-                    toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed. Check the selected folder.")
+                    result.onSuccess {
+                        toast("Export complete. Exported files are outside Private Space protection.")
+                    }.onFailure {
+                        toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed. Check the selected folder.")
+                    }
+                } finally {
+                    finishFileOperation(operationToken)
+                    busy = false
                 }
             }
         } else if (destination != null) {
