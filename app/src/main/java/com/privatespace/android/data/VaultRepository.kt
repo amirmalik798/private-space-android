@@ -533,13 +533,14 @@ class VaultRepository(context: Context) {
             control?.awaitRunning()
             VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
             onProgress(byteCount, reportedSize)
-            control?.beginFinalizing()
-            onFinalizing()
 
-            atomicRename(temporary, target)
-            finalized = true
             val record = synchronized(this) {
-                control?.awaitRunning()
+                // The stop/finalize transition and vault commit share the same
+                // repository lock as recovery-store locking and index mutations.
+                control?.beginFinalizing()
+                onFinalizing()
+                atomicRename(temporary, target)
+                finalized = true
                 val latestIndex = loadIndex()
                 require(latestIndex.topics.any { it.id == topicId }) {
                     "The selected topic was removed before this file could be added."
