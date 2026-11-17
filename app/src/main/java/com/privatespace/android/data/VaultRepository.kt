@@ -997,8 +997,10 @@ class VaultRepository(context: Context) {
         onProgress: (VaultFileOperationProgress) -> Unit = {}
     ) {
         val record = findFile(id)
-        val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
         try {
+            // Calculate inside the rollback scope so even an overflow cannot
+            // leave the document created by the picker behind.
+            val totalWorkBytes = Math.multiplyExact(record.sizeBytes, 2L)
             onProgress(
                 VaultFileOperationProgress(
                     "Decrypting",
@@ -1035,9 +1037,9 @@ class VaultRepository(context: Context) {
                 )
             )
         } catch (failure: Throwable) {
-            // Covers failures from the initial/final progress callback too, not
-            // only failures raised while decrypting or writing the document.
-            runCatching { destination.delete() }.onFailure(failure::addSuppressed)
+            // Includes failures from the initial/final progress callback as well
+            // as decrypt/write failures; verify that SAF actually removed output.
+            rollbackExportDocument(destination, failure)
             throw failure
         }
     }
