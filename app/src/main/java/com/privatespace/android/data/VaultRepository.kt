@@ -459,7 +459,7 @@ class VaultRepository(context: Context) {
 
     @Synchronized
     fun addFile(topicId: String, uri: Uri): VaultFile =
-        addFileWithProgress(topicId, uri, null) { _, _ -> }
+        addFileWithProgress(topicId, uri, null, onProgress = { _, _ -> })
 
     /**
      * Imports into an app-private encrypted temporary file. The file is only
