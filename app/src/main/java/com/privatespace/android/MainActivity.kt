@@ -75,6 +75,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
@@ -83,6 +84,7 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 private val Ink = Color(0xFF080D18)
 private val Panel = Color(0xFF111B2D)
@@ -4386,17 +4388,38 @@ private fun rememberVaultMediaPreview(
     val previewState = remember(file.id, file.mimeType, targetSizePx, repository) {
         mutableStateOf<VaultMediaPreview?>(null)
     }
+    // Busy state should defer a new preview, not cancel one already decoding.
+    // Otherwise ordinary exports/shares repeatedly decrypt and decode the same
+    // visible thumbnails each time the operation flag toggles.
+    val latestEnabled = rememberUpdatedState(enabled)
+    // A decoder may finish after the owning LazyColumn row is cancelled. Keep a
+    // thread-safe handoff so a bitmap returned to a cancelled effect is recycled
+    // instead of becoming an unowned native allocation.
+    val pendingPreview = remember(file.id, file.mimeType, targetSizePx, repository) {
+        AtomicReference<VaultMediaPreview?>(null)
+    }
     val preview = previewState.value
-    LaunchedEffect(file.id, file.mimeType, targetSizePx, repository, enabled) {
-        if (enabled && isPreviewable && previewState.value == null) {
-            previewState.value = try {
-                withContext(Dispatchers.IO) {
-                    repository.loadMediaPreview(file, targetSizePx)
+    LaunchedEffect(file.id, file.mimeType, targetSizePx, repository) {
+        if (isPreviewable) {
+            snapshotFlow { latestEnabled.value }.first { it }
+            if (previewState.value == null) {
+                try {
+                    val loadedPreview = withContext(Dispatchers.IO) {
+                        repository.loadMediaPreview(file, targetSizePx).also(pendingPreview::set)
+                    }
+                    previewState.value = loadedPreview
+                    // Ownership now belongs to previewState/DisposableEffect.
+                    pendingPreview.set(null)
+                } catch (cancelled: CancellationException) {
+                    pendingPreview.getAndSet(null)?.bitmap?.let { bitmap ->
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
+                    throw cancelled
+                } catch (_: Exception) {
+                    pendingPreview.getAndSet(null)?.bitmap?.let { bitmap ->
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                null
             }
         }
     }
