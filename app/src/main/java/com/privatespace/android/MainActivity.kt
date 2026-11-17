@@ -1687,7 +1687,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     } ?: emptyList()
     val topicImageFiles = activeTopic?.let { topic ->
         VaultMediaNavigation.mediaFilesInTopic(filesByTopic[topic.id].orEmpty(), topic.id)
-            .filter { VaultFormatSupport.isImageMimeType(it.mimeType) }
+            .filter {
+                VaultFormatSupport.kindForFile(it.displayName, it.mimeType) ==
+                    VaultFormatSupport.FileKind.PHOTO
+            }
     } ?: emptyList()
     val activeMedia = activeMediaId?.let { mediaId ->
         topicImageFiles.firstOrNull { it.id == mediaId }
@@ -2901,7 +2904,7 @@ private fun TopicCard(
     var menuExpanded by remember(summary.topic.id) { mutableStateOf(false) }
 
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onOpen),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF121F33)),
         shape = RoundedCornerShape(22.dp),
         border = BorderStroke(1.dp, Line.copy(alpha = 0.72f))
@@ -3009,11 +3012,18 @@ private fun TopicScreen(
     var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     var showTopicDetails by remember(topic.id) { mutableStateOf(false) }
     var sortMenuExpanded by remember(topic.id) { mutableStateOf(false) }
-    val selectedFiles = files.filter { it.id in selectedFileIds }
-    val filteredFiles = files.filter(selectedFilter::matches)
-    val visibleFileIds = filteredFiles.map { it.id }.toSet()
-    val allVisibleFilesSelected = visibleFileIds.isNotEmpty() &&
-        visibleFileIds.all { it in selectedFileIds }
+    val selectedFiles = remember(files, selectedFileIds) {
+        files.filter { it.id in selectedFileIds }
+    }
+    val filteredFiles = remember(files, selectedFilter) {
+        files.filter(selectedFilter::matches)
+    }
+    val visibleFileIds = remember(filteredFiles) {
+        filteredFiles.mapTo(mutableSetOf()) { it.id }
+    }
+    val allVisibleFilesSelected = remember(visibleFileIds, selectedFileIds) {
+        visibleFileIds.isNotEmpty() && visibleFileIds.all { it in selectedFileIds }
+    }
 
     LaunchedEffect(files) {
         val currentIds = files.map { it.id }.toSet()
@@ -3171,7 +3181,13 @@ private fun TopicScreen(
                         VaultFormatSupport.TopicFilter.VIDEOS -> Color(0xFFFFB86B)
                     }
                     Surface(
-                        modifier = Modifier.clickable { selectedFilter = filter },
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .selectable(
+                                selected = selected,
+                                role = Role.RadioButton,
+                                onClick = { selectedFilter = filter }
+                            ),
                         color = if (selected) Blue.copy(alpha = 0.22f) else Panel,
                         shape = RoundedCornerShape(50.dp),
                         border = BorderStroke(
@@ -3718,7 +3734,8 @@ private fun VaultMediaViewer(
     onPrevious: () -> Unit,
     onNext: () -> Unit
 ) {
-    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
+    val isPhoto = VaultFormatSupport.kindForFile(file.displayName, file.mimeType) ==
+        VaultFormatSupport.FileKind.PHOTO
     val privateMediaFile = preparedFile?.file?.takeIf { it.isFile }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
@@ -3891,9 +3908,13 @@ private fun rememberVaultMediaPreview(
     val targetSizePx = with(LocalDensity.current) { 128.dp.roundToPx().coerceAtLeast(64) }
     val isPreviewable =
         VaultFormatSupport.kindForFile(file.displayName, file.mimeType) != VaultFormatSupport.FileKind.DOCUMENT
-    val preview by produceState<VaultMediaPreview?>(null, file.id, file.mimeType, targetSizePx, enabled) {
-        value = if (enabled && isPreviewable) {
-            try {
+    val previewState = remember(file.id, file.mimeType, targetSizePx, repository) {
+        mutableStateOf<VaultMediaPreview?>(null)
+    }
+    val preview = previewState.value
+    LaunchedEffect(file.id, file.mimeType, targetSizePx, repository, enabled) {
+        if (enabled && isPreviewable && previewState.value == null) {
+            previewState.value = try {
                 withContext(Dispatchers.IO) {
                     repository.loadMediaPreview(file.id, targetSizePx)
                 }
@@ -3902,8 +3923,6 @@ private fun rememberVaultMediaPreview(
             } catch (_: Exception) {
                 null
             }
-        } else {
-            null
         }
     }
     DisposableEffect(preview?.bitmap) {
@@ -3999,7 +4018,10 @@ private fun VaultFileRow(
         else -> Icons.Default.InsertDriveFile
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(enabled = !busy) {
+        modifier = Modifier.fillMaxWidth().clickable(
+            enabled = !busy,
+            role = if (selectionMode) Role.Checkbox else Role.Button
+        ) {
             if (selectionMode) onToggleSelection() else onOpen()
         },
         shape = RoundedCornerShape(17.dp),
@@ -4175,8 +4197,9 @@ private fun TrashFileRow(
     onDeletePermanently: () -> Unit
 ) {
     val file = entry.file
-    val isPhoto = VaultFormatSupport.isImageMimeType(file.mimeType)
-    val isVideo = VaultFormatSupport.isVideoMimeType(file.mimeType)
+    val fileKind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
+    val isPhoto = fileKind == VaultFormatSupport.FileKind.PHOTO
+    val isVideo = fileKind == VaultFormatSupport.FileKind.VIDEO
     val mediaPreview = rememberVaultMediaPreview(file, repository, enabled = enabled)
     val extension = file.displayName.substringAfterLast('.', "").uppercase().ifBlank { "FILE" }
     Card(

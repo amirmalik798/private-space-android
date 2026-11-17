@@ -59,6 +59,19 @@ class VaultMediaNavigationTest {
     }
 
     @Test
+    fun mediaNavigationUsesKnownFileExtensionWhenProviderMimeTypeIsGeneric() {
+        val files = listOf(
+            file("photo", "topic-a", "application/octet-stream").copy(displayName = "photo.jpg"),
+            file("video", "topic-a", "application/octet-stream").copy(displayName = "video.mp4"),
+            file("document", "topic-a", "video/mp4").copy(displayName = "report.pdf")
+        )
+
+        val media = VaultMediaNavigation.mediaFilesInTopic(files, "topic-a")
+
+        assertEquals(listOf("photo", "video"), media.map { it.id })
+    }
+
+    @Test
     fun documentsAndOtherTopicsAreExcluded() {
         val files = listOf(
             file("pdf", "topic-a", "application/pdf"),

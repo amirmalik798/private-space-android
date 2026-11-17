@@ -10,8 +10,8 @@ object VaultMediaNavigation {
     fun mediaFilesInTopic(files: List<VaultFile>, topicId: String): List<VaultFile> =
         files.filter { file ->
             file.topicId == topicId &&
-                (VaultFormatSupport.isImageMimeType(file.mimeType) ||
-                    VaultFormatSupport.isVideoMimeType(file.mimeType))
+                VaultFormatSupport.kindForFile(file.displayName, file.mimeType) !=
+                    VaultFormatSupport.FileKind.DOCUMENT
         }
 
     /**
