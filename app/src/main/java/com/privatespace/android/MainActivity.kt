@@ -1580,8 +1580,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             recoveryFolderSelected = recoveryTreeUri != null,
             restoreProgress = restoreProgress,
             recoveryAvailable = setup || recoveryTreeUri != null,
-            onPassword = { password = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
-            onConfirmation = { confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+            onPassword = {
+                password = it.take(PasswordManager.MAX_PASSWORD_LENGTH)
+                if (authError.isNotBlank()) authError = ""
+            },
+            onConfirmation = {
+                confirmation = it.take(PasswordManager.MAX_PASSWORD_LENGTH)
+                if (authError.isNotBlank()) authError = ""
+            },
             onRestore = {
                 pendingRecoveryPassword?.fill('\u0000')
                 pendingRecoveryPassword = null
@@ -2525,6 +2531,13 @@ private fun AuthScreen(
     val locked = lockUntil > now
     val secondsRemaining = ((lockUntil - now).coerceAtLeast(0L) + 999L) / 1_000L
 
+    LaunchedEffect(busy) {
+        if (busy) {
+            passwordVisible = false
+            confirmationVisible = false
+        }
+    }
+
     BoxWithConstraints(
         Modifier.fillMaxSize()
             .background(Brush.verticalGradient(listOf(Color(0xFF101D32), Ink, Color(0xFF070B13))))
@@ -2572,12 +2585,16 @@ private fun AuthScreen(
                         value = password,
                         onValueChange = onPassword,
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy,
                         label = { Text(if (setup) "Create password" else "Password") },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
-                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            IconButton(
+                                onClick = { passwordVisible = !passwordVisible },
+                                enabled = !busy
+                            ) {
                                 Icon(
                                     if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                     contentDescription = if (passwordVisible) "Hide password" else "Show password",
@@ -2592,12 +2609,16 @@ private fun AuthScreen(
                             value = confirmation,
                             onValueChange = onConfirmation,
                             modifier = Modifier.fillMaxWidth(),
+                            enabled = !busy,
                             label = { Text("Confirm password") },
                             singleLine = true,
                             shape = RoundedCornerShape(14.dp),
                             visualTransformation = if (confirmationVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             trailingIcon = {
-                                IconButton(onClick = { confirmationVisible = !confirmationVisible }) {
+                                IconButton(
+                                    onClick = { confirmationVisible = !confirmationVisible },
+                                    enabled = !busy
+                                ) {
                                     Icon(
                                         if (confirmationVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                         contentDescription = if (confirmationVisible) "Hide confirmation" else "Show confirmation",
@@ -2612,6 +2633,13 @@ private fun AuthScreen(
                             color = Muted,
                             fontSize = 12.sp
                         )
+                        if (confirmation.isNotEmpty() && confirmation != password) {
+                            Text(
+                                "Passwords do not match.",
+                                color = Red,
+                                fontSize = 12.sp
+                            )
+                        }
                     }
                     if (error.isNotBlank()) {
                         Surface(color = Red.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
@@ -2644,7 +2672,10 @@ private fun AuthScreen(
                     Button(
                         onClick = onSubmit,
                         enabled = !busy && !locked && password.isNotEmpty() &&
-                            (!setup || confirmation.isNotEmpty()),
+                            (!setup || (
+                                password.length >= PasswordManager.MIN_PASSWORD_LENGTH &&
+                                    password == confirmation
+                            )),
                         modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(15.dp)
                     ) {
