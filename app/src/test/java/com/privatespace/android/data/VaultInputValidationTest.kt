@@ -43,4 +43,16 @@ class VaultInputValidationTest {
             VaultInputValidation.mimeType("text/plain\r\nbad", "application/octet-stream")
         )
     }
+
+    @Test
+    fun mimeTypeFallsBackWhenProviderDoesNotSupplyAMimeType() {
+        assertEquals(
+            "application/octet-stream",
+            VaultInputValidation.mimeType(null, "application/octet-stream")
+        )
+        assertEquals(
+            "application/pdf",
+            VaultInputValidation.mimeType(null, "application/pdf")
+        )
+    }
 }

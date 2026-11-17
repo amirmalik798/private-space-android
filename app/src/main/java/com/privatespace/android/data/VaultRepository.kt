@@ -720,8 +720,8 @@ class VaultRepository(context: Context) {
     ): PreparedVaultFile {
         val record = findFile(id)
         require(
-            VaultFormatSupport.isImageMimeType(record.mimeType) ||
-                VaultFormatSupport.isVideoMimeType(record.mimeType)
+            VaultFormatSupport.kindForFile(record.displayName, record.mimeType) !=
+                VaultFormatSupport.FileKind.DOCUMENT
         ) { "Only photos and videos can be opened in the private media viewer." }
 
         val session = createPrivateDirectory(staging, "viewer-${UUID.randomUUID()}")
@@ -2422,7 +2422,11 @@ class VaultRepository(context: Context) {
         val fallback = MimeTypeMap.getSingleton()
             .getMimeTypeFromExtension(extension)
             ?: "application/octet-stream"
-        return VaultInputValidation.mimeType(resolver.getType(uri), fallback)
+        // Some third-party document providers throw while resolving MIME metadata
+        // even though their content stream is readable. MIME is only a viewer hint;
+        // a provider failure should not prevent an otherwise valid encrypted import.
+        val providerMimeType = runCatching { resolver.getType(uri) }.getOrNull()
+        return VaultInputValidation.mimeType(providerMimeType, fallback)
     }
 
     private fun ensurePrivateDirectory(directory: File) {
