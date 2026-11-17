@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -714,21 +715,18 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             toast("Another file operation is already running.")
             return
         }
-        val names = uniqueUris.mapIndexed { index, uri ->
-            DocumentFile.fromSingleUri(context, uri)?.name?.takeIf { it.isNotBlank() }
-                ?: "Selected file ${index + 1}"
-        }
-        val sizes = uniqueUris.map { uri ->
-            runCatching { DocumentFile.fromSingleUri(context, uri)?.length() }
-                .getOrNull()?.takeIf { it > 0L }
-        }
-        val knownTotal = sizes.takeIf { values -> values.all { it != null } }
-            ?.fold(0L) { total, size -> total + (size ?: 0L) }
-        val token = beginFileOperation(if (uniqueUris.size == 1) "Adding ${names.first()} to topic" else "Adding ${uniqueUris.size} files to topic")
+        // Content-provider metadata calls may block on cloud-backed, removable,
+        // or otherwise slow document providers. Start the operation immediately,
+        // then perform the provider queries on IO rather than freezing the UI.
+        val token = beginFileOperation(
+            if (uniqueUris.size == 1) "Preparing selected file" else "Preparing ${uniqueUris.size} selected files"
+        )
         fileOperationProgress = VaultFileOperationProgress(
-            phase = "Preparing files", completedBytes = 0L, totalBytes = knownTotal ?: 0L,
-            totalFiles = uniqueUris.size, currentFileName = names.firstOrNull().orEmpty(),
-            currentFileTotalBytes = sizes.firstOrNull() ?: 0L
+            phase = "Preparing files",
+            completedBytes = 0L,
+            totalBytes = 0L,
+            totalFiles = uniqueUris.size,
+            currentFileName = "Preparing selected files"
         )
         busy = true
         var activeControl: VaultImportControl? = null
@@ -738,6 +736,65 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             var completedFiles = 0
             var cancelled = false
             try {
+                val selectedMetadata = withContext(Dispatchers.IO) {
+                    uniqueUris.mapIndexed { index, uri ->
+                        val values = runCatching {
+                            context.contentResolver.query(
+                                uri,
+                                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                                null,
+                                null,
+                                null
+                            )?.use { cursor ->
+                                if (!cursor.moveToFirst()) {
+                                    null
+                                } else {
+                                    val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                    val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+                                    val name = if (nameColumn >= 0) {
+                                        runCatching { cursor.getString(nameColumn) }.getOrNull()
+                                    } else {
+                                        null
+                                    }
+                                    val size = if (sizeColumn >= 0) {
+                                        runCatching { cursor.getLong(sizeColumn) }.getOrNull()
+                                    } else {
+                                        null
+                                    }
+                                    name to size
+                                }
+                            }
+                        }.getOrNull()
+                        val name = values?.first?.takeIf { it.isNotBlank() }
+                            ?: "Selected file ${index + 1}"
+                        val size = values?.second?.takeIf { it > 0L }
+                        name to size
+                    }
+                }
+                val names = selectedMetadata.map { it.first }
+                val sizes = selectedMetadata.map { it.second }
+                val knownTotal = sizes.takeIf { values -> values.all { it != null } }
+                    ?.let { values ->
+                        runCatching {
+                            values.fold(0L) { total, size ->
+                                Math.addExact(total, size ?: 0L)
+                            }
+                        }.getOrNull()
+                    }
+                fileOperationTitle = if (uniqueUris.size == 1) {
+                    "Adding ${names.first()} to topic"
+                } else {
+                    "Adding ${uniqueUris.size} files to topic"
+                }
+                fileOperationProgress = VaultFileOperationProgress(
+                    phase = "Preparing files",
+                    completedBytes = 0L,
+                    totalBytes = knownTotal ?: 0L,
+                    totalFiles = uniqueUris.size,
+                    currentFileName = names.firstOrNull().orEmpty(),
+                    currentFileTotalBytes = sizes.firstOrNull() ?: 0L
+                )
+
                 uniqueUris.forEachIndexed { index, uri ->
                     if (!unlocked || cancelRequested.get()) {
                         throw CancellationException("Import cancelled before the next file.")
