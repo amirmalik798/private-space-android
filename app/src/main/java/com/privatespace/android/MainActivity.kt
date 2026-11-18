@@ -2844,7 +2844,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fileToDelete?.let { file ->
         ConfirmDialog(
-            title = "Move file to Trash?",
+            title = "Move file to the Recycle Bin?",
             message = "“${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
             confirmLabel = "Move to Recycle Bin",
             isIrreversible = false,
