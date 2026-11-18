@@ -2041,7 +2041,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     restoreProgress = null
                 }
             }
-            }
         }
         return
     }
