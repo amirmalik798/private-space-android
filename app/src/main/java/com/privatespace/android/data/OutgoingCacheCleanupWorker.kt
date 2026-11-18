@@ -75,7 +75,7 @@ internal class OutgoingCacheCleanupWorker(
             // records or restore journals here; startup recovery owns those.
             val vaultRoot = File(applicationContext.filesDir, "vault")
             val importTemps = if (!vaultRoot.exists()) {
-                emptyArray()
+                emptyList()
             } else {
                 vaultRoot.listFiles()
                     ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
