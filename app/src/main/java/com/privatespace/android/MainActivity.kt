@@ -2097,6 +2097,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     BackHandler(enabled = activeMediaId != null) {
         closeMediaViewer()
     }
+    BackHandler(enabled = showTrash) {
+        if (!busy) showTrash = false
+    }
     BackHandler(enabled = activeTopicId != null && activeMediaId == null) {
         activeTopicId = null
     }
@@ -2125,6 +2128,31 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 },
             )
         }
+    } else if (showTrash) {
+        TrashScreen(
+            entries = trashEntries,
+            repository = repository,
+            trashStorageBytes = storageUsage.trashBytes,
+            busy = busy,
+            onBack = { if (!busy) showTrash = false },
+            onLock = ::lockVault,
+            onRestore = { entry ->
+                scope.launch {
+                    busy = true
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { repository.restoreTrashFile(entry.file.id) }
+                    }
+                    busy = false
+                    result.onSuccess {
+                        refreshVault()
+                        toast("Restored to “${entry.originalTopic.name}”.")
+                    }.onFailure {
+                        toast(it.message ?: "Could not restore this file.")
+                    }
+                }
+            },
+            onDeletePermanently = { trashEntryToPermanentlyDelete = it }
+        )
     } else if (activeTopic != null) {
         TopicScreen(
             topic = activeTopic,
@@ -2438,31 +2466,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 launchAllExport()
             },
             onDismiss = { showVaultDetails = false }
-        )
-    }
-
-    if (showTrash) {
-        TrashDialog(
-            entries = trashEntries,
-            repository = repository,
-            busy = busy,
-            onDismiss = { showTrash = false },
-            onRestore = { entry ->
-                scope.launch {
-                    busy = true
-                    val result = withContext(Dispatchers.IO) {
-                        runCatching { repository.restoreTrashFile(entry.file.id) }
-                    }
-                    busy = false
-                    result.onSuccess {
-                        refreshVault()
-                        toast("Restored to “${entry.originalTopic.name}”.")
-                    }.onFailure {
-                        toast(it.message ?: "Could not restore this file.")
-                    }
-                }
-            },
-            onDeletePermanently = { trashEntryToPermanentlyDelete = it }
         )
     }
 
@@ -5009,11 +5012,13 @@ private fun VaultFileRow(
 
 
 @Composable
-private fun TrashDialog(
+private fun TrashScreen(
     entries: List<VaultTrashEntry>,
     repository: VaultRepository,
+    trashStorageBytes: Long,
     busy: Boolean,
-    onDismiss: () -> Unit,
+    onBack: () -> Unit,
+    onLock: () -> Unit,
     onRestore: (VaultTrashEntry) -> Unit,
     onDeletePermanently: (VaultTrashEntry) -> Unit
 ) {
@@ -5031,121 +5036,250 @@ private fun TrashDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = { if (!busy) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF101C30), Ink, Color(0xFF070B13))))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding()
     ) {
         Surface(
-            modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing).fillMaxWidth().fillMaxHeight(0.94f).padding(horizontal = 10.dp),
-            shape = RoundedCornerShape(27.dp),
-            color = Panel,
-            border = BorderStroke(1.dp, Line)
+            modifier = Modifier.fillMaxWidth(),
+            color = Ink.copy(alpha = 0.96f),
+            tonalElevation = 0.dp
         ) {
-            Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(start = 8.dp, end = 12.dp, top = 7.dp, bottom = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack, enabled = !busy) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back to vault", tint = White)
+                    }
                     Surface(
-                        modifier = Modifier.size(48.dp),
-                        shape = RoundedCornerShape(15.dp),
-                        color = Blue.copy(alpha = 0.15f)
+                        modifier = Modifier.size(43.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Blue.copy(alpha = 0.18f),
+                        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = Cyan, modifier = Modifier.size(25.dp))
+                            Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = Cyan, modifier = Modifier.size(23.dp))
                         }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("Recycle Bin", color = White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
-                        Text(
-                            entries.size.toString() + if (entries.size == 1) " deleted file" else " deleted files",
-                            color = Muted,
-                            fontSize = 12.sp
-                        )
-                    }
-                    IconButton(onClick = onDismiss, enabled = !busy) {
-                        Icon(Icons.Default.Close, contentDescription = "Close Recycle Bin", tint = Muted)
-                    }
-                }
-                Spacer(Modifier.height(14.dp))
-                HorizontalDivider(color = Line)
-                if (busy) {
+                    Spacer(Modifier.width(10.dp))
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Cyan,
-                            trackColor = Panel2
+                        Text(
+                            "Recycle Bin",
+                            color = White,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
                         )
-                        Text("Updating Recycle Bin…", color = Muted, fontSize = 11.sp)
+                        Text(
+                            "Review and recover deleted files",
+                            color = Muted,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                }
-                if (entries.isNotEmpty()) {
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = Panel2,
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                        modifier = Modifier.size(42.dp),
+                        shape = RoundedCornerShape(13.dp),
+                        color = Blue.copy(alpha = 0.24f),
+                        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Info,
-                                contentDescription = null,
-                                tint = Cyan,
-                                modifier = Modifier.padding(top = 1.dp).size(18.dp)
-                            )
-                            Text(
-                                "Deleted files remain encrypted and keep using vault storage until permanently removed. Delete forever removes only the vault copy; original files and copies shared or exported outside Private Space are unaffected.",
-                                color = White,
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp
-                            )
+                        IconButton(onClick = onLock, modifier = Modifier.fillMaxSize()) {
+                            Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
                         }
                     }
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it.take(100) },
+                }
+                HorizontalDivider(color = Line.copy(alpha = 0.65f), thickness = 0.7.dp)
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Panel,
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, Line.copy(alpha = 0.9f))
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(15.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = !busy,
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        placeholder = { Text("Search by file name, topic or type", color = Muted) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
-                        trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(
-                                    onClick = { query = "" },
-                                    enabled = !busy
-                                ) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear Recycle Bin search", tint = Muted)
-                                }
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                "DELETED FILES",
+                                color = Muted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Text(
+                                    entries.size.toString(),
+                                    color = White,
+                                    fontSize = 30.sp,
+                                    lineHeight = 34.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    if (entries.size == 1) "item" else "items",
+                                    color = Muted,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(bottom = 4.dp)
+                                )
                             }
                         }
-                    )
-                    Text(
-                        if (query.isBlank()) "Showing all " + entries.size + " deleted files"
-                        else filteredEntries.size.toString() + " of " + entries.size + " deleted files match",
-                        color = Muted,
-                        fontSize = 11.sp
-                    )
-                }
-                if (entries.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        Surface(
+                            color = Cyan.copy(alpha = 0.10f),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.22f))
                         ) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Muted, modifier = Modifier.size(42.dp))
-                            Text("Recycle Bin is empty", color = White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                            Text("Files you delete will appear here.", color = Muted, fontSize = 12.sp)
+                            Column(
+                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan, modifier = Modifier.size(14.dp))
+                                    Text("STORAGE HELD", color = Cyan, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                                }
+                                Text(
+                                    formatBytes(trashStorageBytes),
+                                    color = White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
-                } else if (filteredEntries.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    HorizontalDivider(color = Line.copy(alpha = 0.7f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        Icon(Icons.Default.Shield, contentDescription = null, tint = Green, modifier = Modifier.padding(top = 1.dp).size(18.dp))
+                        Text(
+                            "Deleted files remain encrypted and continue using vault storage until permanently removed. Restore returns a file to its original topic.",
+                            color = Muted,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Panel2,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(11.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = Gold, modifier = Modifier.padding(top = 1.dp).size(17.dp))
+                    Text(
+                        "Delete forever removes only the Private Space copy. Original files and copies shared or exported earlier are unaffected. It is not a forensic secure-erase guarantee.",
+                        color = White,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+
+            if (entries.isNotEmpty()) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it.take(100) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text("Search by file name, topic or type", color = Muted) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }, enabled = !busy) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear Recycle Bin search", tint = Muted)
+                            }
+                        }
+                    }
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (query.isBlank()) {
+                            "Showing all " + entries.size + " deleted files"
+                        } else {
+                            filteredEntries.size.toString() + " of " + entries.size + " deleted files match"
+                        },
+                        color = Muted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (busy) {
+                        CircularProgressIndicator(modifier = Modifier.size(17.dp), strokeWidth = 2.dp, color = Cyan)
+                    }
+                }
+            } else if (busy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Cyan, trackColor = Panel2)
+            }
+
+            when {
+                entries.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(9.dp),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(70.dp),
+                                shape = RoundedCornerShape(22.dp),
+                                color = Panel2
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Muted, modifier = Modifier.size(34.dp))
+                                }
+                            }
+                            Text("Your Recycle Bin is clear", color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text(
+                                "Files you move to Trash will appear here. You can restore them or permanently remove the vault copy.",
+                                color = Muted,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+                filteredEntries.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -5163,13 +5297,14 @@ private fun TrashDialog(
                             }
                         }
                     }
-                } else {
+                }
+                else -> {
                     LazyColumn(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(9.dp)
+                        contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(filteredEntries, key = { it.file.id }) { entry ->
+                        items(filteredEntries, key = { it.file.id }, contentType = { "recycle-bin-file" }) { entry ->
                             TrashFileRow(
                                 entry = entry,
                                 repository = repository,
@@ -5180,8 +5315,6 @@ private fun TrashDialog(
                         }
                     }
                 }
-                HorizontalDivider(color = Line)
-                Spacer(Modifier.height(8.dp))
             }
         }
     }
