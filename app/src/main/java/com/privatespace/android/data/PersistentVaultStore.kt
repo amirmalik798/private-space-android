@@ -170,9 +170,13 @@ internal class PersistentVaultStore private constructor(
         // A process may have stopped while writing the previous generation.
         // Skip any partial filename rather than getting stuck reusing it.
         val previousGoodGeneration = indexGeneration
-        val highestExisting = directory.listFiles().mapNotNull { document ->
-            document.name?.let(::parseIndexGeneration)
-        }.maxOrNull() ?: 0L
+        // Reuse this SAF directory snapshot for generation selection and pruning.
+        // Recovery folders contain one encrypted payload per saved item, so a
+        // second full enumeration for the same index commit is avoidable work.
+        val existingIndexDocuments = directory.listFiles().mapNotNull { document ->
+            document.name?.let(::parseIndexGeneration)?.let { it to document }
+        }
+        val highestExisting = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
         val generation = Math.addExact(maxOf(indexGeneration, highestExisting), 1L)
         val name = indexName(generation)
         check(findChild(name) == null) { "A recovery index generation already exists." }
@@ -245,7 +249,10 @@ internal class PersistentVaultStore private constructor(
                     encryptedDigest = PersistentVaultCrypto.sha256(encryptedBytes),
                     generation = generation
                 )
-                pruneIndexGenerations(setOf(generation, previousGoodGeneration))
+                pruneIndexGenerations(
+                    existingIndexDocuments + (generation to document),
+                    setOf(generation, previousGoodGeneration)
+                )
                 return snapshot
             } finally {
                 encryptedBytes.fill(0)
@@ -461,12 +468,13 @@ internal class PersistentVaultStore private constructor(
     private fun findChild(name: String): DocumentFile? =
         directory.findFile(name)?.takeIf { it.exists() }
 
-    private fun pruneIndexGenerations(keepGenerations: Set<Long>) {
-        directory.listFiles()
-            .mapNotNull { document ->
-                val name = document.name ?: return@mapNotNull null
-                parseIndexGeneration(name)?.let { it to document }
-            }
+    private fun pruneIndexGenerations(
+        existingIndexDocuments: List<Pair<Long, DocumentFile>>,
+        keepGenerations: Set<Long>
+    ) {
+        // The caller passes the already-enumerated directory snapshot. Re-querying
+        // it here would scan every encrypted payload a second time per index save.
+        existingIndexDocuments
             .filterNot { (generation, _) -> generation in keepGenerations }
             .forEach { (_, document) -> runCatching { document.delete() } }
     }
@@ -571,14 +579,19 @@ internal class PersistentVaultStore private constructor(
                 ?: throw IOException("The selected recovery folder is unavailable.")
             val folder = tree.findFile(FOLDER_NAME)
                 ?: throw IOException("No Private Space recovery vault exists in this folder.")
-            val hasCommittedIndex = folder.listFiles().any { document ->
-                document.name?.let(::parseIndexGeneration) != null
+            // Use one SAF directory snapshot for index detection, key lookup,
+            // and generation recovery instead of enumerating every payload file
+            // separately for each check.
+            val folderContents = folder.listFiles()
+            val existingIndexDocuments = folderContents.mapNotNull { document ->
+                document.name?.let(::parseIndexGeneration)?.let { it to document }
             }
+            val hasCommittedIndex = existingIndexDocuments.isNotEmpty()
             check(folder.isDirectory && (folder.findFile(READY_MARKER)?.exists() == true || hasCommittedIndex)) {
                 "The selected folder does not contain a completed or recoverable Private Space vault."
             }
 
-            val candidates = folder.listFiles()
+            val candidates = folderContents
                 .mapNotNull { document ->
                     val name = document.name ?: return@mapNotNull null
                     parseKeyGeneration(name)?.let { it to document }
@@ -611,9 +624,7 @@ internal class PersistentVaultStore private constructor(
                 "Incorrect vault password or damaged recovery-key envelope.",
                 lastFailure
             )
-            val indexGeneration = folder.listFiles().mapNotNull { document ->
-                document.name?.let(::parseIndexGeneration)
-            }.maxOrNull() ?: 0L
+            val indexGeneration = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
             return PersistentVaultStore(
                 context.applicationContext,
                 folder,

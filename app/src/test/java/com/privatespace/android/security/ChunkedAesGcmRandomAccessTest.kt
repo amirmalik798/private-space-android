@@ -38,6 +38,34 @@ class ChunkedAesGcmRandomAccessTest {
     }
 
     @Test
+    fun readsFramesInNonSequentialOrderWithReusedCipher() {
+        val clear = ByteArray(ChunkedAesGcm.CHUNK_BYTES * 3 + 37) { (it * 19).toByte() }
+        withEncryptedFile(clear) { file ->
+            val reader = VaultCrypto.openChunkedRandomAccessReaderForTest(
+                RandomAccessFile(file, "r"), clear.size.toLong(), aad, key
+            )
+            assertNotNull(reader)
+            reader!!.use {
+                val ranges = listOf(
+                    (ChunkedAesGcm.CHUNK_BYTES * 2 + 7).toLong() to 121,
+                    19L to 211,
+                    (ChunkedAesGcm.CHUNK_BYTES + 33).toLong() to 177,
+                    (ChunkedAesGcm.CHUNK_BYTES * 2 + 7).toLong() to 121,
+                    (ChunkedAesGcm.CHUNK_BYTES * 3 + 3).toLong() to 29
+                )
+                ranges.forEach { (offset, length) ->
+                    val output = ByteArray(length)
+                    assertEquals(length, it.readAt(offset, output, 0, length))
+                    assertArrayEquals(
+                        clear.copyOfRange(offset.toInt(), offset.toInt() + length),
+                        output
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun rejectsTamperedRequestedFrame() {
         val clear = ByteArray(ChunkedAesGcm.CHUNK_BYTES + 100) { it.toByte() }
         withEncryptedFile(clear) { file ->

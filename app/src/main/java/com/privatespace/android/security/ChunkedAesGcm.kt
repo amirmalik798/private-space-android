@@ -252,8 +252,17 @@ internal object ChunkedAesGcm {
         private val aadBytes = aad.copyOf()
         private val magicBytes = magic.copyOf()
         private val frameCount = if (plainBytes == 0L) 0L else 1L + (plainBytes - 1L) / CHUNK_BYTES
+        // Media decoders can request many 64 KiB ranges while seeking. Reuse the
+        // provider Cipher and scratch buffers instead of resolving a Cipher and
+        // allocating two frame-sized arrays for every cache miss.
+        private val frameCipher = Cipher.getInstance("AES/GCM/NoPadding")
+        private val frameHeaderBuffer = ByteArray(LENGTH_BYTES)
+        private val frameNonce = ByteArray(NONCE_BYTES)
+        private val encryptedFrameBuffer = ByteArray(CHUNK_BYTES + TAG_BYTES)
+        private val frameAadBuffer = ByteArray(aadBytes.size + 28)
+        private val cachedFrame = ByteArray(CHUNK_BYTES)
+        private var cachedFrameLength = 0
         private var cachedFrameIndex = -1L
-        private var cachedFrame = ByteArray(0)
         private var closed = false
 
         init {
@@ -291,7 +300,7 @@ internal object ChunkedAesGcm {
                 val frameIndex = sourcePosition / CHUNK_BYTES
                 val frameOffset = (sourcePosition % CHUNK_BYTES).toInt()
                 val frame = loadFrame(frameIndex)
-                val count = minOf(remaining, frame.size - frameOffset)
+                val count = minOf(remaining, cachedFrameLength - frameOffset)
                 if (count <= 0) throw IOException("Encrypted media frame is incomplete.")
                 frame.copyInto(target, destinationOffset, frameOffset, frameOffset + count)
                 sourcePosition += count
@@ -304,46 +313,52 @@ internal object ChunkedAesGcm {
         private fun loadFrame(index: Long): ByteArray {
             if (cachedFrameIndex == index) return cachedFrame
             if (index !in 0 until frameCount) throw IOException("Encrypted media frame is outside the file.")
-            cachedFrame.fill(0)
-            val expectedLength = minOf(CHUNK_BYTES.toLong(), plainBytes - index * CHUNK_BYTES).toInt()
-            val containerOffset = 8L + index * (CHUNK_BYTES.toLong() + LENGTH_BYTES + NONCE_BYTES + TAG_BYTES)
-            file.seek(containerOffset)
-            val lengthBytes = ByteArray(LENGTH_BYTES)
-            file.readFully(lengthBytes)
-            val actualLength = ((lengthBytes[0].toInt() and 0xff) shl 24) or
-                ((lengthBytes[1].toInt() and 0xff) shl 16) or
-                ((lengthBytes[2].toInt() and 0xff) shl 8) or
-                (lengthBytes[3].toInt() and 0xff)
-            lengthBytes.fill(0)
-            if (actualLength != expectedLength) throw IOException("Encrypted media frame length is invalid.")
 
-            val nonce = ByteArray(NONCE_BYTES)
-            val encrypted = ByteArray(expectedLength + TAG_BYTES)
-            val clear = ByteArray(expectedLength)
-            val frameAad = ByteArray(aadBytes.size + 28)
+            // Invalidate and wipe the previously cached plaintext before reading
+            // another frame. readAt() is synchronized, so this single cache and
+            // its scratch buffers are never used concurrently.
+            cachedFrame.fill(0, 0, cachedFrameLength)
+            cachedFrameLength = 0
+            cachedFrameIndex = -1L
+
+            val expectedLength = minOf(CHUNK_BYTES.toLong(), plainBytes - index * CHUNK_BYTES).toInt()
+            val encryptedLength = expectedLength + TAG_BYTES
+            val containerOffset = 8L + index * (CHUNK_BYTES.toLong() + LENGTH_BYTES + NONCE_BYTES + TAG_BYTES)
             try {
-                file.readFully(nonce)
-                file.readFully(encrypted)
+                file.seek(containerOffset)
+                file.readFully(frameHeaderBuffer)
+                val actualLength = ((frameHeaderBuffer[0].toInt() and 0xff) shl 24) or
+                    ((frameHeaderBuffer[1].toInt() and 0xff) shl 16) or
+                    ((frameHeaderBuffer[2].toInt() and 0xff) shl 8) or
+                    (frameHeaderBuffer[3].toInt() and 0xff)
+                if (actualLength != expectedLength) throw IOException("Encrypted media frame length is invalid.")
+
+                file.readFully(frameNonce)
+                file.readFully(encryptedFrameBuffer, 0, encryptedLength)
                 val cumulative = Math.addExact(Math.multiplyExact(index, CHUNK_BYTES.toLong()), expectedLength.toLong())
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-                updateFrameAad(cipher, aadBytes, magicBytes, index, expectedLength, cumulative, frameAad)
+                frameCipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, frameNonce))
+                updateFrameAad(frameCipher, aadBytes, magicBytes, index, expectedLength, cumulative, frameAadBuffer)
                 val clearLength = try {
-                    cipher.doFinal(encrypted, 0, encrypted.size, clear, 0)
+                    frameCipher.doFinal(encryptedFrameBuffer, 0, encryptedLength, cachedFrame, 0)
                 } catch (failure: Exception) {
                     throw IOException("Vault integrity check failed while reading the video thumbnail.", failure)
                 }
                 if (clearLength != expectedLength) throw IOException("Encrypted media frame length does not match.")
-                cachedFrame = clear
+                cachedFrameLength = clearLength
                 cachedFrameIndex = index
                 return cachedFrame
             } catch (failure: Throwable) {
-                clear.fill(0)
+                // Also wipe any output a provider may have written before reporting
+                // an authentication or I/O failure.
+                cachedFrame.fill(0, 0, expectedLength)
+                cachedFrameLength = 0
+                cachedFrameIndex = -1L
                 throw failure
             } finally {
-                nonce.fill(0)
-                encrypted.fill(0)
-                frameAad.fill(0)
+                frameHeaderBuffer.fill(0)
+                frameNonce.fill(0)
+                encryptedFrameBuffer.fill(0, 0, encryptedLength)
+                frameAadBuffer.fill(0)
             }
         }
 
@@ -389,7 +404,12 @@ internal object ChunkedAesGcm {
             if (closed) return
             closed = true
             cachedFrame.fill(0)
-            cachedFrame = ByteArray(0)
+            cachedFrameLength = 0
+            cachedFrameIndex = -1L
+            frameHeaderBuffer.fill(0)
+            frameNonce.fill(0)
+            encryptedFrameBuffer.fill(0)
+            frameAadBuffer.fill(0)
             aadBytes.fill(0)
             magicBytes.fill(0)
             runCatching { file.close() }
