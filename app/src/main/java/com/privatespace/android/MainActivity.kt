@@ -287,7 +287,7 @@ private val privateSpaceHelpArticles = listOf(
     HelpArticle(
         id = "open-share-export",
         title = "Understand Open, Share and Export",
-        body = "Open prepares a temporary decrypted copy for the viewer app you choose. Share and Export ask for confirmation first. Any copy received or saved by another app or destination is outside Private Space protection, and another app may retain it.",
+        body = "Open prepares a temporary decrypted copy for the viewer app you choose. Open, Share and Export each require confirmation before content is released outside Private Space. Any copy received or saved by another app or destination is outside vault protection, and the other app may retain or copy it.",
         keywords = "view open share send export download plaintext external app privacy"
     ),
     HelpArticle(
