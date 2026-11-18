@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -22,8 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronDown
-import androidx.compose.material.icons.filled.ChevronUp
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.HelpOutline
@@ -473,7 +474,7 @@ internal fun HelpScreen(onBack: () -> Unit) {
                                             )
                                             Spacer(Modifier.width(8.dp))
                                             Icon(
-                                                if (expanded) Icons.Default.ChevronUp else Icons.Default.ChevronDown,
+                                                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                                 contentDescription = if (expanded) "Collapse answer" else "Expand answer",
                                                 tint = if (expanded) category.accent else HelpMuted,
                                                 modifier = Modifier.size(19.dp)
