@@ -19,7 +19,7 @@ class VaultExportCopyTest {
             ByteArrayInputStream(source),
             destination,
             source.size.toLong(),
-            progress::add
+            { progress.add(it) }
         )
 
         assertArrayEquals(source, destination.toByteArray())
