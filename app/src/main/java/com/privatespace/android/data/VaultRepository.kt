@@ -1815,13 +1815,14 @@ class VaultRepository(context: Context) {
     @Synchronized
     private fun saveIndex(index: VaultIndex, restoreTransactionId: String? = null) {
         validateIndexForSave(index)
-        // A failed read of the current index must abort before a new recovery
-        // generation is written. Falling back to an empty index could make a
-        // later rollback replace a valid recovery index with an empty vault.
-        val previousBytes = serializeIndex(loadIndex())
+        // Only snapshot the local index when an active recovery mirror may
+        // need rollback. In particular, recovery restore can rebuild a damaged
+        // local index while its newly opened store is still a local variable.
+        val activePersistentStore = persistentStore
+        val previousBytes = activePersistentStore?.let { serializeIndex(loadIndex()) }
         val bytes = serializeIndex(index, restoreTransactionId)
         try {
-            val persistentSnapshot = persistentStore?.saveIndex(
+            val persistentSnapshot = activePersistentStore?.saveIndex(
                 bytes,
                 METADATA_AAD.toByteArray(Charsets.UTF_8)
             )
@@ -1847,10 +1848,12 @@ class VaultRepository(context: Context) {
                 // remains only an unreferenced encrypted orphan.
                 if (persistentSnapshot != null) {
                     try {
-                        val rollback = persistentStore?.saveIndex(
-                            previousBytes,
+                        val rollback = activePersistentStore.saveIndex(
+                            checkNotNull(previousBytes) {
+                                "The previous authenticated index is unavailable for recovery rollback."
+                            },
                             METADATA_AAD.toByteArray(Charsets.UTF_8)
-                        ) ?: error("The recovery store became unavailable during rollback.")
+                        )
                         val tree = persistentTreeUri
                             ?: error("Persistent recovery folder is unavailable.")
                         runCatching { saveRecoveryPreferences(tree, rollback.encryptedDigest) }
@@ -1867,7 +1870,7 @@ class VaultRepository(context: Context) {
                 runCatching { saveRecoveryPreferences(tree, saved.encryptedDigest) }
             }
         } finally {
-            previousBytes.fill(0)
+            previousBytes?.fill(0)
             bytes.fill(0)
         }
     }
