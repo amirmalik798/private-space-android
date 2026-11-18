@@ -8,6 +8,26 @@ internal object VaultTopicThumbnailPolicy {
         VaultFormatSupport.kindForFile(file.displayName, file.mimeType) ==
             VaultFormatSupport.FileKind.PHOTO
 
+
+    fun isPreviewEligible(file: VaultFile): Boolean =
+        isPhoto(file) && VaultThumbnailPolicy.shouldGeneratePreview(file.sizeBytes)
+
+    /**
+     * Validates gallery/source metadata before thumbnail import. A null size
+     * means the provider did not report one; the encrypted stream's measured
+     * byte count is checked again before the import is committed.
+     */
+    fun validatePhotoSource(displayName: String, mimeType: String, plainBytes: Long?) {
+        require(
+            VaultFormatSupport.kindForFile(displayName, mimeType) ==
+                VaultFormatSupport.FileKind.PHOTO
+        ) { "Choose an image file for the topic thumbnail." }
+        if (plainBytes != null) {
+            require(VaultThumbnailPolicy.shouldGeneratePreview(plainBytes)) {
+                "Topic thumbnails support photos up to 16 MB so previews remain fast and memory-bounded."
+            }
+        }
+    }
     fun validate(
         topics: List<VaultTopic>,
         files: List<VaultFile>,

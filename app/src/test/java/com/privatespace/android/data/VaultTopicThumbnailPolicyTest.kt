@@ -1,6 +1,8 @@
 package com.privatespace.android.data
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VaultTopicThumbnailPolicyTest {
@@ -55,6 +57,38 @@ class VaultTopicThumbnailPolicyTest {
                 topics = listOf(topic.copy(thumbnailFileId = photo.id)),
                 files = listOf(photo.copy(displayName = "notes.pdf", mimeType = "application/pdf")),
                 trash = emptyList()
+            )
+        }
+    }
+
+    @Test
+    fun previewEligibilityRequiresSupportedPhotoAndSize() {
+        assertTrue(VaultTopicThumbnailPolicy.isPreviewEligible(photo))
+        assertFalse(
+            VaultTopicThumbnailPolicy.isPreviewEligible(
+                photo.copy(displayName = "notes.pdf", mimeType = "application/pdf")
+            )
+        )
+        assertFalse(
+            VaultTopicThumbnailPolicy.isPreviewEligible(
+                photo.copy(sizeBytes = VaultThumbnailPolicy.MAX_PREVIEW_SOURCE_BYTES + 1L)
+            )
+        )
+    }
+
+    @Test
+    fun sourceValidationChecksImageTypeAndKnownSizeButAllowsUnknownProviderSize() {
+        VaultTopicThumbnailPolicy.validatePhotoSource("cover.jpg", "image/jpeg", null)
+        VaultTopicThumbnailPolicy.validatePhotoSource("cover.jpg", "image/jpeg", 1024L)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            VaultTopicThumbnailPolicy.validatePhotoSource("notes.pdf", "application/pdf", 1024L)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            VaultTopicThumbnailPolicy.validatePhotoSource(
+                "cover.jpg",
+                "image/jpeg",
+                VaultThumbnailPolicy.MAX_PREVIEW_SOURCE_BYTES + 1L
             )
         }
     }

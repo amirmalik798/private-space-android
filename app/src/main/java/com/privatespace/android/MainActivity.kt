@@ -452,6 +452,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var trashEntryToPermanentlyDelete by remember { mutableStateOf<VaultTrashEntry?>(null) }
     var showCreateTopic by remember { mutableStateOf(false) }
     var topicName by remember { mutableStateOf("") }
+    var topicThumbnailUri by remember { mutableStateOf<Uri?>(null) }
     var showChangePassword by remember { mutableStateOf(false) }
     var topicToDelete by remember { mutableStateOf<VaultTopic?>(null) }
     var topicToSetThumbnail by remember { mutableStateOf<VaultTopic?>(null) }
@@ -595,6 +596,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         showTrash = false
         trashEntryToPermanentlyDelete = null
         topicName = ""
+        topicThumbnailUri = null
         showCreateTopic = false
         showChangePassword = false
         topicToDelete = null
@@ -1041,6 +1043,16 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         ActivityResultContracts.OpenMultipleDocuments()
     ) { selectedUris ->
         handleImportUris(selectedUris)
+    }
+
+    val topicThumbnailPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { selectedUri ->
+        if (selectedUri != null && unlocked && showCreateTopic) {
+            topicThumbnailUri = selectedUri
+        } else if (selectedUri != null && !unlocked) {
+            toast("Unlock Private Space before selecting a topic thumbnail.")
+        }
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -2081,6 +2093,166 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
+    fun createTopicFromDialog() {
+        val requestedName = topicName.trim()
+        if (requestedName.isBlank() || busy) return
+
+        val selectedThumbnail = topicThumbnailUri
+        val thumbnailControl = selectedThumbnail?.let { VaultImportControl() }
+        val operationToken = thumbnailControl?.let {
+            beginFileOperation("Importing topic cover photo")
+        }
+
+        if (thumbnailControl != null && operationToken != null) {
+            activeBatchImportControl = thumbnailControl
+            fileOperationProgress = VaultFileOperationProgress(
+                phase = "Creating topic",
+                completedBytes = 0L,
+                totalBytes = 0L,
+                currentFileName = "Topic thumbnail",
+                currentFileCompletedBytes = 0L,
+                currentFileTotalBytes = 0L
+            )
+            fileOperationCancel = {
+                if (thumbnailControl.stop()) {
+                    fileOperationCancelling = true
+                } else {
+                    toast("The photo is already being securely finalized and can no longer be cancelled.")
+                }
+            }
+        }
+
+        busy = true
+        scope.launch {
+            val createdTopic = try {
+                withContext(Dispatchers.IO) {
+                    repository.createTopic(requestedName)
+                }
+            } catch (cancelled: CancellationException) {
+                thumbnailControl?.stop()
+                if (thumbnailControl != null && activeBatchImportControl === thumbnailControl) {
+                    activeBatchImportControl = null
+                }
+                operationToken?.let { finishFileOperation(it) }
+                busy = false
+                throw cancelled
+            } catch (failure: Exception) {
+                if (thumbnailControl != null && activeBatchImportControl === thumbnailControl) {
+                    activeBatchImportControl = null
+                }
+                operationToken?.let { finishFileOperation(it) }
+                busy = false
+                toast(failure.message ?: "Could not create topic.")
+                return@launch
+            }
+
+            topicName = ""
+            topicThumbnailUri = null
+            showCreateTopic = false
+
+            if (selectedThumbnail == null) {
+                busy = false
+                refreshVault()
+                toast("Topic created.")
+                return@launch
+            }
+
+            val control = thumbnailControl ?: run {
+                busy = false
+                refreshVault()
+                toast("Topic created. The photo could not be prepared as a thumbnail.")
+                return@launch
+            }
+            val token = operationToken ?: run {
+                busy = false
+                refreshVault()
+                toast("Topic created. The photo could not be prepared as a thumbnail.")
+                return@launch
+            }
+
+            if (!unlocked || control.isStopped) {
+                if (activeBatchImportControl === control) activeBatchImportControl = null
+                finishFileOperation(token)
+                busy = false
+                refreshVault()
+                if (unlocked) toast("Topic created. Thumbnail import was cancelled; the folder icon remains.")
+                return@launch
+            }
+
+            var thumbnailFailure: Exception? = null
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.addTopicThumbnailWithProgress(
+                        topicId = createdTopic.id,
+                        uri = selectedThumbnail,
+                        control = control,
+                        onProgress = { completed, total ->
+                            val current = completed.coerceAtLeast(0L)
+                            val expected = total?.coerceAtLeast(0L) ?: 0L
+                            publishFileOperationProgress(
+                                token,
+                                VaultFileOperationProgress(
+                                    phase = if (control.isFinalizing) {
+                                        "Finalizing encrypted thumbnail"
+                                    } else {
+                                        "Encrypting thumbnail"
+                                    },
+                                    completedBytes = current,
+                                    totalBytes = expected,
+                                    currentFileName = "Topic thumbnail",
+                                    currentFileCompletedBytes = current,
+                                    currentFileTotalBytes = expected
+                                )
+                            )
+                        },
+                        onFinalizing = {
+                            publishFileOperationProgress(
+                                token,
+                                VaultFileOperationProgress(
+                                    phase = "Finalizing encrypted thumbnail",
+                                    completedBytes = 0L,
+                                    totalBytes = 0L,
+                                    currentFileName = "Topic thumbnail",
+                                    currentFileCompletedBytes = 0L,
+                                    currentFileTotalBytes = 0L
+                                )
+                            )
+                        }
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                control.stop()
+                if (activeBatchImportControl === control) activeBatchImportControl = null
+                finishFileOperation(token)
+                busy = false
+                throw cancelled
+            } catch (failure: Exception) {
+                thumbnailFailure = failure
+            } finally {
+                if (activeBatchImportControl === control) activeBatchImportControl = null
+            }
+
+            val failureMessage = thumbnailFailure
+                ?.takeUnless { control.isStopped }
+                ?.let { failure ->
+                    "The topic was created, but its thumbnail photo could not be imported. " +
+                        "The topic remains available with its normal folder icon. " +
+                        (failure.message ?: "Choose another image and try again.")
+                }
+            finishFileOperation(token, failureMessage)
+            busy = false
+            refreshVault()
+
+            if (unlocked) {
+                when {
+                    thumbnailFailure == null -> toast("Topic created with its thumbnail.")
+                    control.isStopped -> toast("Topic created. Thumbnail import was cancelled; the folder icon remains.")
+                    else -> toast("Topic created without a thumbnail. Review the operation details.")
+                }
+            }
+        }
+    }
+
     if (!unlocked) {
         AuthScreen(
             setup = setup,
@@ -2753,8 +2925,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 topicFiles.firstOrNull { it.id == id }
                             }
                             val canChooseThumbnail = topicFiles.any {
-                                VaultTopicThumbnailPolicy.isPhoto(it) &&
-                                    VaultThumbnailPolicy.shouldGeneratePreview(it.sizeBytes)
+                                VaultTopicThumbnailPolicy.isPreviewEligible(it)
                             }
                             TopicCard(
                                 summary = summary,
@@ -3043,14 +3214,20 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     if (showCreateTopic) {
         AlertDialog(
-            onDismissRequest = { if (!busy) showCreateTopic = false },
+            onDismissRequest = {
+                if (!busy) {
+                    showCreateTopic = false
+                    topicName = ""
+                    topicThumbnailUri = null
+                }
+            },
             title = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Create a topic", fontWeight = FontWeight.Bold)
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
                     OutlinedTextField(
                         value = topicName,
                         onValueChange = { topicName = it.take(64) },
@@ -3059,25 +3236,68 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp)
                     )
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Panel2.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(15.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.75f))
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Image, contentDescription = null, tint = Cyan)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Topic thumbnail (optional)",
+                                    color = White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                            Text(
+                                if (topicThumbnailUri == null) {
+                                    "Choose a photo up to 16 MB, or leave this empty to use the folder icon."
+                                } else {
+                                    "A photo is selected. It will be encrypted and stored as a file in this topic."
+                                },
+                                color = Muted,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedButton(
+                                    enabled = !busy,
+                                    onClick = { topicThumbnailPickerLauncher.launch("image/*") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(11.dp)
+                                ) {
+                                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (topicThumbnailUri == null) "Choose photo" else "Change photo")
+                                }
+                                if (topicThumbnailUri != null) {
+                                    IconButton(
+                                        enabled = !busy,
+                                        onClick = { topicThumbnailUri = null }
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove selected thumbnail", tint = Muted)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     enabled = topicName.isNotBlank() && !busy,
-                    onClick = {
-                        scope.launch {
-                            busy = true
-                            val result = withContext(Dispatchers.IO) {
-                                runCatching { repository.createTopic(topicName.trim()) }
-                            }
-                            busy = false
-                            result.onSuccess {
-                                topicName = ""
-                                showCreateTopic = false
-                                refreshVault()
-                            }.onFailure { toast(it.message ?: "Could not create topic.") }
-                        }
-                    },
+                    onClick = ::createTopicFromDialog,
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     if (busy) {
@@ -3092,7 +3312,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             dismissButton = {
                 TextButton(
                     enabled = !busy,
-                    onClick = { showCreateTopic = false }
+                    onClick = {
+                        showCreateTopic = false
+                        topicName = ""
+                        topicThumbnailUri = null
+                    }
                 ) {
                     Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(5.dp))
@@ -3106,8 +3330,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     topicToSetThumbnail?.let { topic ->
         val photos = filesByTopic[topic.id].orEmpty().filter {
-            VaultTopicThumbnailPolicy.isPhoto(it) &&
-                VaultThumbnailPolicy.shouldGeneratePreview(it.sizeBytes)
+            VaultTopicThumbnailPolicy.isPreviewEligible(it)
         }
         TopicThumbnailPickerDialog(
             topicName = topic.name,

@@ -490,6 +490,33 @@ class VaultRepository(context: Context) {
         control: VaultImportControl?,
         onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> },
         onFinalizing: () -> Unit = {}
+    ): VaultFile = addFileWithProgressInternal(
+        topicId, uri, control, onProgress, onFinalizing, markAsTopicThumbnail = false
+    )
+
+    /**
+     * Imports a topic-cover photo through the standard encrypted import path
+     * and commits its thumbnail reference in the same authenticated index update
+     * as the file record. This prevents a lock/crash between separate import and
+     * cover-setting calls from leaving the two indexes inconsistent.
+     */
+    fun addTopicThumbnailWithProgress(
+        topicId: String,
+        uri: Uri,
+        control: VaultImportControl?,
+        onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> },
+        onFinalizing: () -> Unit = {}
+    ): VaultFile = addFileWithProgressInternal(
+        topicId, uri, control, onProgress, onFinalizing, markAsTopicThumbnail = true
+    )
+
+    private fun addFileWithProgressInternal(
+        topicId: String,
+        uri: Uri,
+        control: VaultImportControl?,
+        onProgress: (completedBytes: Long, totalBytes: Long?) -> Unit,
+        onFinalizing: () -> Unit,
+        markAsTopicThumbnail: Boolean
     ): VaultFile {
         synchronized(this) {
             require(loadIndex().topics.any { it.id == topicId }) {
@@ -502,6 +529,9 @@ class VaultRepository(context: Context) {
         val safeName = VaultInputValidation.displayName(displayName)
         val mime = resolveMimeType(uri, safeName)
         val reportedSize = readReportedSize(uri)
+        if (markAsTopicThumbnail) {
+            VaultTopicThumbnailPolicy.validatePhotoSource(safeName, mime, reportedSize)
+        }
 
         if (reportedSize != null) {
             val requiredStorage = VaultCrypto.encryptedContainerLength(reportedSize)
@@ -550,6 +580,9 @@ class VaultRepository(context: Context) {
 
             control?.awaitRunning()
             VaultImportIntegrity.validateByteCount(reportedSize, byteCount)
+            if (markAsTopicThumbnail) {
+                VaultTopicThumbnailPolicy.validatePhotoSource(safeName, mime, byteCount)
+            }
             onProgress(byteCount, reportedSize)
 
             val record = synchronized(this) {
@@ -570,7 +603,12 @@ class VaultRepository(context: Context) {
                 val now = System.currentTimeMillis()
                 val created = VaultFile(id, topicId, safeName, mime, byteCount, now)
                 val changedTopics = latestIndex.topics.map {
-                    if (it.id == topicId) it.copy(updatedAt = now) else it
+                    if (it.id == topicId) {
+                        it.copy(
+                            updatedAt = now,
+                            thumbnailFileId = if (markAsTopicThumbnail) id else it.thumbnailFileId
+                        )
+                    } else it
                 }
                 saveIndex(latestIndex.copy(
                     topics = changedTopics,
