@@ -525,14 +525,46 @@ internal class PersistentVaultStore private constructor(
 
     @Synchronized
     fun pruneKeyEnvelopes() {
-        directory.listFiles()
+        val envelopes = directory.listFiles()
             .mapNotNull { document ->
                 val name = document.name ?: return@mapNotNull null
                 parseKeyGeneration(name)?.let { it to document }
             }
-            .sortedByDescending { it.first }
-            .drop(2)
-            .forEach { (_, document) -> runCatching { document.delete() } }
+        val keepGenerations = try {
+            RecoveryKeyPrunePolicy.generationsToRetain(
+                availableGenerations = envelopes.map { it.first },
+                activeGeneration = keyGeneration
+            )
+        } catch (failure: IllegalArgumentException) {
+            throw IOException(
+                "Could not safely identify the active recovery-key envelope. " +
+                    "No recovery-key files were removed.",
+                failure
+            )
+        }
+
+        var cleanupFailure: Throwable? = null
+        envelopes.forEach { (generation, document) ->
+            if (generation in keepGenerations) return@forEach
+            try {
+                if (document.exists() && !document.delete()) {
+                    throw IOException("The storage provider refused to remove an obsolete recovery-key envelope.")
+                }
+                if (document.exists()) {
+                    throw IOException("An obsolete recovery-key envelope is still present after deletion.")
+                }
+            } catch (failure: Exception) {
+                val previous = cleanupFailure
+                if (previous == null) cleanupFailure = failure else previous.addSuppressed(failure)
+            }
+        }
+        cleanupFailure?.let {
+            throw IOException(
+                "Old recovery-key envelopes could not all be removed. " +
+                    "The cleanup obligation has been retained for retry.",
+                it
+            )
+        }
     }
 
     @Synchronized

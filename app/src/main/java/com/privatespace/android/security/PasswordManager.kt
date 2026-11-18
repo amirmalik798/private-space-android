@@ -13,6 +13,7 @@ object PasswordManager {
     private const val LEGACY_ROUNDS = 310_000
     private const val CORRUPT_LOCKOUT_MS = 600_000L
     private const val MISSING_LOCK_VALUE = Long.MIN_VALUE
+    private const val RECOVERY_KEY_PRUNE_PENDING = "recovery_key_prune_pending"
     const val MIN_PASSWORD_LENGTH = 10
     const val MAX_PASSWORD_LENGTH = 128
 
@@ -34,7 +35,24 @@ object PasswordManager {
         }
     }
 
-    fun set(context: Context, password: CharArray) {
+    /** Saves a normal password setup/restore and clears any obsolete rotation marker. */
+    fun set(context: Context, password: CharArray) =
+        setInternal(context, password, recoveryKeyPrunePending = false)
+
+    /**
+     * Commits the new password verifier and a durable recovery-key cleanup
+     * obligation in the same SharedPreferences transaction. If Android kills
+     * the process immediately afterwards, the next successful recovery unlock
+     * will still know it must remove old password-wrapped key envelopes.
+     */
+    fun setAfterRecoveryKeyRotation(context: Context, password: CharArray) =
+        setInternal(context, password, recoveryKeyPrunePending = true)
+
+    private fun setInternal(
+        context: Context,
+        password: CharArray,
+        recoveryKeyPrunePending: Boolean
+    ) {
         try {
             require(password.size in MIN_PASSWORD_LENGTH..MAX_PASSWORD_LENGTH) {
                 "Use a password between $MIN_PASSWORD_LENGTH and $MAX_PASSWORD_LENGTH characters."
@@ -49,6 +67,7 @@ object PasswordManager {
                         .putInt("rounds", CURRENT_ROUNDS)
                         .putInt("failures", 0)
                         .putLong("lock_until", 0L)
+                        .putBoolean(RECOVERY_KEY_PRUNE_PENDING, recoveryKeyPrunePending)
                         .remove("lock")
                         .commit()
                 ) { "Could not save the password configuration." }
@@ -59,6 +78,23 @@ object PasswordManager {
         } finally {
             password.fill('\u0000')
         }
+    }
+
+    /**
+     * A malformed marker is treated conservatively as pending. That can cause
+     * harmless extra cleanup, but must never silently preserve old key wraps.
+     */
+    fun isRecoveryKeyPrunePending(context: Context): Boolean =
+        runCatching {
+            prefs(context).getBoolean(RECOVERY_KEY_PRUNE_PENDING, false)
+        }.getOrDefault(true)
+
+    fun clearRecoveryKeyPrunePending(context: Context) {
+        check(
+            prefs(context).edit()
+                .remove(RECOVERY_KEY_PRUNE_PENDING)
+                .commit()
+        ) { "Could not record completion of recovery-key cleanup." }
     }
 
     fun verify(context: Context, password: CharArray): Boolean {

@@ -2108,6 +2108,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val authGeneration = activity?.foregroundGeneration
             val operationCancellation = AtomicBoolean(false)
             val recoveryConflictDetected = AtomicBoolean(false)
+            val recoveryKeyCleanupNeedsRetry = AtomicBoolean(false)
             activeLifecycleCancellation.set(operationCancellation)
             scope.launch {
                 try {
@@ -2181,15 +2182,35 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                                     }
                                                 }
                                                 ensureAuthenticationActive()
+                                                if (PasswordManager.isRecoveryKeyPrunePending(context)) {
+                                                    try {
+                                                        repository.finishPersistentPasswordRotation()
+                                                        PasswordManager.clearRecoveryKeyPrunePending(context)
+                                                    } catch (cleanupFailure: Exception) {
+                                                        recoveryKeyCleanupNeedsRetry.set(true)
+                                                        android.util.Log.w(
+                                                            "PrivateSpace",
+                                                            "Recovery-key envelope cleanup remains pending.",
+                                                            cleanupFailure
+                                                        )
+                                                    }
+                                                }
+                                                ensureAuthenticationActive()
                                                 true to null
                                             } catch (cancelled: CancellationException) {
                                                 throw cancelled
                                             } catch (_: VaultRecoveryConflictException) {
                                                 ensureAuthenticationActive()
                                                 recoveryConflictDetected.set(true)
+                                                if (PasswordManager.isRecoveryKeyPrunePending(context)) {
+                                                    recoveryKeyCleanupNeedsRetry.set(true)
+                                                }
                                                 true to entered.toCharArray()
                                             } catch (_: Exception) {
                                                 ensureAuthenticationActive()
+                                                if (PasswordManager.isRecoveryKeyPrunePending(context)) {
+                                                    recoveryKeyCleanupNeedsRetry.set(true)
+                                                }
                                                 true to entered.toCharArray()
                                             }
                                         }
@@ -2242,6 +2263,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 ) {
                                     unlocked = true
                                     authError = ""
+                                    if (recoveryKeyCleanupNeedsRetry.get()) {
+                                        toast(
+                                            "Recovery-folder key cleanup is still pending. " +
+                                                "Keep the recovery folder private; Private Space will retry after a successful unlock."
+                                        )
+                                    }
                                 } else {
                                     repository.lockPersistentStorage()
                                     pendingRecoveryPassword?.fill(0.toChar())
@@ -3133,19 +3160,33 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 PasswordManager.clearFailures(context)
                                 repository.rotatePersistentPassword(newSecret.copyOf())
                                 try {
-                                    PasswordManager.set(context, newSecret.copyOf())
+                                    PasswordManager.setAfterRecoveryKeyRotation(context, newSecret.copyOf())
                                 } catch (passwordSaveFailure: Throwable) {
-                                    // Keep the recovery copy protected by the old
-                                    // password if the local password commit fails.
+                                    // The local password commit did not report success.
+                                    // Re-wrap the data key with the old password and
+                                    // retain the existing verifier wherever possible.
                                     try {
                                         repository.rotatePersistentPassword(oldSecret.copyOf())
                                         repository.finishPersistentPasswordRotation()
+                                        PasswordManager.clearRecoveryKeyPrunePending(context)
                                     } catch (rollbackFailure: Throwable) {
                                         passwordSaveFailure.addSuppressed(rollbackFailure)
                                     }
                                     throw passwordSaveFailure
                                 }
-                                repository.finishPersistentPasswordRotation()
+                                var cleanupPending = false
+                                try {
+                                    repository.finishPersistentPasswordRotation()
+                                    PasswordManager.clearRecoveryKeyPrunePending(context)
+                                } catch (cleanupFailure: Exception) {
+                                    cleanupPending = true
+                                    android.util.Log.w(
+                                        "PrivateSpace",
+                                        "Password changed; recovery-key envelope cleanup will be retried after the next successful unlock.",
+                                        cleanupFailure
+                                    )
+                                }
+                                cleanupPending
                             } finally {
                                 oldSecret.fill(Char.MIN_VALUE)
                                 newSecret.fill(Char.MIN_VALUE)
@@ -3153,9 +3194,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }
                     }
                     busy = false
-                    result.onSuccess {
+                    result.onSuccess { cleanupPending ->
                         showChangePassword = false
-                        toast("Password changed.")
+                        toast(
+                            if (cleanupPending) {
+                                "Password changed. Recovery-folder key cleanup is pending and will be retried after the next successful unlock."
+                            } else {
+                                "Password changed."
+                            }
+                        )
                     }.onFailure {
                         lockUntil = PasswordManager.lockedUntil(context)
                         toast(it.message ?: "Password could not be changed.")
