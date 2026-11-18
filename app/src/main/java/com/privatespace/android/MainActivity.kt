@@ -1054,7 +1054,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (selectedTreeUri == null) {
             if (choosingExistingRecovery) {
                 choosingExistingRecovery = false
-                authError = "Choose the folder containing your existing Private Space Vault."
+                authError = "Recovery folder selection was cancelled. You can unlock your on-device vault with its current password and try again from the Recovery card."
             } else {
                 recoverySetupError = "Select a device-storage folder to protect your vault."
             }
