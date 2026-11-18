@@ -2151,195 +2151,264 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
     } else {
         Scaffold(
-        containerColor = Ink,
-        topBar = {
-            Surface(
-                modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars),
-                color = Ink,
-                tonalElevation = 0.dp
-            ) {
-                Column {
-                    Row(
-                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            modifier = Modifier.size(44.dp),
-                            shape = RoundedCornerShape(15.dp),
-                            color = Blue.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(24.dp))
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(
-                                "Private Space",
-                                fontWeight = FontWeight.Bold,
-                                color = White,
-                                fontSize = 18.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(12.dp))
-                                Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                        IconButton(onClick = { showTrash = true }) {
-                            Icon(
-                                Icons.Default.DeleteSweep,
-                                contentDescription = "Recycle Bin",
-                                tint = if (trashEntries.isNotEmpty()) Cyan else Muted
-                            )
-                        }
-                        Box {
-                            IconButton(onClick = { topMenuExpanded = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Muted)
-                            }
-                            DropdownMenu(
-                                expanded = topMenuExpanded,
-                                onDismissRequest = { topMenuExpanded = false },
-                                containerColor = Panel
-                            ) {
-                                DropdownMenuItem(
-                                    enabled = !busy,
-                                    text = { Text("New topic") },
-                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = Cyan) },
-                                    onClick = {
-                                        topMenuExpanded = false
-                                        showCreateTopic = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Vault details") },
-                                    leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan) },
-                                    onClick = {
-                                        topMenuExpanded = false
-                                        showVaultDetails = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Help & how-to") },
-                                    leadingIcon = { Icon(Icons.Default.HelpOutline, contentDescription = null, tint = Cyan) },
-                                    onClick = {
-                                        topMenuExpanded = false
-                                        showHelp = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Security information") },
-                                    leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
-                                    onClick = {
-                                        topMenuExpanded = false
-                                        showSecurityInfo = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Change password") },
-                                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
-                                    onClick = {
-                                        topMenuExpanded = false
-                                        showChangePassword = true
-                                    }
-                                )
-                            }
-                        }
-                        Surface(
-                            modifier = Modifier.size(42.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            color = Blue.copy(alpha = 0.24f),
-                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
-                        ) {
-                            IconButton(onClick = { lockVault() }, modifier = Modifier.fillMaxSize()) {
-                                Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
-                            }
-                        }
-                    }
-                    HorizontalDivider(color = Line.copy(alpha = 0.55f), thickness = 0.7.dp)
-                }
-            }
-        },
-    ) { padding ->
-        LazyColumn(
-            Modifier.fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color(0xFF0E1728), Ink, Color(0xFF070B13))))
-                .padding(padding),
-            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(17.dp)
-        ) {
-            item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+            containerColor = Ink,
+            topBar = {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars),
+                    color = Ink,
+                    tonalElevation = 0.dp
                 ) {
-                    Text("Topics", color = White, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    if (topics.isNotEmpty()) {
-                        Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
-                            Text(
-                                topics.size.toString(),
-                                color = Cyan,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                            )
-                        }
-                    }
-                }
-            }
-            if (topics.isNotEmpty()) {
-                item {
-                    OutlinedTextField(
-                        value = topicQuery,
-                        onValueChange = { topicQuery = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
-                        placeholder = { Text("Search topics", color = Muted) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
-                        trailingIcon = {
-                            if (topicQuery.isNotEmpty()) {
-                                IconButton(onClick = { topicQuery = "" }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Muted)
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(44.dp),
+                                shape = RoundedCornerShape(15.dp),
+                                color = Blue.copy(alpha = 0.18f),
+                                border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Lock, contentDescription = "Private Space", tint = Cyan, modifier = Modifier.size(24.dp))
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(
+                                    "Private Space",
+                                    fontWeight = FontWeight.Bold,
+                                    color = White,
+                                    fontSize = 18.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(12.dp))
+                                    Text("Encrypted", fontSize = 11.sp, color = Green, fontWeight = FontWeight.Medium)
+                                }
+                            }
+                            IconButton(
+                                onClick = { showTrash = true },
+                                enabled = !busy
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteSweep,
+                                    contentDescription = if (trashEntries.isEmpty()) "Recycle Bin, empty" else "Recycle Bin, ${trashEntries.size} deleted files",
+                                    tint = if (trashEntries.isNotEmpty()) Cyan else Muted
+                                )
+                            }
+                            Box {
+                                IconButton(onClick = { topMenuExpanded = true }, enabled = !busy) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Muted)
+                                }
+                                DropdownMenu(
+                                    expanded = topMenuExpanded,
+                                    onDismissRequest = { topMenuExpanded = false },
+                                    containerColor = Panel
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Vault details") },
+                                        leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan) },
+                                        onClick = {
+                                            topMenuExpanded = false
+                                            showVaultDetails = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Help & how-to") },
+                                        leadingIcon = { Icon(Icons.Default.HelpOutline, contentDescription = null, tint = Cyan) },
+                                        onClick = {
+                                            topMenuExpanded = false
+                                            showHelp = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Security information") },
+                                        leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                        onClick = {
+                                            topMenuExpanded = false
+                                            showSecurityInfo = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Change password") },
+                                        leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                                        onClick = {
+                                            topMenuExpanded = false
+                                            showChangePassword = true
+                                        }
+                                    )
+                                }
+                            }
+                            Surface(
+                                modifier = Modifier.size(42.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                color = Blue.copy(alpha = 0.24f),
+                                border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
+                            ) {
+                                IconButton(onClick = { lockVault() }, modifier = Modifier.fillMaxSize(), enabled = !busy) {
+                                    Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
                                 }
                             }
                         }
-                    )
+                        HorizontalDivider(color = Line.copy(alpha = 0.55f), thickness = 0.7.dp)
+                    }
                 }
+            },
+            floatingActionButton = {
+                ExtendedFloatingActionButton(
+                    onClick = { showCreateTopic = true },
+                    enabled = !busy,
+                    containerColor = Blue,
+                    contentColor = White,
+                    shape = RoundedCornerShape(16.dp),
+                    icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
+                    text = { Text("New topic", fontWeight = FontWeight.SemiBold) }
+                )
             }
-            when {
-                topics.isEmpty() -> {
-                    item {
-                        EmptyTopicsState(onCreate = { showCreateTopic = true })
+        ) { padding ->
+            LazyColumn(
+                Modifier.fillMaxSize()
+                    .background(Brush.verticalGradient(listOf(Color(0xFF0E1728), Ink, Color(0xFF070B13))))
+                    .padding(padding),
+                contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 100.dp),
+                verticalArrangement = Arrangement.spacedBy(17.dp)
+            ) {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Your private vault", color = White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${topics.size} ${if (topics.size == 1) "topic" else "topics"} · ${vaultFiles.size} ${if (vaultFiles.size == 1) "file" else "files"}",
+                                color = Muted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Surface(
+                            color = Green.copy(alpha = 0.10f),
+                            shape = RoundedCornerShape(30.dp),
+                            border = BorderStroke(1.dp, Green.copy(alpha = 0.25f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(13.dp))
+                                Text("Encrypted", color = Green, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
-                filteredTopics.isEmpty() -> {
-                    item {
-                        EmptySearchState(onClear = { topicQuery = "" })
+                item {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Panel,
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(38.dp),
+                                color = Blue.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Storage, contentDescription = null, tint = Cyan, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            Spacer(Modifier.width(11.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Encrypted storage", color = Muted, fontSize = 11.sp)
+                                Text(formatBytes(storageUsage.totalBytes), color = White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(
+                                onClick = { showVaultDetails = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Text("Details")
+                                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(17.dp))
+                            }
+                        }
                     }
                 }
-                else -> {
-                    items(filteredTopics, key = { it.id }) { topic ->
-                        val topicFiles = filesByTopic[topic.id].orEmpty()
-                        val summary = TopicSummary(
-                            topic,
-                            topicFiles.size,
-                            storageUsage.topicBytes[topic.id] ?: 0L
+                if (topics.isNotEmpty()) {
+                    item {
+                        OutlinedTextField(
+                            value = topicQuery,
+                            onValueChange = { topicQuery = it.take(120) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            placeholder = { Text("Search topics", color = Muted) },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
+                            trailingIcon = {
+                                if (topicQuery.isNotEmpty()) {
+                                    IconButton(onClick = { topicQuery = "" }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear search", tint = Muted)
+                                    }
+                                }
+                            }
                         )
-                        TopicCard(
-                            summary = summary,
-                            onOpen = { activeTopicId = topic.id },
-                            onExport = { launchTopicExport(topic.id) },
-                            onDelete = { topicToDelete = topic },
-                            busy = busy
-                        )
+                    }
+                }
+                item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Topics", color = White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        if (topics.isNotEmpty()) {
+                            Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
+                                Text(
+                                    topics.size.toString(),
+                                    color = Cyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                when {
+                    topics.isEmpty() -> {
+                        item {
+                            EmptyTopicsState(onCreate = { showCreateTopic = true })
+                        }
+                    }
+                    filteredTopics.isEmpty() -> {
+                        item {
+                            EmptySearchState(onClear = { topicQuery = "" })
+                        }
+                    }
+                    else -> {
+                        items(filteredTopics, key = { it.id }) { topic ->
+                            val topicFiles = filesByTopic[topic.id].orEmpty()
+                            val summary = TopicSummary(
+                                topic,
+                                topicFiles.size,
+                                storageUsage.topicBytes[topic.id] ?: 0L
+                            )
+                            TopicCard(
+                                summary = summary,
+                                onOpen = { activeTopicId = topic.id },
+                                onExport = { launchTopicExport(topic.id) },
+                                onDelete = { topicToDelete = topic },
+                                busy = busy
+                            )
+                        }
                     }
                 }
             }
         }
-    }
     }
 
 
