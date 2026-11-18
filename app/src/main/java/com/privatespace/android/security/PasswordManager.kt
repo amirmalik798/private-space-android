@@ -37,7 +37,7 @@ object PasswordManager {
 
     /** Saves a normal password setup/restore and clears any obsolete rotation marker. */
     fun set(context: Context, password: CharArray) =
-        setInternal(context, password, recoveryKeyPrunePending = false)
+        setInternal(context, password, recoveryKeyPrunePending = null)
 
     /**
      * Commits the new password verifier and a durable recovery-key cleanup
@@ -51,7 +51,7 @@ object PasswordManager {
     private fun setInternal(
         context: Context,
         password: CharArray,
-        recoveryKeyPrunePending: Boolean
+        recoveryKeyPrunePending: Boolean?
     ) {
         try {
             require(password.size in MIN_PASSWORD_LENGTH..MAX_PASSWORD_LENGTH) {
@@ -67,7 +67,13 @@ object PasswordManager {
                         .putInt("rounds", CURRENT_ROUNDS)
                         .putInt("failures", 0)
                         .putLong("lock_until", 0L)
-                        .putBoolean(RECOVERY_KEY_PRUNE_PENDING, recoveryKeyPrunePending)
+                        .let { editor ->
+                            if (recoveryKeyPrunePending != null) {
+                                editor.putBoolean(RECOVERY_KEY_PRUNE_PENDING, recoveryKeyPrunePending)
+                            } else {
+                                editor
+                            }
+                        }
                         .remove("lock")
                         .commit()
                 ) { "Could not save the password configuration." }
