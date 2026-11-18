@@ -268,7 +268,7 @@ class VaultRepository(context: Context) {
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
                     store.cachePayloadDocuments(
-                        (index.files + index.trash.map { it.file }).map { it.id }.toSet()
+                        (index.files + index.trash.map { it.file }).associate { it.id to it.sizeBytes }
                     )
                     val hasLocalIndex = metadata.baseFile.isFile ||
                         File(metadata.baseFile.path + ".bak").isFile
@@ -358,7 +358,7 @@ class VaultRepository(context: Context) {
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
                     store.cachePayloadDocuments(
-                        (index.files + index.trash.map { it.file }).map { it.id }.toSet()
+                        (index.files + index.trash.map { it.file }).associate { it.id to it.sizeBytes }
                     )
                     restoreWorkingVault(index, store, onProgress)
                     // Keep unreferenced encrypted payloads; an older authenticated

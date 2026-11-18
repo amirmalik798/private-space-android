@@ -127,7 +127,8 @@ internal class PersistentVaultStore private constructor(
      * paths; the one-time directory snapshot is released after this lookup.
      */
     @Synchronized
-    fun cachePayloadDocuments(referencedIds: Set<String>) {
+    fun cachePayloadDocuments(referencedPayloads: Map<String, Long>) {
+        val referencedIds = referencedPayloads.keys
         val snapshot = pendingFolderSnapshot ?: return
         val documentsByName = snapshot.toMap()
         snapshot.forEach { (name, marker) ->
@@ -148,6 +149,21 @@ internal class PersistentVaultStore private constructor(
         snapshot.forEach { (name, document) ->
             val id = parsePayloadId(name) ?: return@forEach
             if (id in referencedIds && id !in payloadDocuments) payloadDocuments[id] = document
+        }
+
+        // A readable index alone is not proof of a usable backup. Before the
+        // repository marks this folder connected, require every indexed active
+        // and Trash record to have a corresponding encrypted payload of the
+        // expected length. The size check is structural; full GCM authentication
+        // still happens when a payload is actually read or restored.
+        VaultRecoveryIntegrity.validateRecoveryPayloadInventory(
+            referencedPayloads,
+            encryptedPayloadSizesById
+        )
+        if (referencedIds.any { id -> payloadDocuments[id]?.exists() != true }) {
+            throw IOException(
+                "The encrypted recovery folder is incomplete: one or more indexed files are unavailable."
+            )
         }
         pendingFolderSnapshot = null
     }
