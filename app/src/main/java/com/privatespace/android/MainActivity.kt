@@ -588,12 +588,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (prepared == null) return
         // Outlive rememberCoroutineScope so Activity disposal cannot cancel deletion.
         VaultLockDispatcher.execute {
-            val cleanup = runCatching { repository.discardMediaForViewing(prepared) }
-            cleanup.onFailure {
-                mainHandler.post {
-                    if (unlocked) toast("Temporary media could not be removed from the private cache. Lock the vault and try again.")
+            runCatching { repository.discardMediaForViewing(prepared) }
+                .onFailure {
+                    // Avoid retaining Activity/Compose state from a teardown callback.
+                    // The staging janitor retries this private-cache deletion.
+                    android.util.Log.e("PrivateSpace", "Could not remove a decrypted viewer cache.", it)
                 }
-            }
         }
     }
 

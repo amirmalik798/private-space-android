@@ -26,7 +26,12 @@ internal class OutgoingCacheCleanupWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             val outgoing = File(applicationContext.cacheDir, "outgoing")
-            val sessions = outgoing.listFiles() ?: return@withContext Result.success()
+            val sessions = if (!outgoing.exists()) {
+                emptyArray()
+            } else {
+                outgoing.listFiles()
+                    ?: throw IOException("Could not enumerate the outgoing cache for cleanup.")
+            }
             val now = System.currentTimeMillis()
 
             sessions.forEach { session ->
@@ -51,7 +56,12 @@ internal class OutgoingCacheCleanupWorker(
             // staging files. Unleased entries are abandoned once the owning
             // operation finishes or the process that owned them is killed.
             val staging = File(applicationContext.cacheDir, "private-space-staging")
-            val stagedItems = staging.listFiles() ?: emptyArray()
+            val stagedItems = if (!staging.exists()) {
+                emptyArray()
+            } else {
+                staging.listFiles()
+                    ?: throw IOException("Could not enumerate the private staging cache for cleanup.")
+            }
             stagedItems.forEach { staged ->
                 if (VaultOutgoingSessionRegistry.isActive(staged)) return@forEach
                 if (staged.exists() && !staged.deleteRecursively() && staged.exists()) {
