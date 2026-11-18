@@ -687,6 +687,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             activeBatchImportControl?.stop()
             importControls.values.forEach { it.stop() }
             activeImportJobs.values.forEach { it.cancel() }
+            // Explicitly wipe mutable secrets instead of relying on GC after
+            // Activity recreation, process teardown or navigation disposal.
+            pendingRecoveryPassword?.fill('\u0000')
+            pendingRecoveryPassword = null
+            password = ""
+            confirmation = ""
             discardViewerFile(activeMediaFile)
             VaultLockDispatcher.execute {
                 try {
