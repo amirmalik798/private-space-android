@@ -31,8 +31,8 @@ internal class PersistentVaultStore private constructor(
     private val indexDocuments: MutableList<Pair<Long, DocumentFile>>,
     /** Cached SAF handles for active and trashed payload IDs. */
     private val payloadDocuments: MutableMap<String, DocumentFile>,
-    /** One-time open snapshot, released when the authenticated index selects payload IDs. */
-    private var pendingFolderSnapshot: List<DocumentFile>?,
+    /** Child names and handles from the single open-time directory query. */
+    private var pendingFolderSnapshot: List<Pair<String, DocumentFile>>?,
     /** Whether the recovery-ready marker existed in the directory snapshot. */
     private var readyMarkerExists: Boolean,
     /** Highest index filename allocated or observed, including failed partial writes. */
@@ -97,8 +97,8 @@ internal class PersistentVaultStore private constructor(
             pendingFolderSnapshot = null
             return
         }
-        snapshot.forEach { document ->
-            val id = document.name?.let(::parsePayloadId) ?: return@forEach
+        snapshot.forEach { (name, document) ->
+            val id = parsePayloadId(name) ?: return@forEach
             if (id in referencedIds && id !in payloadDocuments) {
                 payloadDocuments[id] = document
             }
@@ -465,10 +465,11 @@ internal class PersistentVaultStore private constructor(
 
     @Synchronized
     fun removeUnreferencedPayloads(referencedIds: Set<String>) {
-        // The cache is populated from the authenticated vault's directory
-        // snapshot at unlock and updated as payloads are added/deleted. Avoid a
-        // second provider-wide enumeration when cleaning this known set.
-        payloadDocuments.toMap().forEach { (id, document) ->
+        // This is an explicit bulk cleanup operation, so one full directory
+        // pass is appropriate. Normal per-file read/write/delete paths use the
+        // cached handles above and never call findFile()/listFiles().
+        directory.listFiles().forEach { document ->
+            val id = document.name?.let(::parsePayloadId) ?: return@forEach
             if (id !in referencedIds) {
                 val removed = runCatching {
                     document.delete() || !document.exists()
@@ -646,7 +647,7 @@ internal class PersistentVaultStore private constructor(
             val folderContents = folder.listFiles()
             val existingIndexDocuments = mutableListOf<Pair<Long, DocumentFile>>()
             val candidates = mutableListOf<Pair<Long, DocumentFile>>()
-            val existingPayloadDocuments = linkedMapOf<String, DocumentFile>()
+            val pendingFolderSnapshot = mutableListOf<Pair<String, DocumentFile>>()
             var readyMarkerExists = false
 
             // DocumentFile.findFile() searches by calling listFiles(). Read each
@@ -655,11 +656,9 @@ internal class PersistentVaultStore private constructor(
             // folder for each individual payload operation.
             folderContents.forEach { document ->
                 val name = document.name ?: return@forEach
+                pendingFolderSnapshot += name to document
                 parseIndexGeneration(name)?.let { existingIndexDocuments += it to document }
                 parseKeyGeneration(name)?.let { candidates += it to document }
-                parsePayloadId(name)?.let { id ->
-                    if (id !in existingPayloadDocuments) existingPayloadDocuments[id] = document
-                }
                 if (name == READY_MARKER) readyMarkerExists = true
             }
             candidates.sortByDescending { it.first }
@@ -707,8 +706,8 @@ internal class PersistentVaultStore private constructor(
                 indexGeneration = 0L,
                 keyGeneration = keyGeneration,
                 indexDocuments = existingIndexDocuments,
-                payloadDocuments = existingPayloadDocuments,
-                pendingFolderSnapshot = folderContents.toList(),
+                payloadDocuments = mutableMapOf(),
+                pendingFolderSnapshot = pendingFolderSnapshot,
                 readyMarkerExists = readyMarkerExists,
                 nextIndexGeneration = highestExistingGeneration
             )
@@ -724,12 +723,9 @@ internal class PersistentVaultStore private constructor(
             var ready = false
             var hasKeyEnvelope = false
             folder.listFiles().forEach { document ->
-                when (document.name) {
-                    READY_MARKER -> ready = true
-                    else -> if (document.name?.let(::parseKeyGeneration) != null) {
-                        hasKeyEnvelope = true
-                    }
-                }
+                val name = document.name
+                if (name == READY_MARKER) ready = true
+                if (name?.let(::parseKeyGeneration) != null) hasKeyEnvelope = true
             }
             ready && hasKeyEnvelope
         }
