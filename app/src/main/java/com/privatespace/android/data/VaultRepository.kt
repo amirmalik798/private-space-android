@@ -961,6 +961,11 @@ class VaultRepository(context: Context) {
         } catch (_: OutOfMemoryError) {
             runCatching { source.close() }
             return VaultMediaPreview(null)
+        } catch (_: Exception) {
+            // The reader owns an open RandomAccessFile and a plaintext frame
+            // cache. Release it even when Android cannot construct the decoder.
+            runCatching { source.close() }
+            return VaultMediaPreview(null)
         }
         return try {
             retriever.setDataSource(source)

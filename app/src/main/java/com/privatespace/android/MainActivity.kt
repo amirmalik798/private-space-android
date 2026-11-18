@@ -82,6 +82,8 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -5081,6 +5083,20 @@ private fun VaultMediaViewer(
                     }
                 }
                 isPhoto -> {
+                    // A bitmap is a native allocation. If the viewer is closed or
+                    // switched to another item while decoding is in progress,
+                    // withContext may discard the result after the decoder returns.
+                    // Keep temporary ownership here until the Compose state accepts it.
+                    val pendingViewerBitmap = remember(privateMediaFile.absolutePath, targetSizePx) {
+                        AtomicReference<Bitmap?>(null)
+                    }
+                    DisposableEffect(pendingViewerBitmap) {
+                        onDispose {
+                            pendingViewerBitmap.getAndSet(null)?.let { bitmap ->
+                                if (!bitmap.isRecycled) bitmap.recycle()
+                            }
+                        }
+                    }
                     val imageState by produceState(
                         initialValue = ViewerImageLoadState(),
                         privateMediaFile.absolutePath,
@@ -5089,11 +5105,30 @@ private fun VaultMediaViewer(
                         value = try {
                             val decoded = withContext(Dispatchers.IO) {
                                 decodeViewerImage(privateMediaFile, targetSizePx)
+                                    .also(pendingViewerBitmap::set)
                             }
-                            ViewerImageLoadState(loading = false, bitmap = decoded)
+                            // withContext can throw cancellation after its IO block
+                            // completes. Check before transferring bitmap ownership
+                            // to Compose so late results are always reclaimed.
+                            currentCoroutineContext().ensureActive()
+                            val loaded = ViewerImageLoadState(loading = false, bitmap = decoded)
+                            value = loaded
+                            if (decoded != null) pendingViewerBitmap.compareAndSet(decoded, null)
+                            loaded
                         } catch (cancelled: CancellationException) {
+                            pendingViewerBitmap.getAndSet(null)?.let { bitmap ->
+                                if (!bitmap.isRecycled) bitmap.recycle()
+                            }
                             throw cancelled
+                        } catch (_: OutOfMemoryError) {
+                            pendingViewerBitmap.getAndSet(null)?.let { bitmap ->
+                                if (!bitmap.isRecycled) bitmap.recycle()
+                            }
+                            ViewerImageLoadState(loading = false)
                         } catch (_: Exception) {
+                            pendingViewerBitmap.getAndSet(null)?.let { bitmap ->
+                                if (!bitmap.isRecycled) bitmap.recycle()
+                            }
                             ViewerImageLoadState(loading = false)
                         }
                     }
