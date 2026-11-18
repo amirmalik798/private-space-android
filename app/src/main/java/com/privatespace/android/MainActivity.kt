@@ -604,7 +604,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     DisposableEffect(activity) {
         activity?.onVaultShouldLock = { lockVault() }
         onDispose {
+            // Backgrounding does not dispose this effect. If the Activity is
+            // actually destroyed/recreated, stop work owned by its old UI so
+            // IO callbacks cannot keep writing or exposing temporary files.
             activeLifecycleCancellation.getAndSet(null)?.set(true)
+            fileOperationCancel?.invoke()
+            activeBatchImportControl?.stop()
+            importControls.values.forEach { it.stop() }
+            activeImportJobs.values.forEach { it.cancel() }
             activity?.onVaultShouldLock = null
         }
     }
