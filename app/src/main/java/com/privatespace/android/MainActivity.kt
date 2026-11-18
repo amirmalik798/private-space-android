@@ -460,6 +460,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var showRecoveryPasswordPrompt by remember { mutableStateOf(false) }
     var recoveryPasswordError by remember { mutableStateOf("") }
     var showRecoveryReconnectConfirmation by remember { mutableStateOf(false) }
+    var recoveryConflict by remember { mutableStateOf(false) }
     val recoveryPromptPreferences = remember(context) {
         context.getSharedPreferences(FILE_PICKER_PREFERENCES, Context.MODE_PRIVATE)
     }
@@ -575,6 +576,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         showRecoveryPasswordPrompt = false
         recoveryPasswordError = ""
         showRecoveryReconnectConfirmation = false
+        recoveryConflict = false
         unlocked = false
         password = ""
         confirmation = ""
@@ -1977,6 +1979,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val restoreUri = recoveryTreeUri
             val authGeneration = activity?.foregroundGeneration
             val operationCancellation = AtomicBoolean(false)
+            val recoveryConflictDetected = AtomicBoolean(false)
             activeLifecycleCancellation.set(operationCancellation)
             scope.launch {
                 try {
@@ -2053,6 +2056,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                                 true to null
                                             } catch (cancelled: CancellationException) {
                                                 throw cancelled
+                                            } catch (_: VaultRecoveryConflictException) {
+                                                ensureAuthenticationActive()
+                                                recoveryConflictDetected.set(true)
+                                                true to entered.toCharArray()
                                             } catch (_: Exception) {
                                                 ensureAuthenticationActive()
                                                 true to entered.toCharArray()
@@ -2067,6 +2074,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         result.getOrNull()?.second?.fill('\u0000')
                         return@launch
                     }
+                    if (recoveryConflictDetected.get()) recoveryConflict = true
                     busy = false
                     result.fold(
                         onSuccess = { outcome ->
@@ -2471,6 +2479,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     RecoveryStatusCard(
                         connected = recoveryConnected,
                         needsReconnect = recoveryNeedsReconnect,
+                        conflict = recoveryConflict,
                         busy = busy,
                         onSetUp = {
                             recoveryPasswordError = ""
@@ -3570,6 +3579,7 @@ private fun OverviewMetric(
 private fun RecoveryStatusCard(
     connected: Boolean,
     needsReconnect: Boolean,
+    conflict: Boolean,
     busy: Boolean,
     onSetUp: () -> Unit,
     onReconnect: () -> Unit
@@ -3577,12 +3587,15 @@ private fun RecoveryStatusCard(
     val accent = if (connected) Green else Gold
     val title = when {
         connected -> "Encrypted recovery copy connected"
+        conflict -> "Recovery copy differs from this device"
         needsReconnect -> "Recovery folder needs attention"
         else -> "No recovery copy configured"
     }
     val description = when {
         connected ->
             "A separate encrypted copy is connected to your selected device-storage folder. Keep that folder available and remember the password used to protect it. Recovery is not cloud sync."
+        conflict ->
+            "The on-device vault and recovery copy contain different changes. Automatic restore was stopped to protect your local files. Your on-device vault remains unchanged. Restoring the recovery copy replaces it, so do that only when you have confirmed it is the version you want."
         needsReconnect ->
             "The saved recovery location cannot currently be opened. Your on-device vault is still available. Restoring from that folder replaces the current on-device vault; newer local files are not merged."
         else ->

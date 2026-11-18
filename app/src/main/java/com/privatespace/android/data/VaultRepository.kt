@@ -316,7 +316,6 @@ class VaultRepository(context: Context) {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
-                    val knownDigest = recoveryPrefs.getString(RECOVERY_INDEX_DIGEST, null)
                     val hasLocalIndex = metadata.baseFile.isFile ||
                         File(metadata.baseFile.path + ".bak").isFile
 
@@ -341,14 +340,34 @@ class VaultRepository(context: Context) {
                                 )
                         }
                     } ?: false
-                    val localIndexMatchesRecovery = localIndex != null && localIndex == index
+                    // Compare the actual vault records, not the schema version.
+                    // A local v3 index and a recovery v2 index can describe exactly
+                    // the same vault after an app upgrade.
+                    val localIndexMatchesRecovery = localIndex != null &&
+                        localIndex.topics == index.topics &&
+                        localIndex.files == index.files &&
+                        localIndex.trash == index.trash
 
-                    if (
-                        !hasLocalIndex ||
-                        knownDigest != snapshot.encryptedDigest ||
-                        !localIndexMatchesRecovery ||
-                        !localPayloadsComplete
+                    // A valid local index that differs from the authenticated
+                    // recovery index may contain newer on-device work created while
+                    // the recovery folder was unavailable. Never replace that
+                    // working copy automatically. Let the user explicitly choose
+                    // the recovery version from the dashboard if that is intended.
+                    if (VaultRecoveryOpenPolicy.shouldBlockAutomaticRestore(
+                            hasLocalIndex = hasLocalIndex,
+                            localIndexReadable = localIndex != null,
+                            localContentMatchesRecovery = localIndexMatchesRecovery
+                        )
                     ) {
+                        throw VaultRecoveryConflictException(
+                            "The on-device vault and recovery copy contain different changes. " +
+                                "Automatic restore was stopped to protect your on-device files. " +
+                                "Your current vault has not been changed. Use Restore from recovery folder " +
+                                "only if you want that recovery copy to replace the on-device vault."
+                        )
+                    }
+
+                    if (!hasLocalIndex || !localIndexMatchesRecovery || !localPayloadsComplete) {
                         restoreWorkingVault(index, store, onProgress)
                     }
                     // Keep unreferenced encrypted payloads. They may be newer file
