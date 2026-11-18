@@ -288,7 +288,7 @@ private val privateSpaceHelpArticles = listOf(
     HelpArticle(
         id = "permanent-delete",
         title = "Permanently delete a file",
-        body = "In Recycle Bin, choose Delete forever and confirm. This removes the vault copy and cannot be undone. It does not delete the original file outside Private Space or copies you previously shared or exported.",
+        body = "In Recycle Bin, choose Delete forever and confirm. This removes the vault copy and cannot be undone. It does not delete the original file outside Private Space or copies you previously shared or exported. It is not a guarantee that every physical trace is erased from the device's storage.",
         keywords = "erase remove forever irreversible storage"
     ),
     HelpArticle(
@@ -2429,6 +2429,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         VaultDetailsDialog(
             topicCount = topics.size,
             fileCount = vaultFiles.size,
+            trashFileCount = trashEntries.size,
+            trashStorageBytes = storageUsage.trashBytes,
             storageBytes = storageUsage.totalBytes,
             exportEnabled = topics.isNotEmpty() && !busy,
             onExportAll = {
@@ -2694,6 +2696,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 "“${topic.name}” will be removed from your topics. Its ${fileCount} file(s) will be moved to the Recycle Bin, where you can restore them or permanently delete them."
             },
             confirmLabel = "Delete topic",
+            isIrreversible = fileCount == 0,
             onCancel = { topicToDelete = null },
             onConfirm = {
                 topicToDelete = null
@@ -2718,6 +2721,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             title = "Move file to Trash?",
             message = "“${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
             confirmLabel = "Move to Trash",
+            isIrreversible = false,
             onCancel = { fileToDelete = null },
             onConfirm = {
                 fileToDelete = null
@@ -2739,7 +2743,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     trashEntryToPermanentlyDelete?.let { entry ->
         ConfirmDialog(
             title = "Permanently delete file?",
-            message = "“${entry.file.displayName}” will be removed from this device and cannot be restored. This does not affect any original file or previously exported/shared copy.",
+            message = "The encrypted vault copy of “${entry.file.displayName}” will be removed and cannot be restored through Private Space. Original files and copies shared or exported earlier are unaffected. This is not a guarantee that every physical trace is erased from the device's storage.",
             confirmLabel = "Delete forever",
             onCancel = { trashEntryToPermanentlyDelete = null },
             onConfirm = {
@@ -3245,6 +3249,8 @@ private fun AuthScreen(
 private fun VaultDetailsDialog(
     topicCount: Int,
     fileCount: Int,
+    trashFileCount: Int,
+    trashStorageBytes: Long,
     storageBytes: Long,
     exportEnabled: Boolean,
     onExportAll: () -> Unit,
@@ -3281,7 +3287,39 @@ private fun VaultDetailsDialog(
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OverviewMetric(Modifier.weight(1f), "Topics", topicCount.toString(), Icons.Default.Folder)
-                    OverviewMetric(Modifier.weight(1f), "Files", fileCount.toString(), Icons.Default.Description)
+                    OverviewMetric(Modifier.weight(1f), "Active files", fileCount.toString(), Icons.Default.Description)
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Panel2,
+                    shape = RoundedCornerShape(15.dp),
+                    border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = Cyan, modifier = Modifier.size(19.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                if (trashFileCount == 1) "Recycle Bin · 1 deleted file" else "Recycle Bin · " + trashFileCount + " deleted files",
+                                color = White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                if (trashFileCount > 0) {
+                                    formatBytes(trashStorageBytes) + " remains encrypted and is included in storage used until permanently deleted."
+                                } else {
+                                    "No deleted files. Storage used reflects files in your active topics."
+                                },
+                                color = Muted,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
                 }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -3721,6 +3759,9 @@ private fun TopicScreen(
     val allVisibleFilesSelected = remember(visibleFileIds, selectedFileIds) {
         visibleFileIds.isNotEmpty() && visibleFileIds.all { it in selectedFileIds }
     }
+    val selectedFilesHiddenByCurrentFilter = remember(visibleFileIds, selectedFileIds) {
+        selectedFileIds.count { it !in visibleFileIds }
+    }
 
     LaunchedEffect(files) {
         val currentIds = files.map { it.id }.toSet()
@@ -4019,6 +4060,16 @@ private fun TopicScreen(
                             ) {
                                 Text(if (allVisibleFilesSelected) "Clear shown" else "Select shown")
                             }
+                        }
+                        if (selectedFilesHiddenByCurrentFilter > 0) {
+                            Text(
+                                selectedFilesHiddenByCurrentFilter.toString() + " selected " +
+                                    (if (selectedFilesHiddenByCurrentFilter == 1) "file is" else "files are") +
+                                    " hidden by the current search or filter. Share and Export still include all selected files.",
+                                color = Gold,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
+                            )
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -5244,7 +5295,7 @@ private fun ChangePasswordDialog(
                     label = { Text("Current password") },
                     visualTransformation = if (oldVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { oldVisible = !oldVisible }) {
+                        IconButton(onClick = { oldVisible = !oldVisible }, enabled = !busy) {
                             Icon(
                                 if (oldVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                 contentDescription = if (oldVisible) "Hide current password" else "Show current password"
@@ -5263,7 +5314,7 @@ private fun ChangePasswordDialog(
                     label = { Text("New password") },
                     visualTransformation = if (newVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { newVisible = !newVisible }) {
+                        IconButton(onClick = { newVisible = !newVisible }, enabled = !busy) {
                             Icon(
                                 if (newVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                 contentDescription = if (newVisible) "Hide new password" else "Show new password"
@@ -5282,7 +5333,7 @@ private fun ChangePasswordDialog(
                     label = { Text("Confirm new password") },
                     visualTransformation = if (confirmationVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(onClick = { confirmationVisible = !confirmationVisible }) {
+                        IconButton(onClick = { confirmationVisible = !confirmationVisible }, enabled = !busy) {
                             Icon(
                                 if (confirmationVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                 contentDescription = if (confirmationVisible) "Hide confirmation" else "Show confirmation"
@@ -5340,6 +5391,7 @@ private fun ConfirmDialog(
     title: String,
     message: String,
     confirmLabel: String = "Delete permanently",
+    isIrreversible: Boolean = true,
     onCancel: () -> Unit,
     onConfirm: () -> Unit
 ) {
@@ -5349,7 +5401,13 @@ private fun ConfirmDialog(
 
     AlertDialog(
         onDismissRequest = { if (!confirmationSubmitted) onCancel() },
-        icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Red) },
+        icon = {
+            Icon(
+                if (isIrreversible) Icons.Default.Warning else Icons.Default.DeleteOutline,
+                contentDescription = null,
+                tint = if (isIrreversible) Red else Gold
+            )
+        },
         title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
             Text(
@@ -5368,10 +5426,17 @@ private fun ConfirmDialog(
                         onConfirm()
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Red, contentColor = Ink),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isIrreversible) Red else Gold,
+                    contentColor = Ink
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(
+                    if (isIrreversible) Icons.Default.DeleteForever else Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
                 Spacer(Modifier.width(7.dp))
                 Text(confirmLabel, fontWeight = FontWeight.SemiBold)
             }
