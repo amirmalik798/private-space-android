@@ -2041,7 +2041,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     restoreProgress = null
                 }
             }
-
+            }
+        }
+        return
+    }
 
     // Index files by topic once per vault snapshot; repeated filtering in
     // topic cards and the active-topic view becomes expensive for large vaults.
