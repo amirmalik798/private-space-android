@@ -27,6 +27,12 @@ import org.bouncycastle.crypto.params.KeyParameter
  * Payload encryption uses bounded-memory, independently authenticated AES-GCM frames
  * and preserves source bytes. The previous single-tag recovery format remains readable.
  */
+/** A recovery key envelope failed AES-GCM authentication (wrong password or damaged envelope). */
+internal class RecoveryKeyAuthenticationException(
+    message: String,
+    cause: Throwable
+) : GeneralSecurityException(message, cause)
+
 object PersistentVaultCrypto {
     private const val PBKDF2_ROUNDS = 600_000
     private const val MIN_SUPPORTED_ROUNDS = 600_000
@@ -127,7 +133,7 @@ object PersistentVaultCrypto {
             val clear = try {
                 cipher.doFinal(wrapped)
             } catch (badTag: AEADBadTagException) {
-                throw GeneralSecurityException("Incorrect password or damaged recovery key.", badTag)
+                throw RecoveryKeyAuthenticationException("Incorrect password or damaged recovery key.", badTag)
             }
             if (clear.size != KEY_BYTES) {
                 clear.fill(0)

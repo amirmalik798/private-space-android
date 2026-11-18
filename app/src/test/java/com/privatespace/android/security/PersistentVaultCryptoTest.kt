@@ -28,7 +28,7 @@ class PersistentVaultCryptoTest {
     fun wrongPasswordCannotUnwrapKey() {
         val dataKey = PersistentVaultCrypto.newDataKey()
         val envelope = PersistentVaultCrypto.wrapDataKey(dataKey.copyOf(), "correct horse battery staple".toCharArray())
-        assertThrows(GeneralSecurityException::class.java) {
+        assertThrows(RecoveryKeyAuthenticationException::class.java) {
             PersistentVaultCrypto.unwrapDataKey(envelope, "wrong password".toCharArray())
         }
         dataKey.fill(0)

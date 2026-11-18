@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.security.PersistentVaultCrypto
+import com.privatespace.android.security.RecoveryKeyAuthenticationException
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -602,6 +603,7 @@ internal class PersistentVaultStore private constructor(
             var key: ByteArray? = null
             var keyGeneration = 0L
             var lastFailure: Throwable? = null
+            var authenticationFailure: RecoveryKeyAuthenticationException? = null
             try {
                 for ((generation, document) in candidates) {
                     try {
@@ -613,6 +615,9 @@ internal class PersistentVaultStore private constructor(
                             envelope.fill(0)
                         }
                         break
+                    } catch (failure: RecoveryKeyAuthenticationException) {
+                        authenticationFailure = failure
+                        lastFailure = failure
                     } catch (failure: Exception) {
                         lastFailure = failure
                     }
@@ -620,10 +625,10 @@ internal class PersistentVaultStore private constructor(
             } finally {
                 password.fill('\u0000')
             }
-            val recoveredKey = key ?: throw IOException(
-                "Incorrect vault password or damaged recovery-key envelope.",
-                lastFailure
-            )
+            val recoveredKey = key ?: throw (
+                authenticationFailure
+                    ?: IOException("The recovery-key envelope could not be read safely.", lastFailure)
+                )
             val indexGeneration = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
             return PersistentVaultStore(
                 context.applicationContext,

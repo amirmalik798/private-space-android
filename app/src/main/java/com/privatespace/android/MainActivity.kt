@@ -74,6 +74,7 @@ import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.privatespace.android.data.*
 import com.privatespace.android.security.PasswordManager
+import com.privatespace.android.security.RecoveryKeyAuthenticationException
 import com.privatespace.android.security.VaultSessionPolicy
 import com.privatespace.android.security.VaultImportControl
 import kotlinx.coroutines.CancellationException
@@ -2005,7 +2006,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                         }
                                     } catch (cancelled: CancellationException) {
                                         throw cancelled
-                                    } catch (failure: Throwable) {
+                                    } catch (failure: RecoveryKeyAuthenticationException) {
                                         PasswordManager.recordFailure(context)
                                         throw failure
                                     }
