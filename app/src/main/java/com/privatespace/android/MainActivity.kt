@@ -344,7 +344,7 @@ private object VaultLockDispatcher {
     }
 }
 
-private enum class VaultReleaseAction { SHARE, EXPORT }
+private enum class VaultReleaseAction { OPEN, SHARE, EXPORT }
 
 private data class PendingVaultRelease(
     val action: VaultReleaseAction,
@@ -1618,6 +1618,22 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             return
         }
 
+        // Opening uses an external viewer and therefore releases a decrypted
+        // copy outside the vault sandbox. Require the same deliberate consent
+        // used by Share and Export before creating or granting that copy.
+        requestFileReleaseConfirmation(file, VaultReleaseAction.OPEN)
+    }
+
+    fun openVaultFileAfterConfirmation(file: VaultFile) {
+        if (!unlocked || busy) return
+        if (
+            activeTopicId != file.topicId ||
+            vaultFiles.none { it.id == file.id }
+        ) {
+            toast("This file is no longer available in the open topic.")
+            return
+        }
+
         val kind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
         val extensionMimeType = VaultFormatSupport.mimeTypeForName(file.displayName)
         val targetMimeType = extensionMimeType ?: file.mimeType
@@ -1631,10 +1647,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             VaultFormatSupport.FileKind.DOCUMENT -> emptyList()
         }
 
-        // Opening is an explicit tap on this file. It launches the appropriate
-        // external viewer directly; only Share and Export retain confirmation.
-        // The original bytes are decrypted into the restricted, temporary
-        // FileProvider cache and are never copied into public/shared storage here.
+        // The confirmed hand-off stays in the restricted temporary FileProvider
+        // cache; the vault's encrypted source record is never moved or modified.
         openExternalVaultFile(
             file = file,
             preferredSamsungPackages = samsungTargets,
@@ -2037,6 +2051,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     return
                 }
                 when (pending.action) {
+                    VaultReleaseAction.OPEN -> {
+                        if (selected.size != 1) {
+                            toast("Opening outside Private Space is available for one file at a time.")
+                            return
+                        }
+                        openVaultFileAfterConfirmation(selected.single())
+                    }
                     VaultReleaseAction.SHARE -> {
                         if (selected.size == 1) shareVaultFile(selected.single())
                         else shareVaultFiles(selected)
@@ -2794,6 +2815,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
 
     pendingReleaseConfirmation?.let { pending ->
+        val isOpen = pending.action == VaultReleaseAction.OPEN
         val isShare = pending.action == VaultReleaseAction.SHARE
         val itemDescription = when {
             pending.allTopics -> "all topics and their files"
@@ -2805,7 +2827,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onDismissRequest = { if (!busy) pendingReleaseConfirmation = null },
             title = {
                 Text(
-                    if (isShare) "Share outside Private Space?" else "Export outside Private Space?",
+                    when {
+                        isOpen -> "Open outside Private Space?"
+                        isShare -> "Share outside Private Space?"
+                        else -> "Export outside Private Space?"
+                    },
                     color = White,
                     fontWeight = FontWeight.Bold
                 )
@@ -2813,10 +2839,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        if (isShare) {
-                            "You are about to share $itemDescription. The selected content will be made available to the app or recipient you choose."
-                        } else {
-                            "You are about to export $itemDescription. The exported copies will be saved outside Private Space protection."
+                        when {
+                            isOpen -> "You are about to open $itemDescription in another app. Private Space will make a temporary decrypted copy available to that viewer. The viewer may read, copy or retain it outside this vault."
+                            isShare -> "You are about to share $itemDescription. The selected content will be made available to the app or recipient you choose."
+                            else -> "You are about to export $itemDescription. The exported copies will be saved outside Private Space protection."
                         },
                         color = Muted
                     )
@@ -2831,12 +2857,20 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             horizontalArrangement = Arrangement.spacedBy(9.dp)
                         ) {
                             Icon(
-                                if (isShare) Icons.Default.Share else Icons.Default.FileDownload,
+                                when {
+                                    isOpen -> Icons.Default.Visibility
+                                    isShare -> Icons.Default.Share
+                                    else -> Icons.Default.FileDownload
+                                },
                                 contentDescription = null,
                                 tint = Cyan
                             )
                             Text(
-                                "Nothing is shared or exported until you continue and complete the Android share or folder selection.",
+                                when {
+                                    isOpen -> "Nothing is released to another app until you confirm. The receiving viewer may keep its own copy."
+                                    isShare -> "Nothing is shared until you continue and choose an app or recipient in Android."
+                                    else -> "Nothing is exported until you continue and choose a destination folder."
+                                },
                                 color = White,
                                 fontSize = 12.sp
                             )
@@ -2850,7 +2884,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     onClick = ::confirmPendingRelease,
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text(if (isShare) "Continue to share" else "Continue to export")
+                    Text(
+                        when {
+                            isOpen -> "Continue to open"
+                            isShare -> "Continue to share"
+                            else -> "Continue to export"
+                        }
+                    )
                 }
             },
             dismissButton = {
@@ -4223,7 +4263,7 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 SecurityInfoRow(
                     icon = Icons.Default.Share,
                     title = "Opening, sharing and exporting",
-                    body = "Opening a file, sharing it or exporting it makes a temporary decrypted copy available to another app or destination. Only sharing and exporting require an extra confirmation. An external app may retain or copy a file it receives; those copies are no longer protected by this vault."
+                    body = "Opening a file, sharing it or exporting it makes a decrypted copy available outside Private Space. Each action requires a separate confirmation before a viewer, recipient or destination receives access. An external app or recipient may retain or copy the content; those copies are no longer protected by this vault."
                 )
                 SecurityInfoRow(
                     icon = Icons.Default.Warning,
