@@ -12,7 +12,7 @@ internal class RecoveryMirrorRollbackException(
     rollbackFailure: Throwable
 ) : IOException(
     "The local vault index could not be committed and the encrypted recovery copy could not be rolled back safely. " +
-        "The encrypted payload has been preserved for recovery.",
+        "Recovery storage has been disconnected; reconnect it to reconcile the preserved encrypted payload.",
     commitFailure
 ) {
     init {

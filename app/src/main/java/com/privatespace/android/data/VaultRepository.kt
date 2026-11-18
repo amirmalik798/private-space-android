@@ -1887,8 +1887,13 @@ class VaultRepository(context: Context) {
                             ?: error("Persistent recovery folder is unavailable.")
                         runCatching { saveRecoveryPreferences(tree, rollback.encryptedDigest) }
                     } catch (rollbackFailure: Throwable) {
-                        // The mirror may still contain the new index. Signal the
-                        // caller to preserve the corresponding encrypted payload.
+                        // The mirror may still contain the new index. Stop using this
+                        // in-memory store so subsequent operations cannot write against
+                        // an uncertain generation. The saved folder remains available
+                        // for an explicit authenticated reconciliation.
+                        activePersistentStore.clearKey()
+                        persistentStore = null
+                        persistentTreeUri = null
                         throw RecoveryMirrorRollbackException(localFailure, rollbackFailure)
                     }
                 }
