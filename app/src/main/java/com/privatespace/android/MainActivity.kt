@@ -287,7 +287,7 @@ private val privateSpaceHelpArticles = listOf(
     HelpArticle(
         id = "open-share-export",
         title = "Understand Open, Share and Export",
-        body = "Open prepares a temporary decrypted copy for the viewer app you choose. Open, Share and Export each require confirmation before content is released outside Private Space. Any copy received or saved by another app or destination is outside vault protection, and the other app may retain or copy it.",
+        body = "Open prepares a temporary decrypted copy for the viewer app you choose when you tap a file. Share and Export require confirmation before content is released to another app or destination. External apps may retain copies they receive; those copies are outside Private Space protection.",
         keywords = "view open share send export download plaintext external app privacy"
     ),
     HelpArticle(
@@ -344,7 +344,7 @@ private object VaultLockDispatcher {
     }
 }
 
-private enum class VaultReleaseAction { OPEN, SHARE, EXPORT }
+private enum class VaultReleaseAction { SHARE, EXPORT }
 
 private data class PendingVaultRelease(
     val action: VaultReleaseAction,
@@ -1618,26 +1618,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             return
         }
 
-        // Opening uses an external viewer and therefore releases a decrypted
-        // copy outside the vault sandbox. Require the same deliberate consent
-        // used by Share and Export before creating or granting that copy.
-        pendingReleaseConfirmation = PendingVaultRelease(
-            action = VaultReleaseAction.OPEN,
-            displayName = file.displayName,
-            fileIds = listOf(file.id)
-        )
-    }
-
-    fun openVaultFileAfterConfirmation(file: VaultFile) {
-        if (!unlocked || busy) return
-        if (
-            activeTopicId != file.topicId ||
-            vaultFiles.none { it.id == file.id }
-        ) {
-            toast("This file is no longer available in the open topic.")
-            return
-        }
-
+        // Opening is an explicit tap on this file. Keep the existing external
+        // viewer workflow and its private, temporary FileProvider hand-off.
         val kind = VaultFormatSupport.kindForFile(file.displayName, file.mimeType)
         val extensionMimeType = VaultFormatSupport.mimeTypeForName(file.displayName)
         val targetMimeType = extensionMimeType ?: file.mimeType
@@ -1651,8 +1633,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             VaultFormatSupport.FileKind.DOCUMENT -> emptyList()
         }
 
-        // The confirmed hand-off stays in the restricted temporary FileProvider
-        // cache; the vault's encrypted source record is never moved or modified.
         openExternalVaultFile(
             file = file,
             preferredSamsungPackages = samsungTargets,
@@ -2055,13 +2035,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     return
                 }
                 when (pending.action) {
-                    VaultReleaseAction.OPEN -> {
-                        if (selected.size != 1) {
-                            toast("Opening outside Private Space is available for one file at a time.")
-                            return
-                        }
-                        openVaultFileAfterConfirmation(selected.single())
-                    }
                     VaultReleaseAction.SHARE -> {
                         if (selected.size == 1) shareVaultFile(selected.single())
                         else shareVaultFiles(selected)
@@ -2819,7 +2792,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
 
     pendingReleaseConfirmation?.let { pending ->
-        val isOpen = pending.action == VaultReleaseAction.OPEN
         val isShare = pending.action == VaultReleaseAction.SHARE
         val itemDescription = when {
             pending.allTopics -> "all topics and their files"
@@ -2831,11 +2803,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onDismissRequest = { if (!busy) pendingReleaseConfirmation = null },
             title = {
                 Text(
-                    when {
-                        isOpen -> "Open outside Private Space?"
-                        isShare -> "Share outside Private Space?"
-                        else -> "Export outside Private Space?"
-                    },
+                    if (isShare) "Share outside Private Space?" else "Export outside Private Space?",
                     color = White,
                     fontWeight = FontWeight.Bold
                 )
@@ -2843,10 +2811,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        when {
-                            isOpen -> "You are about to open $itemDescription in another app. Private Space will make a temporary decrypted copy available to that viewer. The viewer may read, copy or retain it outside this vault."
-                            isShare -> "You are about to share $itemDescription. The selected content will be made available to the app or recipient you choose."
-                            else -> "You are about to export $itemDescription. The exported copies will be saved outside Private Space protection."
+                        if (isShare) {
+                            "You are about to share $itemDescription. The selected content will be made available to the app or recipient you choose."
+                        } else {
+                            "You are about to export $itemDescription. The exported copies will be saved outside Private Space protection."
                         },
                         color = Muted
                     )
@@ -2861,20 +2829,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             horizontalArrangement = Arrangement.spacedBy(9.dp)
                         ) {
                             Icon(
-                                when {
-                                    isOpen -> Icons.Default.Visibility
-                                    isShare -> Icons.Default.Share
-                                    else -> Icons.Default.FileDownload
-                                },
+                                if (isShare) Icons.Default.Share else Icons.Default.FileDownload,
                                 contentDescription = null,
                                 tint = Cyan
                             )
                             Text(
-                                when {
-                                    isOpen -> "Nothing is released to another app until you confirm. The receiving viewer may keep its own copy."
-                                    isShare -> "Nothing is shared until you continue and choose an app or recipient in Android."
-                                    else -> "Nothing is exported until you continue and choose a destination folder."
-                                },
+                                "Nothing is shared or exported until you continue and complete the Android share or folder selection.",
                                 color = White,
                                 fontSize = 12.sp
                             )
@@ -2888,13 +2848,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     onClick = ::confirmPendingRelease,
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text(
-                        when {
-                            isOpen -> "Continue to open"
-                            isShare -> "Continue to share"
-                            else -> "Continue to export"
-                        }
-                    )
+                    Text(if (isShare) "Continue to share" else "Continue to export")
                 }
             },
             dismissButton = {
@@ -4267,7 +4221,7 @@ private fun SecurityInfoDialog(onDismiss: () -> Unit) {
                 SecurityInfoRow(
                     icon = Icons.Default.Share,
                     title = "Opening, sharing and exporting",
-                    body = "Opening a file, sharing it or exporting it makes a decrypted copy available outside Private Space. Each action requires a separate confirmation before a viewer, recipient or destination receives access. An external app or recipient may retain or copy the content; those copies are no longer protected by this vault."
+                    body = "Opening a file makes a temporary decrypted copy available to the viewer you choose. Tapping Open starts that viewer workflow; Share and Export require separate confirmation. An external app or recipient may retain or copy the content; those copies are no longer protected by this vault."
                 )
                 SecurityInfoRow(
                     icon = Icons.Default.Warning,
@@ -6356,12 +6310,7 @@ private fun ConfirmDialog(
 private fun formatDate(timestamp: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
 
-private fun formatBytes(value: Long): String = when {
-    value < 1024 -> "$value B"
-    value < 1_048_576 -> String.format("%.1f KB", value / 1024.0)
-    value < 1_073_741_824 -> String.format("%.1f MB", value / 1_048_576.0)
-    else -> String.format("%.2f GB", value / 1_073_741_824.0)
-}
+private fun formatBytes(value: Long): String = VaultByteFormatter.format(value)
 
 private fun formatDuration(durationMs: Long): String {
     val totalSeconds = durationMs.coerceAtLeast(0L) / 1_000L

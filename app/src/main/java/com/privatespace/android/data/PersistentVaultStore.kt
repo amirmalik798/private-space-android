@@ -7,6 +7,7 @@ import com.privatespace.android.security.PersistentVaultCrypto
 import com.privatespace.android.security.RecoveryKeyAuthenticationException
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -38,7 +39,11 @@ internal class PersistentVaultStore private constructor(
     /** Whether the recovery-ready marker existed in the directory snapshot. */
     private var readyMarkerExists: Boolean,
     /** Highest index filename allocated or observed, including failed partial writes. */
-    private var nextIndexGeneration: Long
+    private var nextIndexGeneration: Long,
+    /** Total stored file bytes in the recovery-vault folder at open time. */
+    private val backupSizeBytes: Long = 0L,
+    /** Provider-reported physical sizes of each encrypted recovery payload. */
+    private val encryptedPayloadSizesById: MutableMap<String, Long> = mutableMapOf()
 ) {
     private val resolver = context.applicationContext.contentResolver
 
@@ -80,6 +85,35 @@ internal class PersistentVaultStore private constructor(
         }
     }
 
+    private class CountingInputStream(
+        input: InputStream,
+        private val onBytesRead: (Long) -> Unit
+    ) : FilterInputStream(input) {
+        var bytesRead: Long = 0L
+            private set
+
+        override fun read(): Int {
+            val value = super.read()
+            if (value >= 0) record(1)
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val count = super.read(buffer, offset, length)
+            if (count > 0) record(count)
+            return count
+        }
+
+        private fun record(count: Int) {
+            bytesRead = try {
+                Math.addExact(bytesRead, count.toLong())
+            } catch (failure: ArithmeticException) {
+                throw IOException("The encrypted recovery file size exceeds the supported range.", failure)
+            }
+            onBytesRead(bytesRead)
+        }
+    }
+
     private class WipingByteArrayOutputStream(initialSize: Int) : ByteArrayOutputStream(initialSize) {
         fun wipe() {
             buf.fill(0)
@@ -116,6 +150,17 @@ internal class PersistentVaultStore private constructor(
             if (id in referencedIds && id !in payloadDocuments) payloadDocuments[id] = document
         }
         pendingFolderSnapshot = null
+    }
+
+    /** Returns the physical backup size and the byte ranges used by restore progress. */
+    @Synchronized
+    fun restoreSizeForPayloads(referencedIds: Set<String>): VaultRecoveryBackupSize {
+        requireKey()
+        return VaultRecoveryBackupSizeCalculator.calculate(
+            totalBytes = backupSizeBytes,
+            encryptedPayloadSizesById = encryptedPayloadSizesById,
+            referencedPayloadIds = referencedIds
+        )
     }
 
     @Synchronized
@@ -194,7 +239,8 @@ internal class PersistentVaultStore private constructor(
         id: String,
         output: OutputStream,
         aad: ByteArray,
-        checkCancelled: () -> Unit = {}
+        checkCancelled: () -> Unit = {},
+        onEncryptedBytesRead: (Long) -> Unit = {}
     ) {
         checkCancelled()
         requireValidId(id)
@@ -203,12 +249,19 @@ internal class PersistentVaultStore private constructor(
         val input = resolver.openInputStream(document.uri)
             ?: throw IOException("Could not read an encrypted recovery file.")
         input.use { raw ->
+            val counted = CountingInputStream(raw, onEncryptedBytesRead)
             PersistentVaultCrypto.decrypt(
-                CancellationCheckingInputStream(raw, checkCancelled),
+                CancellationCheckingInputStream(counted, checkCancelled),
                 output,
                 aad,
                 requireKey()
             )
+            val expectedBytes = encryptedPayloadSizesById[id]
+            if (expectedBytes != null && counted.bytesRead != expectedBytes) {
+                throw IOException(
+                    "The encrypted recovery file size does not match the selected backup's stored size."
+                )
+            }
         }
     }
 
@@ -535,6 +588,7 @@ internal class PersistentVaultStore private constructor(
         indexDocuments.clear()
         pendingFolderSnapshot = null
         pendingPayloadDeletionIds.clear()
+        encryptedPayloadSizesById.clear()
     }
 
     @Synchronized
@@ -696,18 +750,38 @@ internal class PersistentVaultStore private constructor(
             val existingIndexDocuments = mutableListOf<Pair<Long, DocumentFile>>()
             val candidates = mutableListOf<Pair<Long, DocumentFile>>()
             val pendingFolderSnapshot = mutableListOf<Pair<String, DocumentFile>>()
+            val encryptedPayloadSizesById = mutableMapOf<String, Long>()
+            var backupSizeBytes = 0L
             var readyMarkerExists = false
 
-            // DocumentFile.findFile() searches by calling listFiles(). Read each
-            // child name once and build the small in-memory lookup tables from this
-            // one directory snapshot, rather than re-enumerating the whole backup
-            // folder for each individual payload operation.
+            // Capture provider-reported file lengths from the directory snapshot.
+            // This measures the stored encrypted backup without doing a second pass
+            // over potentially multi-gigabyte or terabyte payload streams.
             folderContents.forEach { document ->
-                val name = document.name ?: return@forEach
-                pendingFolderSnapshot += name to document
-                parseIndexGeneration(name)?.let { existingIndexDocuments += it to document }
-                parseKeyGeneration(name)?.let { candidates += it to document }
-                if (name == READY_MARKER) readyMarkerExists = true
+                val name = document.name
+                val length = document.length()
+                if (length < 0L) {
+                    throw IOException("The selected recovery folder returned an invalid file size.")
+                }
+                backupSizeBytes = try {
+                    Math.addExact(backupSizeBytes, length)
+                } catch (failure: ArithmeticException) {
+                    throw IOException("The selected recovery backup is too large to measure.", failure)
+                }
+                if (name != null) {
+                    pendingFolderSnapshot += name to document
+                    parseIndexGeneration(name)?.let { existingIndexDocuments += it to document }
+                    parseKeyGeneration(name)?.let { candidates += it to document }
+                    parsePayloadId(name)?.let { id ->
+                        if (length <= 0L) {
+                            throw IOException("An encrypted recovery payload has an invalid or unavailable file size.")
+                        }
+                        if (encryptedPayloadSizesById.put(id, length) != null) {
+                            throw IOException("The recovery folder contains duplicate encrypted payload identifiers.")
+                        }
+                    }
+                    if (name == READY_MARKER) readyMarkerExists = true
+                }
             }
             candidates.sortByDescending { it.first }
             val hasCommittedIndex = existingIndexDocuments.isNotEmpty()
@@ -758,7 +832,9 @@ internal class PersistentVaultStore private constructor(
                 pendingFolderSnapshot = pendingFolderSnapshot,
                 pendingPayloadDeletionIds = mutableSetOf(),
                 readyMarkerExists = readyMarkerExists,
-                nextIndexGeneration = highestExistingGeneration
+                nextIndexGeneration = highestExistingGeneration,
+                backupSizeBytes = backupSizeBytes,
+                encryptedPayloadSizesById = encryptedPayloadSizesById
             )
             } finally {
                 password.fill('\u0000')

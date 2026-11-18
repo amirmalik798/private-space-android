@@ -65,67 +65,6 @@ private class BoundedWipingByteArrayOutputStream(
     }
 }
 
-private class RestoreProgressOutputStream(
-    private val delegate: OutputStream,
-    private val expectedBytes: Long,
-    private val completedBeforeFile: Long,
-    private val totalBytes: Long,
-    private val completedFiles: Int,
-    private val totalFiles: Int,
-    private val fileName: String,
-    private val onProgress: (VaultRestoreProgress) -> Unit
-) : OutputStream() {
-    private var written = 0L
-    private var lastReported = 0L
-
-    override fun write(value: Int) {
-        delegate.write(value)
-        record(1)
-    }
-
-    override fun write(bytes: ByteArray, offset: Int, length: Int) {
-        delegate.write(bytes, offset, length)
-        record(length.toLong())
-    }
-
-    override fun flush() = delegate.flush()
-
-    private fun record(count: Long) {
-        if (count <= 0L) return
-        written = try { Math.addExact(written, count) } catch (failure: ArithmeticException) {
-            throw IOException("Recovered file size is invalid.", failure)
-        }
-        if (written > expectedBytes) throw IOException("Recovered file is larger than its authenticated index entry.")
-        if (written - lastReported >= 1024L * 1024L) {
-            lastReported = written
-            report()
-        }
-    }
-
-    fun finish() {
-        if (written != expectedBytes) {
-            throw IOException("Recovered file size does not match its authenticated index entry.")
-        }
-        report()
-    }
-
-    private fun report() {
-        val completed = try { Math.addExact(completedBeforeFile, written) } catch (failure: ArithmeticException) {
-            throw IOException("Recovery progress is outside the supported range.", failure)
-        }
-        onProgress(
-            VaultRestoreProgress(
-                completedBytes = completed.coerceAtMost(totalBytes),
-                totalBytes = totalBytes,
-                completedFiles = completedFiles,
-                totalFiles = totalFiles,
-                currentFileName = fileName,
-                phase = "Restoring encrypted files"
-            )
-        )
-    }
-}
-
 class VaultRepository(context: Context) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
@@ -2065,11 +2004,8 @@ class VaultRepository(context: Context) {
         validateIndexForSave(index)
         recoverInterruptedRestoreFiles()
         val records = index.files + index.trash.map { it.file }
-        val totalBytes = records.fold(0L) { total, record ->
-            try { Math.addExact(total, record.sizeBytes) } catch (failure: ArithmeticException) {
-                throw IOException("Recovery backup size exceeds the supported range.", failure)
-            }
-        }
+        val recoverySize = store.restoreSizeForPayloads(records.map { it.id }.toSet())
+        val totalBytes = recoverySize.totalBytes
         val requiredLocalBytes = records.fold(0L) { total, record ->
             try {
                 Math.addExact(total, VaultCrypto.encryptedContainerLength(record.sizeBytes))
@@ -2103,7 +2039,7 @@ class VaultRepository(context: Context) {
             )
         }
         val incomingFiles = mutableMapOf<String, File>()
-        var completedBytes = 0L
+        var completedBytes = recoverySize.completedBytesBeforePayloads
         var lastProgressAtNanos = 0L
         var restoreFailure: Throwable? = null
         fun reportProgress(progress: VaultRestoreProgress) {
@@ -2125,7 +2061,7 @@ class VaultRepository(context: Context) {
         }
         reportProgress(
             VaultRestoreProgress(
-                completedBytes = 0L,
+                completedBytes = completedBytes,
                 totalBytes = totalBytes,
                 completedFiles = 0,
                 totalFiles = records.size,
@@ -2150,18 +2086,33 @@ class VaultRepository(context: Context) {
                                     // The recovery GCM tag must authenticate before the
                                     // local ciphertext tag is finalized. No clear restore
                                     // copy is ever written to disk.
-                                    val progressOutput = RestoreProgressOutputStream(
-                                        delegate = localEncryptor,
-                                        expectedBytes = record.sizeBytes,
-                                        completedBeforeFile = completedBytes,
-                                        totalBytes = totalBytes,
-                                        completedFiles = recordIndex,
-                                        totalFiles = records.size,
-                                        fileName = record.displayName,
-                                        onProgress = ::reportProgress
+                                    val exactOutput = ExactLengthOutputStream(
+                                        destination = localEncryptor,
+                                        expectedBytes = record.sizeBytes
                                     )
-                                    store.decryptPayload(record.id, progressOutput, fileAad(record.id))
-                                    progressOutput.finish()
+                                    store.decryptPayload(
+                                        id = record.id,
+                                        output = exactOutput,
+                                        aad = fileAad(record.id),
+                                        onEncryptedBytesRead = { encryptedBytesRead ->
+                                            val currentCompleted = try {
+                                                Math.addExact(completedBytes, encryptedBytesRead)
+                                            } catch (failure: ArithmeticException) {
+                                                throw IOException("Recovery progress exceeds the supported range.", failure)
+                                            }
+                                            reportProgress(
+                                                VaultRestoreProgress(
+                                                    completedBytes = currentCompleted.coerceAtMost(totalBytes),
+                                                    totalBytes = totalBytes,
+                                                    completedFiles = recordIndex,
+                                                    totalFiles = records.size,
+                                                    currentFileName = record.displayName,
+                                                    phase = "Restoring encrypted files"
+                                                )
+                                            )
+                                        }
+                                    )
+                                    exactOutput.finish()
                                     localEncryptor.finish()
                                     encrypted.fd.sync()
                                 } catch (failure: Throwable) {
@@ -2176,7 +2127,13 @@ class VaultRepository(context: Context) {
                         }
                     })
                     incomingFiles[record.id] = incoming
-                    completedBytes = Math.addExact(completedBytes, record.sizeBytes)
+                    val restoredPayloadBytes = recoverySize.payloadBytesById[record.id]
+                        ?: throw IOException("The encrypted recovery file size is missing.")
+                    completedBytes = try {
+                        Math.addExact(completedBytes, restoredPayloadBytes)
+                    } catch (failure: ArithmeticException) {
+                        throw IOException("Recovery progress exceeds the supported range.", failure)
+                    }
                     reportProgress(
                         VaultRestoreProgress(
                             completedBytes = completedBytes,
