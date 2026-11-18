@@ -4,7 +4,9 @@ data class VaultTopic(
     val id: String,
     val name: String,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /** ID of an encrypted photo in this topic used as its visual cover. */
+    val thumbnailFileId: String? = null
 )
 
 data class VaultFile(

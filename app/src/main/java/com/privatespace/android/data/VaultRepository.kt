@@ -623,7 +623,7 @@ class VaultRepository(context: Context) {
         val destinationTopic = VaultTrashRestoration.topicFor(entry, index.topics, now)
         val topics = if (index.topics.any { it.id == destinationTopic.id }) {
             index.topics.map {
-                if (it.id == destinationTopic.id) it.copy(updatedAt = now) else it
+                if (it.id == destinationTopic.id) destinationTopic.copy(updatedAt = now) else it
             }
         } else {
             index.topics + destinationTopic
@@ -643,6 +643,10 @@ class VaultRepository(context: Context) {
     fun permanentlyDeleteTrashFile(id: String) {
         val index = loadIndex()
         if (index.trash.none { it.file.id == id }) return
+        val recoveryStore = persistentStore
+        check(persistentStorageUri() == null || recoveryStore != null) {
+            "Reconnect the encrypted recovery folder before permanently deleting this file so its recovery copy can be removed too."
+        }
         val tombstone = stageEncryptedForDeletion(id)
         try {
             saveIndex(index.copy(trash = index.trash.filterNot { it.file.id == id }))
@@ -652,7 +656,7 @@ class VaultRepository(context: Context) {
         }
         // The durable index no longer references this ID. Record and retry
         // recovery-store deletion instead of silently retaining an orphan.
-        persistentStore?.deletePayload(id)
+        recoveryStore?.deletePayload(id)
         tombstone?.let(::deleteStagedPayload)
     }
 

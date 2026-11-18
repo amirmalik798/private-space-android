@@ -598,7 +598,9 @@ internal class PersistentVaultStore private constructor(
         }
         payloadDocuments.remove(id, document)
         pendingPayloadDeletionIds.remove(id)
-        runCatching { findChild(payloadDeletionMarkerName(id))?.delete() }
+        VaultPayloadDeletionMarker.fileNames(id).forEach { markerName ->
+            runCatching { findChild(markerName)?.delete() }
+        }
     }
 
     @Synchronized
@@ -672,14 +674,14 @@ internal class PersistentVaultStore private constructor(
 
     private fun createPayloadDeletionMarker(id: String): DocumentFile {
         requireValidId(id)
-        val name = payloadDeletionMarkerName(id)
-        val marker = findChild(name) ?: directory.createFile("text/plain", name)
-            ?: throw IOException("Could not record pending recovery-payload cleanup.")
-        if (marker.name != name) {
-            runCatching { marker.delete() }
-            throw IOException("The storage provider could not create an exact recovery cleanup marker.")
-        }
-        return marker
+        val marker = VaultPayloadDeletionMarker.fileNames(id).firstNotNullOfOrNull(::findChild)
+        if (marker != null) return marker
+        return createExactFile(
+            directory,
+            BINARY_MIME,
+            VaultPayloadDeletionMarker.fileName(id),
+            "Could not record pending recovery-payload cleanup."
+        )
     }
 
     private fun findChild(name: String): DocumentFile? =
@@ -716,7 +718,6 @@ internal class PersistentVaultStore private constructor(
         private const val INDEX_SUFFIX = ".psv"
         private const val KEY_PREFIX = "vault-key-"
         private const val KEY_SUFFIX = ".wrap"
-        private const val PAYLOAD_DELETE_SUFFIX = ".psv.delete"
 
         private fun createExactFile(
             parent: DocumentFile,
@@ -1119,14 +1120,8 @@ internal class PersistentVaultStore private constructor(
                 ?.takeIf { it == id }
         }
 
-        private fun payloadDeletionMarkerName(id: String) = "$id$PAYLOAD_DELETE_SUFFIX"
-
-        private fun parsePayloadDeletionId(name: String): String? {
-            if (!name.endsWith(PAYLOAD_DELETE_SUFFIX)) return null
-            val id = name.removeSuffix(PAYLOAD_DELETE_SUFFIX)
-            return runCatching { UUID.fromString(id).toString() }.getOrNull()
-                ?.takeIf { it == id }
-        }
+        private fun parsePayloadDeletionId(name: String): String? =
+            VaultPayloadDeletionMarker.parseId(name)
 
         private fun indexName(generation: Long) =
             INDEX_PREFIX + generation.toString().padStart(20, '0') + INDEX_SUFFIX

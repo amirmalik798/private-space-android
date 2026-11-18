@@ -454,6 +454,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var topicName by remember { mutableStateOf("") }
     var showChangePassword by remember { mutableStateOf(false) }
     var topicToDelete by remember { mutableStateOf<VaultTopic?>(null) }
+    var topicToSetThumbnail by remember { mutableStateOf<VaultTopic?>(null) }
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
 
     var pendingImportTopic by remember { mutableStateOf<String?>(null) }
@@ -597,6 +598,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         showCreateTopic = false
         showChangePassword = false
         topicToDelete = null
+        topicToSetThumbnail = null
         fileToDelete = null
         importControls.values.forEach { it.stop() }
         importControls = emptyMap()
@@ -2051,6 +2053,34 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         if (query.isEmpty()) topics else topics.filter { it.name.contains(query, ignoreCase = true) }
     }
 
+    fun saveTopicThumbnail(topicId: String, fileId: String) {
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repository.setTopicThumbnail(topicId, fileId) }
+            }
+            busy = false
+            result.onSuccess {
+                refreshVault()
+                toast("Topic thumbnail updated.")
+            }.onFailure { toast(it.message ?: "Could not set this topic thumbnail.") }
+        }
+    }
+
+    fun removeTopicThumbnail(topicId: String) {
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching { repository.clearTopicThumbnail(topicId) }
+            }
+            busy = false
+            result.onSuccess {
+                refreshVault()
+                toast("Topic thumbnail removed.")
+            }.onFailure { toast(it.message ?: "Could not remove this topic thumbnail.") }
+        }
+    }
+
     if (!unlocked) {
         AuthScreen(
             setup = setup,
@@ -2433,6 +2463,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             onShareTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.SHARE) },
             onExportTopic = { requestTopicReleaseConfirmation(activeTopic.id, VaultReleaseAction.EXPORT) },
             onDeleteTopic = { topicToDelete = activeTopic },
+            onSetThumbnail = { topicToSetThumbnail = activeTopic },
+            onClearThumbnail = { removeTopicThumbnail(activeTopic.id) },
             imports = emptyList(),
             onPauseImport = ::pauseImport,
             onResumeImport = ::resumeImport,
@@ -2717,11 +2749,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 topicFiles.size,
                                 storageUsage.topicBytes[topic.id] ?: 0L
                             )
+                            val thumbnailFile = topic.thumbnailFileId?.let { id ->
+                                topicFiles.firstOrNull { it.id == id }
+                            }
+                            val canChooseThumbnail = topicFiles.any {
+                                VaultTopicThumbnailPolicy.isPhoto(it) &&
+                                    VaultThumbnailPolicy.shouldGeneratePreview(it.sizeBytes)
+                            }
                             TopicCard(
                                 summary = summary,
+                                thumbnailFile = thumbnailFile,
+                                repository = repository,
+                                canChooseThumbnail = canChooseThumbnail,
                                 onOpen = { activeTopicId = topic.id },
                                 onExport = { launchTopicExport(topic.id) },
                                 onDelete = { topicToDelete = topic },
+                                onSetThumbnail = { topicToSetThumbnail = topic },
+                                onClearThumbnail = { removeTopicThumbnail(topic.id) },
                                 busy = busy
                             )
                         }
@@ -3057,6 +3101,25 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             },
             shape = RoundedCornerShape(24.dp),
             containerColor = Panel
+        )
+    }
+
+    topicToSetThumbnail?.let { topic ->
+        val photos = filesByTopic[topic.id].orEmpty().filter {
+            VaultTopicThumbnailPolicy.isPhoto(it) &&
+                VaultThumbnailPolicy.shouldGeneratePreview(it.sizeBytes)
+        }
+        TopicThumbnailPickerDialog(
+            topicName = topic.name,
+            photos = photos,
+            selectedFileId = topic.thumbnailFileId,
+            repository = repository,
+            busy = busy,
+            onDismiss = { if (!busy) topicToSetThumbnail = null },
+            onSelect = { fileId ->
+                topicToSetThumbnail = null
+                saveTopicThumbnail(topic.id, fileId)
+            }
         )
     }
 
@@ -4118,9 +4181,14 @@ private fun SecurityInfoRow(
 @Composable
 private fun TopicCard(
     summary: TopicSummary,
+    thumbnailFile: VaultFile?,
+    repository: VaultRepository,
+    canChooseThumbnail: Boolean,
     onOpen: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
+    onSetThumbnail: () -> Unit,
+    onClearThumbnail: () -> Unit,
     busy: Boolean
 ) {
     var menuExpanded by remember(summary.topic.id) { mutableStateOf(false) }
@@ -4135,15 +4203,12 @@ private fun TopicCard(
             Modifier.fillMaxWidth().padding(15.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
+            TopicCover(
+                file = thumbnailFile,
+                repository = repository,
                 modifier = Modifier.size(52.dp),
-                shape = RoundedCornerShape(17.dp),
-                color = Blue.copy(alpha = 0.15f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan, modifier = Modifier.size(27.dp))
-                }
-            }
+                enabled = !busy
+            )
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
@@ -4188,6 +4253,20 @@ private fun TopicCard(
                         leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
                         onClick = { menuExpanded = false; onExport() }
                     )
+                    DropdownMenuItem(
+                        enabled = canChooseThumbnail && !busy,
+                        text = { Text(if (summary.topic.thumbnailFileId == null) "Set thumbnail" else "Change thumbnail") },
+                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                        onClick = { menuExpanded = false; onSetThumbnail() }
+                    )
+                    if (summary.topic.thumbnailFileId != null) {
+                        DropdownMenuItem(
+                            enabled = !busy,
+                            text = { Text("Remove thumbnail") },
+                            leadingIcon = { Icon(Icons.Default.HideImage, contentDescription = null) },
+                            onClick = { menuExpanded = false; onClearThumbnail() }
+                        )
+                    }
                     HorizontalDivider(color = Line)
                     DropdownMenuItem(
                         enabled = !busy,
@@ -4199,6 +4278,119 @@ private fun TopicCard(
             }
         }
     }
+}
+
+@Composable
+private fun TopicCover(
+    file: VaultFile?,
+    repository: VaultRepository,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    if (file == null) {
+        Surface(
+            modifier = modifier,
+            shape = RoundedCornerShape(17.dp),
+            color = Blue.copy(alpha = 0.15f)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan, modifier = Modifier.size(26.dp))
+            }
+        }
+    } else {
+        val preview = rememberVaultMediaPreview(file, repository, enabled = enabled)
+        VaultThumbnail(
+            file = file,
+            preview = preview,
+            modifier = modifier,
+            fallbackIcon = Icons.Default.Image,
+            isImage = true,
+            isVideo = false
+        )
+    }
+}
+
+@Composable
+private fun TopicThumbnailPickerDialog(
+    topicName: String,
+    photos: List<VaultFile>,
+    selectedFileId: String?,
+    repository: VaultRepository,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Choose topic thumbnail", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text(
+                    "Choose a photo already stored in “$topicName”. It remains encrypted as the original vault file; no duplicate image is created.",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+                if (photos.isEmpty()) {
+                    Text(
+                        "There are no eligible photos in this topic yet. Add a photo first, then choose it here.",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 340.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        items(photos, key = { it.id }) { file ->
+                            val preview = rememberVaultMediaPreview(file, repository, enabled = !busy)
+                            val isSelected = file.id == selectedFileId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(13.dp))
+                                    .background(if (isSelected) Blue.copy(alpha = 0.20f) else Panel2.copy(alpha = 0.52f))
+                                    .clickable(enabled = !busy) { onSelect(file.id) }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                VaultThumbnail(
+                                    file = file,
+                                    preview = preview,
+                                    modifier = Modifier.size(48.dp),
+                                    fallbackIcon = Icons.Default.Image,
+                                    isImage = true,
+                                    isVideo = false
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        file.displayName,
+                                        color = White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(formatBytes(file.sizeBytes), color = Muted, fontSize = 10.sp)
+                                }
+                                if (isSelected) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = "Current thumbnail", tint = Cyan)
+                                } else {
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Muted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy, onClick = onDismiss) { Text("Cancel") }
+        },
+        shape = RoundedCornerShape(22.dp),
+        containerColor = Panel
+    )
 }
 
 @Composable
@@ -4221,6 +4413,8 @@ private fun TopicScreen(
     onShareTopic: () -> Unit,
     onExportTopic: () -> Unit,
     onDeleteTopic: () -> Unit,
+    onSetThumbnail: () -> Unit,
+    onClearThumbnail: () -> Unit,
     imports: List<VaultImportQueueItem> = emptyList(),
     onPauseImport: (String) -> Unit = {},
     onResumeImport: (String) -> Unit = {},
@@ -4277,16 +4471,13 @@ private fun TopicScreen(
                         IconButton(onClick = onBack) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back to topics", tint = White)
                         }
-                        Surface(
+                        val topicThumbnail = files.firstOrNull { it.id == topic.thumbnailFileId }
+                        TopicCover(
+                            file = topicThumbnail,
+                            repository = repository,
                             modifier = Modifier.size(42.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            color = Blue.copy(alpha = 0.18f),
-                            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan, modifier = Modifier.size(23.dp))
-                            }
-                        }
+                            enabled = !busy
+                        )
                         Spacer(Modifier.width(11.dp))
                         Column(
                             modifier = Modifier.weight(1f),
@@ -4330,6 +4521,23 @@ private fun TopicScreen(
                                     leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null, tint = Color(0xFFFFC078)) },
                                     onClick = { topicMenuExpanded = false; onExportTopic() }
                                 )
+                                DropdownMenuItem(
+                                    enabled = files.any {
+                                        VaultTopicThumbnailPolicy.isPhoto(it) &&
+                                            VaultThumbnailPolicy.shouldGeneratePreview(it.sizeBytes)
+                                    } && !busy,
+                                    text = { Text(if (topic.thumbnailFileId == null) "Set thumbnail" else "Change thumbnail") },
+                                    leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                                    onClick = { topicMenuExpanded = false; onSetThumbnail() }
+                                )
+                                if (topic.thumbnailFileId != null) {
+                                    DropdownMenuItem(
+                                        enabled = !busy,
+                                        text = { Text("Remove thumbnail") },
+                                        leadingIcon = { Icon(Icons.Default.HideImage, contentDescription = null) },
+                                        onClick = { topicMenuExpanded = false; onClearThumbnail() }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("View details") },
                                     leadingIcon = { Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFFBCA7FF)) },
