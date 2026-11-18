@@ -21,6 +21,20 @@ class VaultRestoreProgressTest {
     }
 
     @Test
+    fun progressCanDescribePreflightBeforeByteTotalsAreKnown() {
+        val progress = VaultRestoreProgress(
+            completedBytes = 0L,
+            totalBytes = 0L,
+            completedFiles = 0,
+            totalFiles = 0,
+            currentFileName = "",
+            phase = "Checking encrypted recovery folder"
+        )
+
+        assertEquals("Checking encrypted recovery folder", progress.phase)
+    }
+
+    @Test
     fun completedEmptyRestoreReportsFullProgress() {
         val progress = VaultRestoreProgress(
             completedBytes = 0L,

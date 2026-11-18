@@ -50,7 +50,8 @@ data class VaultRestoreProgress(
     val totalBytes: Long,
     val completedFiles: Int,
     val totalFiles: Int,
-    val currentFileName: String
+    val currentFileName: String,
+    val phase: String = "Restoring encrypted files"
 ) {
     val fraction: Float
         get() = if (totalBytes <= 0L) {

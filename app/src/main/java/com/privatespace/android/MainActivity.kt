@@ -347,6 +347,12 @@ private data class PendingVaultRelease(
     val allTopics: Boolean = false
 )
 
+private fun Throwable.toOperationFailureMessage(fallback: String): String {
+    val primary = message?.takeIf { it.isNotBlank() } ?: fallback
+    val cleanupDetails = suppressed.mapNotNull { it.message?.takeIf(String::isNotBlank) }
+    return (listOf(primary) + cleanupDetails).distinct().joinToString("\n\n")
+}
+
 private enum class VaultImportStatus { QUEUED, RUNNING, PAUSED, FINALIZING, COMPLETED, FAILED, STOPPED }
 
 private data class VaultImportQueueItem(
@@ -471,6 +477,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var fileOperationTitle by remember { mutableStateOf("") }
     var fileOperationToken by remember { mutableLongStateOf(0L) }
     var fileOperationCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var fileOperationCancelling by remember { mutableStateOf(false) }
+    var fileOperationFailure by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeBatchImportControl by remember { mutableStateOf<VaultImportControl?>(null) }
     val lastFileProgressPostAt = remember { AtomicLong(0L) }
     var recoveryTreeUri by remember { mutableStateOf<Uri?>(null) }
@@ -530,6 +538,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileOperationToken += 1L
         lastFileProgressPostAt.set(0L)
         fileOperationTitle = title
+        fileOperationCancelling = false
+        fileOperationFailure = null
         fileOperationProgress = VaultFileOperationProgress(
             phase = "Preparing",
             completedBytes = 0L,
@@ -539,11 +549,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     }
 
     fun publishFileOperationProgress(token: Long, progress: VaultFileOperationProgress) {
-        val now = System.currentTimeMillis()
+        // A monotonic clock keeps throttling correct across wall-clock adjustments.
+        val now = System.nanoTime()
         val previous = lastFileProgressPostAt.get()
         val isFinal = (progress.totalBytes > 0L && progress.completedBytes >= progress.totalBytes) ||
             (progress.totalFiles > 0 && progress.completedFiles >= progress.totalFiles)
-        if (now - previous < 100L && !isFinal) return
+        if (previous != 0L && now - previous < 100_000_000L && !isFinal) return
         lastFileProgressPostAt.set(now)
         mainHandler.post {
             if (unlocked && fileOperationToken == token) {
@@ -552,12 +563,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    fun finishFileOperation(token: Long) {
+    fun finishFileOperation(token: Long, failureMessage: String? = null) {
         if (fileOperationToken == token) {
+            val completedTitle = fileOperationTitle.ifBlank { "File operation" }
             fileOperationToken += 1L
             fileOperationProgress = null
             fileOperationTitle = ""
             fileOperationCancel = null
+            fileOperationCancelling = false
+            if (!failureMessage.isNullOrBlank() && unlocked) {
+                fileOperationFailure = completedTitle to failureMessage
+            }
         }
     }
 
@@ -602,6 +618,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         fileOperationProgress = null
         fileOperationTitle = ""
         fileOperationCancel = null
+        fileOperationCancelling = false
+        fileOperationFailure = null
         activeBatchImportControl = null
         restoreProgress = null
         pendingRecoveryPassword?.fill('\u0000')
@@ -1049,6 +1067,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
         fileOperationCancel = {
             cancelRequested.set(true)
+            fileOperationCancelling = true
             val control = activeBatchImportControl
             if (control != null && !control.stop()) {
                 // The active file has crossed its atomic commit boundary. Let it
@@ -1198,7 +1217,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 val file = vaultFiles.firstOrNull { it.id == fileId }
                 val operationToken = beginFileOperation("Exporting ${file?.displayName ?: "file"}")
                 val cancelRequested = AtomicBoolean(false)
-                fileOperationCancel = { cancelRequested.set(true) }
+                fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         repository.exportToUri(fileId, destination) { progress ->
@@ -1207,12 +1229,18 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }
                     }
                 }
-                finishFileOperation(operationToken)
+                val failure = result.exceptionOrNull()
+                val failureMessage = failure?.let {
+                    if (cancelRequested.get() && it.suppressed.isEmpty()) null
+                    else it.toOperationFailureMessage("Export failed.")
+                }
+                finishFileOperation(operationToken, failureMessage)
                 busy = false
-                result.onSuccess { toast("File exported. The exported copy is outside Private Space protection.") }
-                    .onFailure {
-                        toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed.")
-                    }
+                if (result.isSuccess) {
+                    toast("File exported. The exported copy is outside Private Space protection.")
+                } else if (cancelRequested.get()) {
+                    toast("Export cancelled.")
+                }
             }
         } else if (destination != null) {
             // CreateDocument creates the destination before returning its URI.
@@ -1247,7 +1275,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
                 val operationToken = beginFileOperation(operationTitle)
                 val cancelRequested = AtomicBoolean(false)
-                fileOperationCancel = { cancelRequested.set(true) }
+                fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
                         val folder = DocumentFile.fromTreeUri(context, destination)
@@ -1267,12 +1298,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }
                     }
                 }
-                finishFileOperation(operationToken)
+                val failure = result.exceptionOrNull()
+                val failureMessage = failure?.let {
+                    if (cancelRequested.get() && it.suppressed.isEmpty()) null
+                    else it.toOperationFailureMessage("Export failed. Check the selected folder.")
+                }
+                finishFileOperation(operationToken, failureMessage)
                 busy = false
-                result.onSuccess {
+                if (result.isSuccess) {
                     toast("Export complete. Exported files are outside Private Space protection.")
-                }.onFailure {
-                    toast(if (cancelRequested.get()) "Export cancelled." else it.message ?: "Export failed. Check the selected folder.")
+                } else if (cancelRequested.get()) {
+                    toast("Export cancelled.")
                 }
             }
         } else if (destination != null) {
@@ -1436,10 +1472,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             currentFileTotalBytes = file.sizeBytes
         )
         val cancelRequested = AtomicBoolean(false)
-        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
         scope.launch {
             var prepared: PreparedVaultFile? = null
             var handedOff = false
+            var operationFailure: String? = null
             try {
                 prepared = withContext(Dispatchers.IO) {
                     repository.prepareDecryptedFile(file.id) { progress ->
@@ -1509,11 +1549,19 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     )
                 }
             } catch (cancelled: CancellationException) {
-                toast("Opening file cancelled.")
+                if (cancelled.suppressed.isNotEmpty()) {
+                    operationFailure = cancelled.toOperationFailureMessage("Opening was cancelled, but cleanup needs attention.")
+                } else {
+                    toast("Opening file cancelled.")
+                }
             } catch (memoryFailure: OutOfMemoryError) {
-                toast("There is not enough available memory to prepare this file.")
+                operationFailure = memoryFailure.toOperationFailureMessage(
+                    "There is not enough available memory to prepare this file."
+                )
             } catch (failure: Exception) {
-                toast(failure.message ?: "The file could not be opened by another app.")
+                operationFailure = failure.toOperationFailureMessage(
+                    "The file could not be opened by another app."
+                )
             } finally {
                 val staged = prepared
                 if (!handedOff && staged != null) {
@@ -1523,10 +1571,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }.exceptionOrNull()
                     }
                     if (cleanupFailure != null) {
-                        toast("A temporary decrypted copy could not be removed from private cache.")
+                        val cleanupMessage = cleanupFailure.toOperationFailureMessage(
+                            "A temporary decrypted copy could not be removed from private cache."
+                        )
+                        operationFailure = listOfNotNull(operationFailure, cleanupMessage).joinToString("\n\n")
                     }
                 }
-                finishFileOperation(operationToken)
+                finishFileOperation(operationToken, operationFailure)
                 busy = false
             }
         }
@@ -1575,7 +1626,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         busy = true
         val operationToken = beginFileOperation("Preparing to share ${file.displayName}")
         val cancelRequested = AtomicBoolean(false)
-        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
         fileOperationProgress = VaultFileOperationProgress(
             phase = "Preparing share",
             completedBytes = 0L,
@@ -1588,6 +1642,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         scope.launch {
             var prepared: PreparedVaultFile? = null
             var handedOff = false
+            var operationFailure: String? = null
             try {
                 prepared = withContext(Dispatchers.IO) {
                     repository.prepareDecryptedFile(file.id) { progress ->
@@ -1627,9 +1682,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 context.startActivity(Intent.createChooser(sendIntent, "Share file"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
-                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+                if (cancelled.suppressed.isNotEmpty()) {
+                    operationFailure = cancelled.toOperationFailureMessage("Sharing was cancelled, but cleanup needs attention.")
+                } else if (unlocked) {
+                    toast("Sharing cancelled. No share sheet was opened.")
+                }
             } catch (failure: Exception) {
-                toast(failure.message ?: "The file could not be prepared for sharing.")
+                operationFailure = failure.toOperationFailureMessage(
+                    "The file could not be prepared for sharing."
+                )
             } finally {
                 val staged = prepared
                 if (!handedOff && staged != null) {
@@ -1639,10 +1700,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }.exceptionOrNull()
                     }
                     if (cleanupFailure != null) {
-                        toast("A temporary decrypted copy could not be removed from private cache.")
+                        val cleanupMessage = cleanupFailure.toOperationFailureMessage(
+                            "A temporary decrypted copy could not be removed from private cache."
+                        )
+                        operationFailure = listOfNotNull(operationFailure, cleanupMessage).joinToString("\n\n")
                     }
                 }
-                finishFileOperation(operationToken)
+                finishFileOperation(operationToken, operationFailure)
                 busy = false
             }
         }
@@ -1657,7 +1721,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         busy = true
         val operationToken = beginFileOperation("Preparing to share $topicName")
         val cancelRequested = AtomicBoolean(false)
-        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
         fileOperationProgress = VaultFileOperationProgress(
             phase = "Preparing share",
             completedBytes = 0L,
@@ -1669,6 +1736,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         scope.launch {
             var preparedFiles: List<PreparedVaultFile> = emptyList()
             var handedOff = false
+            var operationFailure: String? = null
             try {
                 preparedFiles = withContext(Dispatchers.IO) {
                     repository.prepareTopicShare(topicId) { progress ->
@@ -1709,9 +1777,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
-                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+                if (cancelled.suppressed.isNotEmpty()) {
+                    operationFailure = cancelled.toOperationFailureMessage("Sharing was cancelled, but cleanup needs attention.")
+                } else if (unlocked) {
+                    toast("Sharing cancelled. No share sheet was opened.")
+                }
             } catch (failure: Exception) {
-                toast(failure.message ?: "The topic could not be prepared for sharing.")
+                operationFailure = failure.toOperationFailureMessage(
+                    "The topic could not be prepared for sharing."
+                )
             } finally {
                 if (!handedOff && preparedFiles.isNotEmpty()) {
                     val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
@@ -1720,10 +1794,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }.exceptionOrNull()
                     }
                     if (cleanupFailure != null) {
-                        toast("Temporary decrypted copies could not be removed from private cache.")
+                        val cleanupMessage = cleanupFailure.toOperationFailureMessage(
+                            "Temporary decrypted copies could not be removed from private cache."
+                        )
+                        operationFailure = listOfNotNull(operationFailure, cleanupMessage).joinToString("\n\n")
                     }
                 }
-                finishFileOperation(operationToken)
+                finishFileOperation(operationToken, operationFailure)
                 busy = false
             }
         }
@@ -1741,7 +1818,10 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         busy = true
         val operationToken = beginFileOperation("Preparing to share ${files.size} selected files")
         val cancelRequested = AtomicBoolean(false)
-        fileOperationCancel = { cancelRequested.set(true) }
+        fileOperationCancel = {
+                    cancelRequested.set(true)
+                    fileOperationCancelling = true
+                }
         fileOperationProgress = VaultFileOperationProgress(
             phase = "Preparing share",
             completedBytes = 0L,
@@ -1755,6 +1835,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val preparedFiles = mutableListOf<PreparedVaultFile>()
             var handedOff = false
             var completedBytes = 0L
+            var operationFailure: String? = null
             try {
                 withContext(Dispatchers.IO) {
                     files.forEachIndexed { index, file ->
@@ -1833,9 +1914,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
-                if (unlocked) toast("Sharing cancelled. No share sheet was opened.")
+                if (cancelled.suppressed.isNotEmpty()) {
+                    operationFailure = cancelled.toOperationFailureMessage("Sharing was cancelled, but cleanup needs attention.")
+                } else if (unlocked) {
+                    toast("Sharing cancelled. No share sheet was opened.")
+                }
             } catch (failure: Exception) {
-                toast(failure.message ?: "The selected files could not be prepared for sharing.")
+                operationFailure = failure.toOperationFailureMessage(
+                    "The selected files could not be prepared for sharing."
+                )
             } finally {
                 if (!handedOff && preparedFiles.isNotEmpty()) {
                     val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
@@ -1844,10 +1931,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         }.exceptionOrNull()
                     }
                     if (cleanupFailure != null) {
-                        toast("Temporary decrypted copies could not be removed from private cache.")
+                        val cleanupMessage = cleanupFailure.toOperationFailureMessage(
+                            "Temporary decrypted copies could not be removed from private cache."
+                        )
+                        operationFailure = listOfNotNull(operationFailure, cleanupMessage).joinToString("\n\n")
                     }
                 }
-                finishFileOperation(operationToken)
+                finishFileOperation(operationToken, operationFailure)
                 busy = false
             }
         }
@@ -2046,6 +2136,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             val confirm = confirmation
             val wasSetup = setup
             val restoreUri = recoveryTreeUri
+            val recoveryWillBeOpened = restoreUri != null || repository.persistentStorageUri() != null
+            restoreProgress = if (recoveryWillBeOpened) {
+                VaultRestoreProgress(
+                    completedBytes = 0L,
+                    totalBytes = 0L,
+                    completedFiles = 0,
+                    totalFiles = 0,
+                    currentFileName = "",
+                    phase = if (restoreUri != null) {
+                        "Opening selected recovery backup"
+                    } else {
+                        "Verifying vault password"
+                    }
+                )
+            } else {
+                null
+            }
             val authGeneration = activity?.foregroundGeneration
             val operationCancellation = AtomicBoolean(false)
             val recoveryConflictDetected = AtomicBoolean(false)
@@ -2739,7 +2846,44 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         VaultFileOperationProgressDialog(
             title = fileOperationTitle,
             progress = progress,
+            cancelling = fileOperationCancelling,
             onCancel = { fileOperationCancel?.invoke() }
+        )
+    }
+
+    fileOperationFailure?.let { (operationTitle, message) ->
+        AlertDialog(
+            onDismissRequest = { fileOperationFailure = null },
+            icon = { Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Red) },
+            title = { Text("Operation not completed", color = White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                ) {
+                    Text(operationTitle, color = Cyan, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        message,
+                        color = White,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }
+                    )
+                    Text(
+                        "Resolve the issue described above before retrying. An incomplete operation is not reported as successful.",
+                        color = Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { fileOperationFailure = null }) {
+                    Text("Dismiss", color = Cyan)
+                }
+            },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = Panel
         )
     }
 
@@ -3433,7 +3577,13 @@ private fun AuthScreen(
                                         color = Cyan
                                     )
                                     Spacer(Modifier.width(9.dp))
-                                    Text("Restoring encrypted vault", color = White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text(
+                                        progress.phase.ifBlank { "Restoring encrypted vault" },
+                                        color = White,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                                    )
                                 }
                                 if (progress.totalBytes > 0L) {
                                     LinearProgressIndicator(
@@ -3454,18 +3604,36 @@ private fun AuthScreen(
                                         trackColor = Line
                                     )
                                 }
-                                Text(
-                                    "Files: ${progress.completedFiles} / ${progress.totalFiles}",
-                                    color = Muted,
-                                    fontSize = 11.sp
-                                )
-                                Text(
-                                    progress.currentFileName,
-                                    color = Muted,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                if (progress.totalFiles > 0) {
+                                    Text(
+                                        "Files: ${progress.completedFiles} / ${progress.totalFiles}",
+                                        color = Muted,
+                                        fontSize = 11.sp
+                                    )
+                                } else {
+                                    Text(
+                                        when {
+                                            progress.phase.contains("verifying", ignoreCase = true) ->
+                                                "Checking your password before opening the vault."
+                                            progress.phase.contains("recovery", ignoreCase = true) ||
+                                                progress.phase.contains("backup", ignoreCase = true) ->
+                                                "Checking the encrypted recovery backup before file transfer begins."
+                                            else -> "Preparing the next secure step."
+                                        },
+                                        color = Muted,
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                if (progress.currentFileName.isNotBlank()) {
+                                    Text(
+                                        progress.currentFileName,
+                                        color = Muted,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }
@@ -4678,6 +4846,7 @@ private fun TopicScreen(
 private fun VaultFileOperationProgressDialog(
     title: String,
     progress: VaultFileOperationProgress,
+    cancelling: Boolean,
     onCancel: () -> Unit
 ) {
     val hasDeterminateProgress = progress.totalBytes > 0L
@@ -4778,7 +4947,12 @@ private fun VaultFileOperationProgressDialog(
                         color = Cyan,
                         trackColor = Panel2
                     )
-                    Text("Preparing operation…", color = Muted, fontSize = 12.sp)
+                    Text(
+                        "The file size is not available yet. Work is continuing; progress will update as data is processed.",
+                        color = Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
                 }
                 if (progress.totalFiles > 1) {
                     Text(
@@ -4813,7 +4987,32 @@ private fun VaultFileOperationProgressDialog(
                         )
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (cancelling) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(17.dp),
+                            strokeWidth = 2.dp,
+                            color = Cyan
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Stopping safely…",
+                            color = Cyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        "Cancellation was requested. Private Space will stop at the next safe point and clean up temporary data.",
+                        color = Muted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     when {
                         isImportFinalizing && hasFilesAfterCurrent -> {
                             TextButton(onClick = onCancel) {

@@ -119,7 +119,8 @@ private class RestoreProgressOutputStream(
                 totalBytes = totalBytes,
                 completedFiles = completedFiles,
                 totalFiles = totalFiles,
-                currentFileName = fileName
+                currentFileName = fileName,
+                phase = "Restoring encrypted files"
             )
         )
     }
@@ -138,7 +139,13 @@ class VaultRepository(context: Context) {
     private val legacyPrefs = appContext.getSharedPreferences("private_space_vault", Context.MODE_PRIVATE)
     private val metadata = AtomicFile(File(root, "vault-index.enc"))
     private val recoveryPrefs = appContext.getSharedPreferences("private_space_recovery", Context.MODE_PRIVATE)
+    // Compose reads these lightweight status snapshots on the main thread while
+    // long repository transactions may hold the monitor during SAF/file I/O.
+    // Volatile visibility keeps those reads non-blocking without weakening the
+    // serialization of encrypted storage mutations below.
+    @Volatile
     private var persistentStore: PersistentVaultStore? = null
+    @Volatile
     private var persistentTreeUri: Uri? = null
     private var initializationFailure: Throwable? = null
 
@@ -215,7 +222,10 @@ class VaultRepository(context: Context) {
     }
 
     /** True when this installation has a persisted Storage Access Framework tree grant. */
-    @Synchronized
+    /**
+     * Lock-free status read for Compose. SharedPreferences provides its own
+     * thread-safe snapshot; this must not wait on the vault transaction monitor.
+     */
     fun persistentStorageUri(): Uri? =
         recoveryPrefs.getString(RECOVERY_TREE_URI, null)?.let(Uri::parse)
 
@@ -227,7 +237,7 @@ class VaultRepository(context: Context) {
         persistentTreeUri = null
     }
 
-    @Synchronized
+    /** Lock-free status read for Compose while a storage transaction is running. */
     fun hasActivePersistentStorage(): Boolean = persistentStore != null
 
     private fun isAlreadyActiveFor(treeUri: Uri, password: CharArray): Boolean {
@@ -310,6 +320,7 @@ class VaultRepository(context: Context) {
         onProgress: (VaultRestoreProgress) -> Unit = {}
     ) {
         try {
+            notifyRestoreProgress(onProgress, "Checking encrypted recovery folder")
             if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
@@ -399,6 +410,7 @@ class VaultRepository(context: Context) {
         onProgress: (VaultRestoreProgress) -> Unit = {}
     ) {
         try {
+            notifyRestoreProgress(onProgress, "Opening selected recovery backup")
             if (isAlreadyActiveFor(treeUri, password)) return
             val store = PersistentVaultStore.open(appContext, treeUri, password)
             try {
@@ -1988,12 +2000,35 @@ class VaultRepository(context: Context) {
     }
 
 
+    private fun notifyRestoreProgress(
+        onProgress: (VaultRestoreProgress) -> Unit,
+        phase: String
+    ) {
+        try {
+            onProgress(
+                VaultRestoreProgress(
+                    completedBytes = 0L,
+                    totalBytes = 0L,
+                    completedFiles = 0,
+                    totalFiles = 0,
+                    currentFileName = "",
+                    phase = phase
+                )
+            )
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            // Progress/UI observer failures must not compromise authenticated storage work.
+        }
+    }
+
     /** Rebuilds the private working copy from authenticated recovery records. */
     private fun restoreWorkingVault(
         index: VaultIndex,
         store: PersistentVaultStore,
         onProgress: (VaultRestoreProgress) -> Unit
     ) {
+        notifyRestoreProgress(onProgress, "Validating encrypted recovery index")
         validateIndexForSave(index)
         recoverInterruptedRestoreFiles()
         val records = index.files + index.trash.map { it.file }
@@ -2055,7 +2090,16 @@ class VaultRepository(context: Context) {
                 }
             }
         }
-        reportProgress(VaultRestoreProgress(0L, totalBytes, 0, records.size, "Preparing recovery"))
+        reportProgress(
+            VaultRestoreProgress(
+                completedBytes = 0L,
+                totalBytes = totalBytes,
+                completedFiles = 0,
+                totalFiles = records.size,
+                currentFileName = "",
+                phase = "Preparing encrypted restore"
+            )
+        )
         try {
             records.forEachIndexed { recordIndex, record ->
                 val incoming = File(root, "${record.id}.restore.tmp")
@@ -2106,7 +2150,8 @@ class VaultRepository(context: Context) {
                             totalBytes = totalBytes,
                             completedFiles = recordIndex + 1,
                             totalFiles = records.size,
-                            currentFileName = record.displayName
+                            currentFileName = record.displayName,
+                            phase = "File restored securely"
                         )
                     )
                 } catch (failure: Throwable) {
@@ -2115,7 +2160,16 @@ class VaultRepository(context: Context) {
                     throw failure
                 }
             }
-            reportProgress(VaultRestoreProgress(totalBytes, totalBytes, records.size, records.size, "Finalizing restored vault"))
+            reportProgress(
+                VaultRestoreProgress(
+                    completedBytes = totalBytes,
+                    totalBytes = totalBytes,
+                    completedFiles = records.size,
+                    totalFiles = records.size,
+                    currentFileName = "",
+                    phase = "Finalizing restored vault"
+                )
+            )
             // Persist a small rollback journal before the first live payload is
             // replaced. It lets the next process distinguish a committed restore
             // from a process death halfway through promotion.
@@ -2127,7 +2181,8 @@ class VaultRepository(context: Context) {
                         totalBytes = totalBytes,
                         completedFiles = records.size,
                         totalFiles = records.size,
-                        currentFileName = "Finalizing restored files"
+                        currentFileName = "",
+                        phase = "Installing restored files"
                     )
                 )
                 replaceRestoredPayload(id, incoming)
@@ -2138,7 +2193,8 @@ class VaultRepository(context: Context) {
                     totalBytes = totalBytes,
                     completedFiles = records.size,
                     totalFiles = records.size,
-                    currentFileName = "Committing restored vault"
+                    currentFileName = "",
+                    phase = "Committing restored vault"
                 )
             )
             // The encrypted AtomicFile index is the commit point. Recovery compares
