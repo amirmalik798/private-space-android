@@ -35,6 +35,20 @@ class VaultInputValidationTest {
         assertEquals("_my_file_.pdf", VaultInputValidation.displayName("../my:file?.pdf"))
     }
 
+
+    @Test
+    fun reportedSizeTreatsNullAndNegativeProviderValuesAsUnknown() {
+        // Cursor.getLong() returns 0 for a SQL NULL, so the null flag must win.
+        assertEquals(null, VaultInputValidation.reportedSize(0L, isNull = true))
+        assertEquals(null, VaultInputValidation.reportedSize(-1L, isNull = false))
+    }
+
+    @Test
+    fun reportedSizePreservesValidZeroAndPositiveSizes() {
+        assertEquals(0L, VaultInputValidation.reportedSize(0L, isNull = false))
+        assertEquals(1_024L, VaultInputValidation.reportedSize(1_024L, isNull = false))
+    }
+
     @Test
     fun mimeTypeFallsBackForMalformedInput() {
         assertEquals("application/pdf", VaultInputValidation.mimeType("application/pdf", "image/jpeg"))

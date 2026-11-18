@@ -893,7 +893,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                         null
                                     }
                                     val size = if (sizeColumn >= 0) {
-                                        runCatching { cursor.getLong(sizeColumn) }.getOrNull()
+                                        runCatching {
+                                            VaultInputValidation.reportedSize(
+                                                cursor.getLong(sizeColumn),
+                                                cursor.isNull(sizeColumn)
+                                            )
+                                        }.getOrNull()
                                     } else {
                                         null
                                     }

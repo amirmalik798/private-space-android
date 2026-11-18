@@ -1815,7 +1815,10 @@ class VaultRepository(context: Context) {
     @Synchronized
     private fun saveIndex(index: VaultIndex, restoreTransactionId: String? = null) {
         validateIndexForSave(index)
-        val previousBytes = serializeIndex(runCatching { loadIndex() }.getOrDefault(VaultIndex()))
+        // A failed read of the current index must abort before a new recovery
+        // generation is written. Falling back to an empty index could make a
+        // later rollback replace a valid recovery index with an empty vault.
+        val previousBytes = serializeIndex(loadIndex())
         val bytes = serializeIndex(index, restoreTransactionId)
         try {
             val persistentSnapshot = persistentStore?.saveIndex(
@@ -2522,7 +2525,14 @@ class VaultRepository(context: Context) {
         return runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
                 val column = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (column >= 0 && cursor.moveToFirst()) cursor.getLong(column).takeIf { it >= 0L } else null
+                if (column >= 0 && cursor.moveToFirst()) {
+                    VaultInputValidation.reportedSize(
+                        cursor.getLong(column),
+                        cursor.isNull(column)
+                    )
+                } else {
+                    null
+                }
             }
         }.getOrNull()
     }

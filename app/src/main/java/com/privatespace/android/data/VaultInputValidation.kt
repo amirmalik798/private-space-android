@@ -22,6 +22,14 @@ object VaultInputValidation {
         return cleaned.ifBlank { "document" }
     }
 
+    /**
+     * Document providers may expose SIZE as SQL NULL. Cursor.getLong() returns
+     * zero for a NULL column, so callers must pass Cursor.isNull() as well.
+     * Negative provider sizes are also treated as unknown.
+     */
+    fun reportedSize(value: Long, isNull: Boolean): Long? =
+        if (isNull) null else value.takeIf { it >= 0L }
+
     fun mimeType(value: String?, fallback: String = "application/octet-stream"): String {
         val candidate = value?.trim()?.lowercase(Locale.ROOT) ?: return fallback
         return if (candidate.matches(Regex("""[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+"""))) {
