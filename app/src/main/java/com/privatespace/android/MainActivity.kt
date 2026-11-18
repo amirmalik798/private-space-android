@@ -91,6 +91,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -321,6 +322,21 @@ private const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
 private const val SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.samsung.android.video"
 private const val LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.sec.android.app.videoplayer"
 
+/**
+ * Repository lock cleanup can wait for an in-flight large-file/recovery
+ * transaction. Keep that wait off the main thread and independent of any
+ * Activity-owned coroutine scope so screen-lock cleanup survives recreation.
+ */
+private object VaultLockDispatcher {
+    private val executor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "private-space-vault-lock").apply { isDaemon = true }
+    }
+
+    fun execute(task: () -> Unit) {
+        executor.execute(task)
+    }
+}
+
 private enum class VaultReleaseAction { SHARE, EXPORT }
 
 private data class PendingVaultRelease(
@@ -448,6 +464,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var confirmation by remember { mutableStateOf("") }
     var authError by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var vaultLockPending by remember { mutableStateOf(false) }
+    val vaultLockGeneration = remember { AtomicLong(0L) }
     var restoreProgress by remember { mutableStateOf<VaultRestoreProgress?>(null) }
     var fileOperationProgress by remember { mutableStateOf<VaultFileOperationProgress?>(null) }
     var fileOperationTitle by remember { mutableStateOf("") }
@@ -563,7 +581,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         // the vault has been explicitly locked or locked by the screen policy.
         fileOperationCancel?.invoke()
         activeBatchImportControl?.stop()
-        repository.lockPersistentStorage()
+        // Mark the UI locked immediately, but never wait on the repository
+        // monitor here. Large imports/restores/exports may hold it while blocked
+        // on storage providers. Authentication remains disabled until the
+        // background lock has acquired the monitor and wiped the recovery key.
+        val lockGeneration = vaultLockGeneration.incrementAndGet()
+        vaultLockPending = true
+        VaultLockDispatcher.execute {
+            try {
+                repository.lockPersistentStorage()
+            } finally {
+                mainHandler.post {
+                    if (vaultLockGeneration.get() == lockGeneration) {
+                        vaultLockPending = false
+                    }
+                }
+            }
+        }
         fileOperationToken += 1L
         fileOperationProgress = null
         fileOperationTitle = ""
@@ -1977,7 +2011,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             password = password,
             confirmation = confirmation,
             error = authError,
-            busy = busy,
+            busy = busy || vaultLockPending,
             lockUntil = lockUntil,
             now = clockNow,
             recoveryFolderSelected = recoveryTreeUri != null,
@@ -2004,7 +2038,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             }
         ) {
-            if (busy || lockUntil > System.currentTimeMillis()) return@AuthScreen
+            if (busy || vaultLockPending || lockUntil > System.currentTimeMillis()) return@AuthScreen
             busy = true
             restoreProgress = null
             authError = ""

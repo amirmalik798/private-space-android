@@ -77,15 +77,45 @@ class VaultImportControlTest {
     @Test
     fun stopClosesAttachedSourceStream() {
         val control = VaultImportControl()
-        var closed = false
+        val closed = CountDownLatch(1)
         val source = object : ByteArrayInputStream(byteArrayOf(1, 2, 3)) {
             override fun close() {
-                closed = true
+                closed.countDown()
                 super.close()
             }
         }
         control.attach(source)
         control.stop()
-        assertTrue(closed)
+        assertTrue(closed.await(1, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun stopDoesNotWaitForBlockingProviderClose() {
+        val control = VaultImportControl()
+        val closeStarted = CountDownLatch(1)
+        val allowCloseToFinish = CountDownLatch(1)
+        val stopReturned = CountDownLatch(1)
+        val source = object : ByteArrayInputStream(byteArrayOf(1, 2, 3)) {
+            override fun close() {
+                closeStarted.countDown()
+                try {
+                    allowCloseToFinish.await()
+                } finally {
+                    super.close()
+                }
+            }
+        }
+        control.attach(source)
+
+        val caller = Thread {
+            control.stop()
+            stopReturned.countDown()
+        }
+        caller.start()
+
+        assertTrue(stopReturned.await(500, TimeUnit.MILLISECONDS))
+        assertTrue(closeStarted.await(1, TimeUnit.SECONDS))
+        allowCloseToFinish.countDown()
+        caller.join(1_000)
     }
 }

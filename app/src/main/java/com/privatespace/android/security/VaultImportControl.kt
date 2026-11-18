@@ -2,6 +2,7 @@ package com.privatespace.android.security
 
 import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -13,6 +14,14 @@ import kotlin.concurrent.withLock
  * Partial encrypted data is deliberately never resumable after process death.
  */
 class VaultImportControl {
+    companion object {
+        // SAF/content-provider close() may block while a provider finishes an
+        // in-flight remote read. Never execute it on the UI thread.
+        private val streamCloser = Executors.newCachedThreadPool { task ->
+            Thread(task, "private-space-import-stream-close").apply { isDaemon = true }
+        }
+    }
+
     private val lock = ReentrantLock()
     private val changed = lock.newCondition()
     private var paused = false
@@ -56,7 +65,11 @@ class VaultImportControl {
             changed.signalAll()
             source
         }
-        runCatching { toClose?.close() }
+        if (toClose != null) {
+            streamCloser.execute {
+                runCatching { toClose.close() }
+            }
+        }
         return true
     }
 
