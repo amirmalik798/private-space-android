@@ -258,7 +258,7 @@ private val privateSpaceHelpArticles = listOf(
     HelpArticle(
         id = "recovery",
         title = "Set up or restore an encrypted recovery copy",
-        body = "Recovery is optional. Choose a folder on this device when the recovery prompt appears, or use the Recovery card on the dashboard to set it up later. Private Space asks you to confirm your current vault password before protecting the recovery key. Keep the selected folder and the password used to protect it. Without a recovery copy, uninstalling the app or clearing its data can permanently remove the on-device vault. Recovery is device-local, not cloud sync.",
+        body = "Recovery is optional. Choose a folder on this device when the recovery prompt appears, or use the Recovery card on the dashboard to set it up later. Private Space asks you to confirm your current vault password before protecting the recovery key. Keep the selected folder and the password used to protect it. Restoring a recovery folder replaces the current on-device vault; newer local files are not merged. Without a recovery copy, uninstalling the app or clearing its data can permanently remove the on-device vault. Recovery is device-local, not cloud sync.",
         keywords = "backup reinstall restore internal storage sd card forgotten password"
     ),
     HelpArticle(
@@ -459,6 +459,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var recoverySetupError by remember { mutableStateOf("") }
     var showRecoveryPasswordPrompt by remember { mutableStateOf(false) }
     var recoveryPasswordError by remember { mutableStateOf("") }
+    var showRecoveryReconnectConfirmation by remember { mutableStateOf(false) }
     val recoveryPromptPreferences = remember(context) {
         context.getSharedPreferences(FILE_PICKER_PREFERENCES, Context.MODE_PRIVATE)
     }
@@ -573,6 +574,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         recoverySetupError = ""
         showRecoveryPasswordPrompt = false
         recoveryPasswordError = ""
+        showRecoveryReconnectConfirmation = false
         unlocked = false
         password = ""
         confirmation = ""
@@ -2474,14 +2476,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             recoveryPasswordError = ""
                             showRecoveryPasswordPrompt = true
                         },
-                        onReconnect = {
-                            lockVault()
-                            choosingExistingRecovery = true
-                            runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
-                                choosingExistingRecovery = false
-                                authError = "Could not open the device folder picker."
-                            }
-                        }
+                        onReconnect = { showRecoveryReconnectConfirmation = true }
                     )
                 }
                 if (topics.isNotEmpty()) {
@@ -2510,7 +2505,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Topics", color = White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                        if (topics.isNotEmpty()) {
+                        if (topicQuery.isNotBlank()) {
+                            Text(
+                                "${filteredTopics.size} of ${topics.size} shown",
+                                color = Muted,
+                                fontSize = 11.sp
+                            )
+                        } else if (topics.isNotEmpty()) {
                             Surface(color = Panel2, shape = RoundedCornerShape(30.dp)) {
                                 Text(
                                     topics.size.toString(),
@@ -2661,6 +2662,46 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             title = fileOperationTitle,
             progress = progress,
             onCancel = { fileOperationCancel?.invoke() }
+        )
+    }
+
+    if (showRecoveryReconnectConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRecoveryReconnectConfirmation = false },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Gold) },
+            title = { Text("Restore from recovery folder?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "This is more than reconnecting a folder. Private Space will lock and ask you to select the recovery folder and enter its password. Restoring replaces the vault currently on this device with the selected recovery copy; newer on-device files are not merged. Continue only if this is the copy you intend to restore.",
+                    color = Muted,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRecoveryReconnectConfirmation = false
+                        lockVault()
+                        choosingExistingRecovery = true
+                        runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
+                            choosingExistingRecovery = false
+                            authError = "Could not open the device folder picker."
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Choose recovery folder")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecoveryReconnectConfirmation = false }) {
+                    Text("Keep this vault")
+                }
+            },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = Panel
         )
     }
 
@@ -2860,7 +2901,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     result.onSuccess {
                         refreshVault()
                         toast("Moved to the Recycle Bin. You can restore this file later.")
-                    }.onFailure { toast(it.message ?: "Could not move file to Trash.") }
+                    }.onFailure { toast(it.message ?: "Could not move file to the Recycle Bin.") }
                 }
             }
         )
@@ -3543,7 +3584,7 @@ private fun RecoveryStatusCard(
         connected ->
             "A separate encrypted copy is connected to your selected device-storage folder. Keep that folder available and remember the password used to protect it. Recovery is not cloud sync."
         needsReconnect ->
-            "Private Space could not reconnect to the saved folder. Your on-device vault is still available, but do not rely on the recovery copy until you reconnect it."
+            "The saved recovery location cannot currently be opened. Your on-device vault is still available. Restoring from that folder replaces the current on-device vault; newer local files are not merged."
         else ->
             "Your vault is encrypted on this device, but no reinstall recovery copy is set up. Uninstalling the app or clearing its data can permanently remove these files."
     }
@@ -3609,7 +3650,7 @@ private fun RecoveryStatusCard(
                         modifier = Modifier.size(17.dp)
                     )
                     Spacer(Modifier.width(7.dp))
-                    Text(if (needsReconnect) "Reconnect recovery folder" else "Set up encrypted recovery")
+                    Text(if (needsReconnect) "Restore from recovery folder" else "Set up encrypted recovery")
                 }
             }
         }
@@ -4314,7 +4355,7 @@ private fun TopicScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${filteredFiles.size} shown",
+                    "Showing ${filteredFiles.size} of ${files.size} files",
                     color = Muted,
                     fontSize = 11.sp,
                     modifier = Modifier.weight(1f)
@@ -4471,21 +4512,23 @@ private fun TopicScreen(
                             textAlign = TextAlign.Center,
                             lineHeight = 17.sp
                         )
-                        if (fileQuery.isNotBlank()) {
-                            TextButton(onClick = { fileQuery = "" }) {
-                                Icon(Icons.Default.Backspace, contentDescription = null, modifier = Modifier.size(16.dp))
+                        if (fileQuery.isNotBlank() || selectedFilter != VaultFormatSupport.TopicFilter.ALL) {
+                            TextButton(
+                                onClick = {
+                                    fileQuery = ""
+                                    selectedFilter = VaultFormatSupport.TopicFilter.ALL
+                                },
+                                enabled = !busy
+                            ) {
+                                Icon(Icons.Default.FilterAltOff, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(5.dp))
-                                Text("Clear search")
+                                Text("Clear search and filters")
                             }
                         } else if (files.isEmpty()) {
                             FilledTonalButton(onClick = onAdd, enabled = !busy) {
                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(17.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Add files")
-                            }
-                        } else if (selectedFilter != VaultFormatSupport.TopicFilter.ALL) {
-                            TextButton(onClick = { selectedFilter = VaultFormatSupport.TopicFilter.ALL }) {
-                                Text("Show all files")
                             }
                         }
                     }
@@ -4557,6 +4600,9 @@ private fun VaultFileOperationProgressDialog(
 ) {
     val hasDeterminateProgress = progress.totalBytes > 0L
     val percent = if (hasDeterminateProgress) (progress.fraction * 100f).toInt() else null
+    val isImportFinalizing = progress.phase.equals("Finalizing encrypted file", ignoreCase = true)
+    val hasFilesAfterCurrent = progress.totalFiles > 1 &&
+        progress.completedFiles < progress.totalFiles - 1
     val securityGuidance = when {
         title.startsWith("Exporting", ignoreCase = true) ->
             "Exported copies are ordinary files outside Private Space protection. Anyone with access to the destination may be able to read them."
@@ -4686,7 +4732,25 @@ private fun VaultFileOperationProgressDialog(
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onCancel) { Text("Cancel operation", color = Red, fontWeight = FontWeight.SemiBold) }
+                    when {
+                        isImportFinalizing && hasFilesAfterCurrent -> {
+                            TextButton(onClick = onCancel) {
+                                Text("Stop after this file", color = Red, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        isImportFinalizing -> {
+                            Text(
+                                "Finishing securely — this file can no longer be cancelled",
+                                color = Muted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        else -> {
+                            TextButton(onClick = onCancel) {
+                                Text("Cancel operation", color = Red, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -5300,7 +5364,7 @@ private fun VaultFileRow(
                 ) {
                     DropdownMenuItem(
                         enabled = !busy,
-                        text = { Text("Open in another app") },
+                        text = { Text("Open file") },
                         leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpen() }
                     )
@@ -5319,7 +5383,7 @@ private fun VaultFileRow(
                     HorizontalDivider(color = Line)
                     DropdownMenuItem(
                         enabled = !busy,
-                        text = { Text("Delete", color = Red) },
+                        text = { Text("Move to Recycle Bin", color = Red) },
                         leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Red) },
                         onClick = { menuExpanded = false; onDelete() }
                     )
@@ -5585,7 +5649,7 @@ private fun TrashScreen(
                             }
                             Text("Your Recycle Bin is clear", color = White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                             Text(
-                                "Files you move to Trash will appear here. You can restore them or permanently remove the vault copy.",
+                                "Files you move to the Recycle Bin will appear here. You can restore them or permanently remove the vault copy.",
                                 color = Muted,
                                 fontSize = 12.sp,
                                 lineHeight = 17.sp,
