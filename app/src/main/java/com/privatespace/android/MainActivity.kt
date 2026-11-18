@@ -52,7 +52,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -2258,15 +2260,23 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             },
             floatingActionButton = {
                 if (topics.isNotEmpty()) {
-                    ExtendedFloatingActionButton(
+                    Button(
                         onClick = { showCreateTopic = true },
                         enabled = !busy,
-                        containerColor = Blue,
-                        contentColor = White,
+                        modifier = Modifier.heightIn(min = 56.dp),
                         shape = RoundedCornerShape(16.dp),
-                        icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-                        text = { Text("New topic", fontWeight = FontWeight.SemiBold) }
-                    )
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Blue,
+                            contentColor = White,
+                            disabledContainerColor = Panel2,
+                            disabledContentColor = Muted
+                        )
+                    ) {
+                        Icon(Icons.Default.CreateNewFolder, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("New topic", fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         ) { padding ->
@@ -3051,7 +3061,8 @@ private fun AuthScreen(
                         Text(
                             "At least " + PasswordManager.MIN_PASSWORD_LENGTH + " characters. A longer passphrase is stronger.",
                             color = Muted,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
                         )
                         if (confirmation.isNotEmpty() && confirmation != password) {
                             Text(
@@ -3087,6 +3098,31 @@ private fun AuthScreen(
                                     fontSize = 13.sp
                                 )
                             }
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Blue.copy(alpha = 0.09f),
+                        shape = RoundedCornerShape(13.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.75f))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = null,
+                                tint = Cyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                "Your on-device vault is encrypted with Android Keystore. This password unlocks the app and protects an optional recovery copy. There is no password reset.",
+                                color = Muted,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
                         }
                     }
                     Button(
@@ -3780,15 +3816,23 @@ private fun TopicScreen(
         },
         floatingActionButton = {
             if (!selectionMode) {
-                ExtendedFloatingActionButton(
+                Button(
                     onClick = onAdd,
                     enabled = !busy,
-                    containerColor = Blue,
-                    contentColor = White,
+                    modifier = Modifier.heightIn(min = 56.dp),
                     shape = RoundedCornerShape(16.dp),
-                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    text = { Text("Add files", fontWeight = FontWeight.SemiBold) }
-                )
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Blue,
+                        contentColor = White,
+                        disabledContainerColor = Panel2,
+                        disabledContentColor = Muted
+                    )
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Add files", fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     ) { padding ->
@@ -4139,6 +4183,18 @@ private fun VaultFileOperationProgressDialog(
 ) {
     val hasDeterminateProgress = progress.totalBytes > 0L
     val percent = if (hasDeterminateProgress) (progress.fraction * 100f).toInt() else null
+    val securityGuidance = when {
+        title.startsWith("Exporting", ignoreCase = true) ->
+            "Exported copies are ordinary files outside Private Space protection. Anyone with access to the destination may be able to read them."
+        title.startsWith("Preparing to share", ignoreCase = true) ->
+            "The receiving app or person may retain or copy shared files. Those copies are outside Private Space protection."
+        title.startsWith("Opening", ignoreCase = true) ->
+            "A temporary decrypted copy is prepared for the viewer you choose. The vault copy remains encrypted, but another app may retain its copy."
+        title.startsWith("Preparing selected file", ignoreCase = true) ||
+            title.startsWith("Preparing ", ignoreCase = true) ->
+            "Files are copied into this topic and encrypted before they are saved. The original files are not moved or modified."
+        else -> null
+    }
     Dialog(
         onDismissRequest = {},
         properties = DialogProperties(
@@ -4166,7 +4222,39 @@ private fun VaultFileOperationProgressDialog(
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(title, color = White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text(progress.phase, color = Cyan, fontSize = 11.sp)
+                        Text(
+                        progress.phase,
+                        color = Cyan,
+                        fontSize = 12.sp,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                    }
+                }
+                securityGuidance?.let { guidance ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Panel2,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(11.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = Cyan,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Text(
+                                guidance,
+                                color = White,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
                     }
                 }
                 if (hasDeterminateProgress) {
@@ -4292,7 +4380,13 @@ private fun VaultImportQueueRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(statusLabel, color = statusColor, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        statusLabel,
+                        color = statusColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
                 }
                 Box {
                     IconButton(onClick = { menuExpanded = true }, enabled = item.status != VaultImportStatus.FINALIZING) {
@@ -4381,13 +4475,13 @@ private fun VaultImportQueueRow(
                 Text(
                     "${fraction?.let { "${(it * 100f).toInt()}%  ·  " } ?: ""}${formatBytes(item.completedBytes)} of ${formatBytes(item.totalBytes)}",
                     color = Muted,
-                    fontSize = 10.sp
+                    fontSize = 12.sp
                 )
             } else if (item.completedBytes > 0L) {
-                Text("${formatBytes(item.completedBytes)} processed", color = Muted, fontSize = 10.sp)
+                Text("${formatBytes(item.completedBytes)} processed", color = Muted, fontSize = 12.sp)
             }
             item.error?.let { message ->
-                Text(message, color = Red, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(message, color = Red, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -5200,9 +5294,9 @@ private fun ConfirmDialog(
                 enabled = !confirmationSubmitted,
                 onClick = { if (!confirmationSubmitted) onCancel() }
             ) {
-                Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
-                Text("Keep it")
+                Text("Cancel")
             }
         },
         shape = RoundedCornerShape(24.dp),
