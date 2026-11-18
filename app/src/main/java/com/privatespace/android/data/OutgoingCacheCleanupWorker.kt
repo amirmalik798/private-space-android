@@ -46,6 +46,19 @@ internal class OutgoingCacheCleanupWorker(
                 }
                 VaultOutgoingSessionRegistry.markInactive(session)
             }
+
+            // This cache contains only decrypted viewer, preview and export
+            // staging files. Unleased entries are abandoned once the owning
+            // operation finishes or the process that owned them is killed.
+            val staging = File(applicationContext.cacheDir, "private-space-staging")
+            val stagedItems = staging.listFiles() ?: emptyArray()
+            stagedItems.forEach { staged ->
+                if (VaultOutgoingSessionRegistry.isActive(staged)) return@forEach
+                if (staged.exists() && !staged.deleteRecursively() && staged.exists()) {
+                    throw IOException("Could not remove an abandoned private staging item.")
+                }
+                VaultOutgoingSessionRegistry.markInactive(staged)
+            }
             Result.success()
         } catch (_: IOException) {
             Result.retry()

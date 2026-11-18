@@ -808,7 +808,14 @@ class VaultRepository(context: Context) {
                 VaultFormatSupport.FileKind.DOCUMENT
         ) { "Only photos and videos can be opened in the private media viewer." }
 
-        val session = createPrivateDirectory(staging, "viewer-${UUID.randomUUID()}")
+        val session = File(staging, "viewer-${UUID.randomUUID()}")
+        VaultOutgoingSessionRegistry.markActive(session)
+        try {
+            createPrivateDirectory(staging, session.name)
+        } catch (failure: Throwable) {
+            VaultOutgoingSessionRegistry.markInactive(session)
+            throw failure
+        }
         val destination = File(session, VaultInputValidation.displayName(record.displayName))
         try {
             onProgress(VaultFileOperationProgress("Decrypting", 0L, record.sizeBytes, currentFileName = record.displayName))
@@ -818,7 +825,11 @@ class VaultRepository(context: Context) {
             onProgress(VaultFileOperationProgress("Decryption complete", record.sizeBytes, record.sizeBytes, currentFileName = record.displayName))
             return PreparedVaultFile(destination, record.mimeType)
         } catch (failure: Throwable) {
-            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            try {
+                runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            } finally {
+                VaultOutgoingSessionRegistry.markInactive(session)
+            }
             throw failure
         }
     }
@@ -833,7 +844,11 @@ class VaultRepository(context: Context) {
             session.parentFile?.canonicalFile == canonicalRoot &&
                 session.name.startsWith("viewer-")
         ) { "Refusing to delete a file outside the private media viewer cache." }
-        deleteTemporaryEntry(session)
+        try {
+            deleteTemporaryEntry(session)
+        } finally {
+            VaultOutgoingSessionRegistry.markInactive(session)
+        }
     }
 
     /**
@@ -901,9 +916,11 @@ class VaultRepository(context: Context) {
             }
         }
 
-        val target = createPrivateFile(File(staging, "media-preview-${UUID.randomUUID()}.tmp"))
+        val target = File(staging, "media-preview-${UUID.randomUUID()}.tmp")
+        VaultOutgoingSessionRegistry.markActive(target)
         var previewBitmap: Bitmap? = null
         try {
+            createPrivateFile(target)
             // Full-file decrypt verifies the complete AES-GCM authentication tag
             // before the compatibility decoder is allowed to inspect the bytes.
             decryptInto(record, target)
@@ -920,6 +937,8 @@ class VaultRepository(context: Context) {
             } catch (cleanupFailure: Throwable) {
                 previewBitmap?.takeIf { !it.isRecycled }?.recycle()
                 throw cleanupFailure
+            } finally {
+                VaultOutgoingSessionRegistry.markInactive(target)
             }
         }
     }
@@ -1403,6 +1422,8 @@ class VaultRepository(context: Context) {
                             cleanupFailure
                         )
                     }
+                } finally {
+                    VaultOutgoingSessionRegistry.markInactive(staged)
                 }
             }
         }
@@ -1446,6 +1467,8 @@ class VaultRepository(context: Context) {
                     } else {
                         throw cleanupFailure
                     }
+                } finally {
+                    VaultOutgoingSessionRegistry.markInactive(staged)
                 }
             }
         }
@@ -1699,11 +1722,16 @@ class VaultRepository(context: Context) {
         onProgress: ((Long) -> Unit)? = null
     ): File {
         val target = File(staging, "${UUID.randomUUID()}.tmp")
+        VaultOutgoingSessionRegistry.markActive(target)
         try {
             decryptInto(record, target, onProgress)
             return target
         } catch (failure: Throwable) {
-            runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
+            try {
+                runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
+            } finally {
+                VaultOutgoingSessionRegistry.markInactive(target)
+            }
             throw failure
         }
     }

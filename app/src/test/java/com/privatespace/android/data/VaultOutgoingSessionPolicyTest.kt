@@ -91,6 +91,20 @@ class VaultOutgoingSessionPolicyTest {
     }
 
     @Test
+    fun stagingLeaseProtectsAnActivePreviewDuringBackgroundCleanup() {
+        val root = Files.createTempDirectory("private-space-staging").toFile()
+        try {
+            val preview = File(root, "preview.tmp").apply { writeText("temporary") }
+            VaultOutgoingSessionRegistry.markActive(preview)
+            assertTrue(VaultOutgoingSessionRegistry.isActive(preview))
+            VaultOutgoingSessionRegistry.markInactive(preview)
+            assertFalse(VaultOutgoingSessionRegistry.isActive(preview))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun backgroundCleanupRemovesExpiredHandedOffSessions() {
         val root = Files.createTempDirectory("private-space-outgoing").toFile()
         try {
