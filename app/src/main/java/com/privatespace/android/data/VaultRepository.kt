@@ -545,6 +545,8 @@ class VaultRepository(context: Context) {
         val target = encryptedFile(id)
         var finalized = false
         var recoveryStoreUsed: PersistentVaultStore? = null
+        // The janitor must not remove an encrypted import while it is active.
+        VaultOutgoingSessionRegistry.markActive(temporary)
 
         try {
             val source = resolver.openInputStream(uri)
@@ -617,6 +619,8 @@ class VaultRepository(context: Context) {
             }
             runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
             throw failure
+        } finally {
+            VaultOutgoingSessionRegistry.markInactive(temporary)
         }
     }
 

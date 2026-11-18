@@ -69,6 +69,25 @@ internal class OutgoingCacheCleanupWorker(
                 }
                 VaultOutgoingSessionRegistry.markInactive(staged)
             }
+
+            // Interrupted imports leave only an incomplete, encrypted .psv.tmp
+            // file in the main vault directory. Never scan/delete committed .psv
+            // records or restore journals here; startup recovery owns those.
+            val vaultRoot = File(applicationContext.filesDir, "vault")
+            val importTemps = if (!vaultRoot.exists()) {
+                emptyArray()
+            } else {
+                vaultRoot.listFiles()
+                    ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
+                    ?: throw IOException("Could not enumerate interrupted encrypted imports.")
+            }
+            importTemps.forEach { temporary ->
+                if (VaultOutgoingSessionRegistry.isActive(temporary)) return@forEach
+                if (temporary.exists() && !temporary.delete() && temporary.exists()) {
+                    throw IOException("Could not remove an interrupted encrypted import.")
+                }
+                VaultOutgoingSessionRegistry.markInactive(temporary)
+            }
             Result.success()
         } catch (_: IOException) {
             Result.retry()
