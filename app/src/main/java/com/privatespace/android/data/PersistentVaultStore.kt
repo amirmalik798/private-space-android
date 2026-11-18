@@ -727,7 +727,7 @@ internal class PersistentVaultStore private constructor(
                 if (name == READY_MARKER) ready = true
                 if (name?.let(::parseKeyGeneration) != null) hasKeyEnvelope = true
             }
-            ready && hasKeyEnvelope
+            return ready && hasKeyEnvelope
         }
 
         private fun deleteDocumentTree(document: DocumentFile) {
