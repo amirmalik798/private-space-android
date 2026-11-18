@@ -24,8 +24,13 @@ internal class PersistentVaultStore private constructor(
     context: Context,
     private val directory: DocumentFile,
     private var dataKey: ByteArray,
+    /** Latest authenticated index generation committed in this session. */
     private var indexGeneration: Long,
-    private var keyGeneration: Long
+    private var keyGeneration: Long,
+    /** Snapshot of index documents only; payload documents are intentionally excluded. */
+    private val indexDocuments: MutableList<Pair<Long, DocumentFile>>,
+    /** Highest index filename allocated or observed, including failed partial writes. */
+    private var nextIndexGeneration: Long
 ) {
     private val resolver = context.applicationContext.contentResolver
 
@@ -168,21 +173,23 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun saveIndex(clearIndex: ByteArray, aad: ByteArray): IndexSnapshot {
         require(clearIndex.size <= MAX_INDEX_BYTES) { "Vault index exceeds its supported size." }
-        // A process may have stopped while writing the previous generation.
-        // Skip any partial filename rather than getting stuck reusing it.
+        // Reuse the index-only snapshot captured when this recovery store was
+        // opened. Enumerating the SAF folder here would walk every encrypted
+        // payload on every import/index commit, making large-vault imports
+        // increasingly expensive (approximately quadratic provider work).
         val previousGoodGeneration = indexGeneration
-        // Reuse this SAF directory snapshot for generation selection and pruning.
-        // Recovery folders contain one encrypted payload per saved item, so a
-        // second full enumeration for the same index commit is avoidable work.
-        val existingIndexDocuments = directory.listFiles().mapNotNull { document ->
-            document.name?.let(::parseIndexGeneration)?.let { it to document }
+        val generation = VaultIndexGenerationPolicy.nextGeneration(nextIndexGeneration)
+        // Reserve the generation before any provider write. If create/write/readback
+        // fails, the next attempt skips this name rather than colliding with a
+        // partial document left by an unreliable SAF provider.
+        nextIndexGeneration = generation
+        check(indexDocuments.none { it.first == generation }) {
+            "A recovery index generation already exists."
         }
-        val highestExisting = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
-        val generation = Math.addExact(maxOf(indexGeneration, highestExisting), 1L)
         val name = indexName(generation)
-        check(findChild(name) == null) { "A recovery index generation already exists." }
         val document = directory.createFile(BINARY_MIME, name)
             ?: error("Could not create an encrypted recovery index. Check device storage.")
+        indexDocuments += generation to document
 
         // SAF providers are not equally reliable when an encrypted record is
         // emitted through several small writes. Build the bounded index envelope
@@ -244,16 +251,15 @@ internal class PersistentVaultStore private constructor(
                 }
             )
             try {
+                // Only promote this generation after the provider readback has
+                // authenticated and matched the bytes we intended to save.
                 indexGeneration = generation
                 val snapshot = IndexSnapshot(
                     clearBytes = ByteArray(0),
                     encryptedDigest = PersistentVaultCrypto.sha256(encryptedBytes),
                     generation = generation
                 )
-                pruneIndexGenerations(
-                    existingIndexDocuments + (generation to document),
-                    setOf(generation, previousGoodGeneration)
-                )
+                pruneIndexGenerations(setOf(generation, previousGoodGeneration))
                 return snapshot
             } finally {
                 encryptedBytes.fill(0)
@@ -269,12 +275,10 @@ internal class PersistentVaultStore private constructor(
 
     @Synchronized
     fun readLatestIndex(aad: ByteArray): IndexSnapshot {
-        val candidates = directory.listFiles()
-            .mapNotNull { document ->
-                val name = document.name ?: return@mapNotNull null
-                parseIndexGeneration(name)?.let { it to document }
-            }
-            .sortedByDescending { it.first }
+        // open() already enumerated the recovery folder and captured these
+        // small index entries. Reuse them instead of querying the SAF provider
+        // for the entire directory a second time.
+        val candidates = indexDocuments.sortedByDescending { it.first }
 
         if (candidates.isEmpty()) throw IOException("No encrypted recovery index was found.")
 
@@ -296,7 +300,7 @@ internal class PersistentVaultStore private constructor(
                             clearBytes.fill(0)
                             "Encrypted recovery index exceeds its supported size."
                         }
-                        indexGeneration = maxOf(indexGeneration, generation)
+                        indexGeneration = generation
                         val digest = PersistentVaultCrypto.sha256(encryptedBytes)
                         return IndexSnapshot(clearBytes, digest, generation)
                     } finally {
@@ -469,15 +473,19 @@ internal class PersistentVaultStore private constructor(
     private fun findChild(name: String): DocumentFile? =
         directory.findFile(name)?.takeIf { it.exists() }
 
-    private fun pruneIndexGenerations(
-        existingIndexDocuments: List<Pair<Long, DocumentFile>>,
-        keepGenerations: Set<Long>
-    ) {
-        // The caller passes the already-enumerated directory snapshot. Re-querying
-        // it here would scan every encrypted payload a second time per index save.
-        existingIndexDocuments
-            .filterNot { (generation, _) -> generation in keepGenerations }
-            .forEach { (_, document) -> runCatching { document.delete() } }
+    private fun pruneIndexGenerations(keepGenerations: Set<Long>) {
+        // Keep the newest authenticated index and its previous known-good
+        // generation. Failed deletions stay in the in-memory snapshot so a later
+        // successful save can retry them without listing the whole SAF directory.
+        val iterator = indexDocuments.iterator()
+        while (iterator.hasNext()) {
+            val (generation, document) = iterator.next()
+            if (!VaultIndexGenerationPolicy.shouldPrune(generation, keepGenerations)) continue
+            val deleted = runCatching {
+                document.delete() || !document.exists()
+            }.getOrDefault(false)
+            if (deleted) iterator.remove()
+        }
     }
 
     private fun readDocumentBytes(document: DocumentFile, maximumBytes: Int): ByteArray {
@@ -561,7 +569,15 @@ internal class PersistentVaultStore private constructor(
                 // data key. Either one is sufficient to recover the vault.
                 val backupPassword = verificationPassword.copyOf()
                 writeKeyEnvelope(context.contentResolver, folder, key, backupPassword, 2L)
-                return PersistentVaultStore(context, folder, key, 0L, 2L)
+                return PersistentVaultStore(
+                    context = context,
+                    directory = folder,
+                    dataKey = key,
+                    indexGeneration = 0L,
+                    keyGeneration = 2L,
+                    indexDocuments = mutableListOf(),
+                    nextIndexGeneration = 0L
+                )
             } catch (failure: Throwable) {
                 key.fill(0)
                 runCatching { deleteDocumentTree(folder) }.onFailure(failure::addSuppressed)
@@ -629,13 +645,16 @@ internal class PersistentVaultStore private constructor(
                 authenticationFailure
                     ?: IOException("The recovery-key envelope could not be read safely.", lastFailure)
                 )
-            val indexGeneration = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
+            val highestExistingGeneration = existingIndexDocuments.maxOfOrNull { it.first } ?: 0L
             return PersistentVaultStore(
-                context.applicationContext,
-                folder,
-                recoveredKey,
-                indexGeneration,
-                keyGeneration
+                context = context.applicationContext,
+                directory = folder,
+                dataKey = recoveredKey,
+                // readLatestIndex() sets this to the highest authenticated generation.
+                indexGeneration = 0L,
+                keyGeneration = keyGeneration,
+                indexDocuments = existingIndexDocuments.toMutableList(),
+                nextIndexGeneration = highestExistingGeneration
             )
             } finally {
                 password.fill('\u0000')
