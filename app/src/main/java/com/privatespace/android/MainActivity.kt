@@ -1450,7 +1450,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 // Avoid resolveActivity pre-filtering on OEM builds because some
                 // Samsung handlers are not consistently reported by the resolver.
                 val launchCandidates = samsungIntents + baseIntent
-                repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
+                withContext(Dispatchers.IO) {
+                    repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
+                }
+                if (cancelRequested.get()) throw CancellationException("Opening cancelled.")
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) return@launch
                 var launchFailure: Exception? = null
                 for (candidate in launchCandidates) {
                     try {
@@ -1573,7 +1581,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     .putExtra(Intent.EXTRA_STREAM, uri)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 sendIntent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-                repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
+                withContext(Dispatchers.IO) {
+                    repository.markOutgoingHandedOff(listOf(checkNotNull(prepared)))
+                }
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) return@launch
                 context.startActivity(Intent.createChooser(sendIntent, "Share file"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -1647,7 +1663,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 val clip = ClipData.newUri(context.contentResolver, "Private Space files", uris.first())
                 uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
                 sendIntent.clipData = clip
-                repository.markOutgoingHandedOff(preparedFiles)
+                withContext(Dispatchers.IO) {
+                    repository.markOutgoingHandedOff(preparedFiles)
+                }
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) return@launch
                 context.startActivity(Intent.createChooser(sendIntent, "Share topic"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -1763,7 +1787,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 )
                 uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
                 sendIntent.clipData = clip
-                repository.markOutgoingHandedOff(preparedFiles)
+                withContext(Dispatchers.IO) {
+                    repository.markOutgoingHandedOff(preparedFiles)
+                }
+                if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
+                if (!VaultSessionPolicy.mayReleasePlaintext(
+                        unlocked,
+                        activity?.isResumedForVault == true
+                    )
+                ) return@launch
                 context.startActivity(Intent.createChooser(sendIntent, "Share selected files"))
                 handedOff = true
             } catch (cancelled: CancellationException) {
@@ -5111,10 +5143,8 @@ private fun VaultMediaViewer(
                             // completes. Check before transferring bitmap ownership
                             // to Compose so late results are always reclaimed.
                             currentCoroutineContext().ensureActive()
-                            val loaded = ViewerImageLoadState(loading = false, bitmap = decoded)
-                            value = loaded
                             if (decoded != null) pendingViewerBitmap.compareAndSet(decoded, null)
-                            loaded
+                            ViewerImageLoadState(loading = false, bitmap = decoded)
                         } catch (cancelled: CancellationException) {
                             pendingViewerBitmap.getAndSet(null)?.let { bitmap ->
                                 if (!bitmap.isRecycled) bitmap.recycle()
