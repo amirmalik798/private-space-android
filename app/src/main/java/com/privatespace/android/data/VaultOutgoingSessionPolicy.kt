@@ -14,3 +14,4 @@ internal object VaultOutgoingSessionPolicy {
 
     /** Pending sessions were never handed off; legacy unmarked sessions keep their old TTL. */
     fun shouldDeleteAtStartup(session: File): Boolean = isPendingSession(session)
+}

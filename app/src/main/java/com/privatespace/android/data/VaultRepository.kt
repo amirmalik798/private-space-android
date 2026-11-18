@@ -1940,7 +1940,7 @@ class VaultRepository(context: Context) {
         id: String,
         localEncrypted: File,
         expectedPlainBytes: Long,
-        checkCancelled: () -> Unit
+        checkCancelled: () -> Unit = {}
     ) {
         val aad = fileAad(id)
         FileInputStream(localEncrypted).use { rawCiphertext ->
@@ -2584,7 +2584,7 @@ class VaultRepository(context: Context) {
         }
     }
 
-    private fun createPrivateFile(file: File) {
+    private fun createPrivateFile(file: File): File {
         check(file.createNewFile()) { "Could not create a private temporary file." }
         try {
             restrictFilePermissions(file)
