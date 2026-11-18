@@ -137,7 +137,8 @@ class VaultRepository(context: Context) {
             // first created for this process. Remove all abandoned plaintext
             // staging left by a previous process before exposing the vault UI.
             // Fail closed if any entry cannot be removed.
-            staging.listFiles()?.forEach(::deleteTemporaryEntry)
+            VaultDirectoryListing.listChildren(staging, "temporary plaintext cache")
+                .forEach(::deleteTemporaryEntry)
             cleanupAbandonedOutgoingSessions()
             migrateLegacyMetadataIfNeeded()
 
@@ -2315,6 +2316,7 @@ class VaultRepository(context: Context) {
     }
 
     private fun recoverInterruptedRestoreFiles() {
+        val rootEntries = VaultDirectoryListing.listChildren(root, "vault recovery storage")
         val journal = File(root, RESTORE_TRANSACTION_FILE)
         if (journal.isFile) {
             val journalBytes = try {
@@ -2409,7 +2411,7 @@ class VaultRepository(context: Context) {
         } else {
             // Backward compatibility with restores started by older app builds,
             // which did not yet write a transaction journal.
-            root.listFiles()?.filter { it.name.endsWith(".restore.bak") }?.forEach { backup ->
+            rootEntries.filter { it.name.endsWith(".restore.bak") }.forEach { backup ->
                 val id = backup.name.removeSuffix(".restore.bak")
                 if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
                 val destination = encryptedFile(id)
@@ -2424,7 +2426,7 @@ class VaultRepository(context: Context) {
         }
         val journalTemporary = File(root, "$RESTORE_TRANSACTION_FILE.tmp")
         if (journalTemporary.exists()) deleteTemporaryEntry(journalTemporary)
-        root.listFiles()?.filter { it.name.endsWith(".restore.tmp") }?.forEach(::deleteTemporaryEntry)
+        rootEntries.filter { it.name.endsWith(".restore.tmp") }.forEach(::deleteTemporaryEntry)
         syncDirectory(root)
     }
 
@@ -2668,7 +2670,7 @@ class VaultRepository(context: Context) {
     }
 
     private fun cleanupAbandonedOutgoingSessions() {
-        outgoing.listFiles()?.forEach { session ->
+        VaultDirectoryListing.listChildren(outgoing, "outgoing temporary cache").forEach { session ->
             if (VaultOutgoingSessionPolicy.shouldDeleteAtStartup(session)) {
                 deleteTemporaryEntry(session)
             }
@@ -2756,7 +2758,8 @@ class VaultRepository(context: Context) {
     private fun recoverInterruptedFileOperations(index: VaultIndex, hasCommittedIndex: Boolean) {
         val referencedIds = (index.files.map { it.id } + index.trash.map { it.file.id })
             .toMutableSet()
-        root.listFiles()?.filter { it.name.endsWith(FILE_DELETE_SUFFIX) }?.forEach { tombstone ->
+        val rootEntries = VaultDirectoryListing.listChildren(root, "vault recovery storage")
+        rootEntries.filter { it.name.endsWith(FILE_DELETE_SUFFIX) }.forEach { tombstone ->
             val id = tombstone.name.removeSuffix(FILE_DELETE_SUFFIX)
             if (runCatching { UUID.fromString(id) }.isFailure) return@forEach
             val original = encryptedFile(id)
@@ -2770,7 +2773,8 @@ class VaultRepository(context: Context) {
 
         removeAbandonedTemporaryFiles()
         if (hasCommittedIndex) {
-            root.listFiles()?.filter { it.name.endsWith(".psv") }?.forEach { payload ->
+            VaultDirectoryListing.listChildren(root, "vault recovery storage")
+                .filter { it.name.endsWith(".psv") }.forEach { payload ->
                 val id = payload.name.removeSuffix(".psv")
                 if (runCatching { UUID.fromString(id) }.isSuccess && id !in referencedIds) {
                     // Import crashed after payload rename but before index commit.
@@ -2783,14 +2787,15 @@ class VaultRepository(context: Context) {
     private fun removeAbandonedTemporaryFiles() {
         // Repository initialization runs before the UI can start a new import.
         // Every .psv.tmp file was left by an interrupted prior process and cannot be resumed.
-        // Do not silently expose a vault when known residual data cannot be deleted.
-        root.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
-            ?.forEach(::deleteTemporaryEntry)
+        // A failed directory listing is not an empty directory: fail closed so
+        // an incomplete import is never silently skipped during startup recovery.
+        VaultDirectoryListing.listChildren(root, "encrypted vault storage")
+            .filter { it.isFile && it.name.endsWith(".psv.tmp") }
+            .forEach(::deleteTemporaryEntry)
     }
 
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
-        directory.listFiles()?.forEach { child ->
+        VaultDirectoryListing.listChildren(directory, "temporary cache").forEach { child ->
             if (directory == outgoing && VaultOutgoingSessionPolicy.isPendingSession(child)) {
                 return@forEach
             }

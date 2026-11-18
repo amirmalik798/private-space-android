@@ -7,6 +7,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -89,9 +90,14 @@ internal class OutgoingCacheCleanupWorker(
                 VaultOutgoingSessionRegistry.markInactive(temporary)
             }
             Result.success()
-        } catch (_: IOException) {
-            Result.retry()
-        } catch (_: SecurityException) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            android.util.Log.w(
+                "PrivateSpace",
+                "Temporary-data cleanup did not complete; WorkManager will retry.",
+                failure
+            )
             Result.retry()
         }
     }

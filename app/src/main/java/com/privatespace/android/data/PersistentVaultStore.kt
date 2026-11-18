@@ -176,8 +176,12 @@ internal class PersistentVaultStore private constructor(
         require(expectedPlainBytes >= 0L) { "Invalid recovery payload size." }
         val name = payloadName(id)
         check(id !in payloadDocuments) { "A recovery copy for this file already exists." }
-        val target = directory.createFile(BINARY_MIME, name)
-            ?: error("Could not create an encrypted recovery file. Check device storage.")
+        val target = createExactFile(
+            directory,
+            BINARY_MIME,
+            name,
+            "Could not create an encrypted recovery file. Check device storage."
+        )
         payloadDocuments[id] = target
         try {
             val output = resolver.openOutputStream(target.uri, "w")
@@ -287,8 +291,12 @@ internal class PersistentVaultStore private constructor(
             "A recovery index generation already exists."
         }
         val name = indexName(generation)
-        val document = directory.createFile(BINARY_MIME, name)
-            ?: error("Could not create an encrypted recovery index. Check device storage.")
+        val document = createExactFile(
+            directory,
+            BINARY_MIME,
+            name,
+            "Could not create an encrypted recovery index. Check device storage."
+        )
         indexDocuments += generation to document
 
         // SAF providers are not equally reliable when an encrypted record is
@@ -469,8 +477,12 @@ internal class PersistentVaultStore private constructor(
                     document.name?.let(::parseKeyGeneration)
                 }.maxOrNull() ?: 0L
                 val safeGeneration = maxOf(generation, highestExisting + 1L)
-                val document = targetDirectory.createFile(BINARY_MIME, keyName(safeGeneration))
-                    ?: error("Could not create a recovery-key envelope.")
+                val document = createExactFile(
+                    targetDirectory,
+                    BINARY_MIME,
+                    keyName(safeGeneration),
+                    "Could not create a recovery-key envelope."
+                )
                 try {
                     val output = contentResolver.openOutputStream(document.uri, "w")
                         ?: error("Could not open a recovery-key envelope.")
@@ -565,8 +577,12 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun markReady() {
         if (readyMarkerExists) return
-        val marker = directory.createFile("text/plain", READY_MARKER)
-            ?: error("Could not finalize encrypted recovery storage.")
+        val marker = createExactFile(
+            directory,
+            "text/plain",
+            READY_MARKER,
+            "Could not finalize encrypted recovery storage."
+        )
         // Reserve the marker once created, matching the previous behavior if a
         // provider fails partway through writing its contents.
         readyMarkerExists = true
@@ -650,6 +666,47 @@ internal class PersistentVaultStore private constructor(
         private const val KEY_SUFFIX = ".wrap"
         private const val PAYLOAD_DELETE_SUFFIX = ".psv.delete"
 
+        private fun createExactFile(
+            parent: DocumentFile,
+            mimeType: String,
+            expectedName: String,
+            failureMessage: String
+        ): DocumentFile {
+            val created = parent.createFile(mimeType, expectedName)
+                ?: throw IOException(failureMessage)
+            if (created.name == expectedName) return created
+
+            val mismatch = IOException(
+                "The selected storage provider could not preserve an exact encrypted recovery filename."
+            )
+            runCatching {
+                if (!created.delete() && created.exists()) {
+                    throw IOException("Could not remove a recovery file created with an unexpected name.")
+                }
+            }.onFailure(mismatch::addSuppressed)
+            throw mismatch
+        }
+
+        private fun createExactDirectory(
+            parent: DocumentFile,
+            expectedName: String,
+            failureMessage: String
+        ): DocumentFile {
+            val created = parent.createDirectory(expectedName)
+                ?: throw IOException(failureMessage)
+            if (created.name == expectedName) return created
+
+            val mismatch = IOException(
+                "The selected storage provider could not preserve the exact recovery-folder name."
+            )
+            runCatching {
+                if (!created.delete() && created.exists()) {
+                    throw IOException("Could not remove a recovery folder created with an unexpected name.")
+                }
+            }.onFailure(mismatch::addSuppressed)
+            throw mismatch
+        }
+
         fun create(context: Context, treeUri: Uri, password: CharArray): PersistentVaultStore {
             try {
             val tree = DocumentFile.fromTreeUri(context.applicationContext, treeUri)
@@ -659,20 +716,22 @@ internal class PersistentVaultStore private constructor(
             }
             val existingFolder = tree.findFile(FOLDER_NAME)
             if (existingFolder != null) {
-                val hasIndex = existingFolder.listFiles().any { document ->
-                    document.name?.let(::parseIndexGeneration) != null
-                }
-                val isReady = existingFolder.findFile(READY_MARKER)?.exists() == true
-                check(!isReady && !hasIndex) {
-                    "A completed or recoverable Private Space vault already exists here. Restore it instead of replacing it."
-                }
-                // A pre-index interrupted migration has no committed manifest.
-                // The source vault is still present in this installation, so its
-                // incomplete encrypted staging folder can be safely retried.
-                deleteDocumentTree(existingFolder)
+                // Never infer that an existing recovery folder is disposable
+                // from a missing index/ready marker. A storage provider can return
+                // incomplete directory listings, and an interrupted or damaged
+                // backup may still contain recoverable encrypted records.
+                throw IOException(
+                    "A Private Space recovery folder already exists at this location. " +
+                        "It has been preserved. Restore it if it contains the backup you need, " +
+                        "or choose another location. Do not remove it until you have verified " +
+                        "that your on-device vault is safe."
+                )
             }
-            val folder = tree.createDirectory(FOLDER_NAME)
-                ?: throw IOException("Could not create the Private Space recovery folder.")
+            val folder = createExactDirectory(
+                tree,
+                FOLDER_NAME,
+                "Could not create the Private Space recovery folder."
+            )
             val key = PersistentVaultCrypto.newDataKey()
             val verificationPassword = password.copyOf()
             try {
@@ -683,8 +742,12 @@ internal class PersistentVaultStore private constructor(
                     keyToWrap.fill(0)
                 }
                 try {
-                    val keyDocument = folder.createFile(BINARY_MIME, keyName(1L))
-                        ?: throw IOException("Could not create the recovery-key envelope.")
+                    val keyDocument = createExactFile(
+                        folder,
+                        BINARY_MIME,
+                        keyName(1L),
+                        "Could not create the recovery-key envelope."
+                    )
                     val output = context.contentResolver.openOutputStream(keyDocument.uri, "w")
                         ?: throw IOException("Could not write the recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
@@ -897,8 +960,12 @@ internal class PersistentVaultStore private constructor(
             try {
                 val envelope = PersistentVaultCrypto.wrapDataKey(key, password)
                 try {
-                    val document = directory.createFile(BINARY_MIME, keyName(generation))
-                        ?: throw IOException("Could not create the backup recovery-key envelope.")
+                    val document = createExactFile(
+                        directory,
+                        BINARY_MIME,
+                        keyName(generation),
+                        "Could not create the backup recovery-key envelope."
+                    )
                     val output = resolver.openOutputStream(document.uri, "w")
                         ?: throw IOException("Could not write the backup recovery-key envelope.")
                     output.use { it.write(envelope); it.flush() }
