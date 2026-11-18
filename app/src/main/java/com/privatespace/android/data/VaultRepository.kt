@@ -552,10 +552,17 @@ class VaultRepository(context: Context) {
         } catch (failure: Throwable) {
             runCatching { deleteTemporaryEntry(temporary) }.onFailure(failure::addSuppressed)
             if (finalized) {
-                recoveryStoreUsed?.let { store ->
-                    runCatching { store.deletePayload(id) }.onFailure(failure::addSuppressed)
+                if (VaultCommitFailurePolicy.shouldPreserveFinalizedPayload(failure)) {
+                    // The recovery index may have committed even though its rollback
+                    // could not be confirmed after the local AtomicFile failed.
+                    // Keep both encrypted copies so recovery metadata can never point
+                    // to a payload that this failure handler has just deleted.
+                } else {
+                    recoveryStoreUsed?.let { store ->
+                        runCatching { store.deletePayload(id) }.onFailure(failure::addSuppressed)
+                    }
+                    runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
                 }
-                runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
             }
             runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
             throw failure
@@ -1880,7 +1887,9 @@ class VaultRepository(context: Context) {
                             ?: error("Persistent recovery folder is unavailable.")
                         runCatching { saveRecoveryPreferences(tree, rollback.encryptedDigest) }
                     } catch (rollbackFailure: Throwable) {
-                        localFailure.addSuppressed(rollbackFailure)
+                        // The mirror may still contain the new index. Signal the
+                        // caller to preserve the corresponding encrypted payload.
+                        throw RecoveryMirrorRollbackException(localFailure, rollbackFailure)
                     }
                 }
                 throw localFailure
@@ -2228,15 +2237,23 @@ class VaultRepository(context: Context) {
         }
         val backup = File(root, "$id.restore.bak")
         check(!backup.exists()) { "An interrupted vault restore needs recovery." }
-        if (destination.exists()) Os.rename(destination.absolutePath, backup.absolutePath)
         try {
+            if (destination.exists()) {
+                Os.rename(destination.absolutePath, backup.absolutePath)
+                // Make the rollback copy durable before installing the incoming
+                // payload. Otherwise power loss between the two renames could
+                // leave the new payload visible without its previous version.
+                syncDirectory(root)
+            }
             Os.rename(incoming.absolutePath, destination.absolutePath)
             // Keep the old payload until the new encrypted index is committed.
             // The transaction journal removes these backups only after commit.
             syncDirectory(root)
         } catch (failure: Throwable) {
             runCatching {
-                if (destination.exists()) destination.delete()
+                if (destination.exists()) {
+                    check(destination.delete()) { "Could not remove a partially installed restored payload." }
+                }
                 if (backup.exists()) Os.rename(backup.absolutePath, destination.absolutePath)
                 if (incoming.exists()) incoming.delete()
                 syncDirectory(root)
