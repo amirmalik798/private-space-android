@@ -697,7 +697,11 @@ class VaultRepository(context: Context) {
             recoveryDeletionPrepared = recoveryStore != null
             saveIndex(index.copy(trash = updatedTrash))
         } catch (failure: Throwable) {
-            if (recoveryDeletionPrepared) {
+            // If the mirror rollback is uncertain, retain the marker. On the
+            // next authenticated open its presence is resolved against whichever
+            // index generation proves valid: referenced means cancel, absent
+            // means finish deletion.
+            if (recoveryDeletionPrepared && failure !is RecoveryMirrorRollbackException) {
                 runCatching { recoveryStore?.cancelPreparedPayloadDeletion(id) }
                     .onFailure(failure::addSuppressed)
             }
