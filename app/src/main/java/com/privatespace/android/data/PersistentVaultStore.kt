@@ -625,10 +625,13 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun markReady() {
         if (readyMarkerExists) return
+        // DocumentFile.createFile() may append the MIME type's default extension
+        // when the requested name has none (for example, text/plain adds ".txt").
+        // Use an explicit extension so SAF providers preserve the marker name.
         val marker = createExactFile(
             directory,
-            "text/plain",
-            READY_MARKER,
+            BINARY_MIME,
+            VaultRecoveryReadyMarker.FILE_NAME,
             "Could not finalize encrypted recovery storage."
         )
         // Reserve the marker once created, matching the previous behavior if a
@@ -636,7 +639,10 @@ internal class PersistentVaultStore private constructor(
         readyMarkerExists = true
         val output = resolver.openOutputStream(marker.uri, "w")
             ?: error("Could not finalize encrypted recovery storage.")
-        output.use { it.write(READY_CONTENT.toByteArray(Charsets.US_ASCII)); it.flush() }
+        output.use {
+            it.write(VaultRecoveryReadyMarker.CONTENT.toByteArray(Charsets.US_ASCII))
+            it.flush()
+        }
     }
 
     @Synchronized
@@ -703,8 +709,6 @@ internal class PersistentVaultStore private constructor(
     companion object {
         const val FOLDER_NAME = "Private Space Vault"
         private const val BINARY_MIME = "application/octet-stream"
-        private const val READY_MARKER = "vault-ready"
-        private const val READY_CONTENT = "PRIVATE_SPACE_RECOVERY_V1\n"
         private const val MAX_INDEX_BYTES = 16 * 1024 * 1024
         private const val MAX_ENVELOPE_BYTES = 4 * 1024
         private const val DATA_KEY_BYTES = 32
@@ -891,7 +895,7 @@ internal class PersistentVaultStore private constructor(
                             throw IOException("The recovery folder contains duplicate encrypted payload identifiers.")
                         }
                     }
-                    if (name == READY_MARKER) readyMarkerExists = true
+                    if (VaultRecoveryReadyMarker.matches(name)) readyMarkerExists = true
                 }
             }
             candidates.sortByDescending { it.first }
@@ -960,7 +964,7 @@ internal class PersistentVaultStore private constructor(
             var hasKeyEnvelope = false
             folder.listFiles().forEach { document ->
                 val name = document.name
-                if (name == READY_MARKER) ready = true
+                if (VaultRecoveryReadyMarker.matches(name)) ready = true
                 if (name?.let(::parseKeyGeneration) != null) hasKeyEnvelope = true
             }
             return ready && hasKeyEnvelope
