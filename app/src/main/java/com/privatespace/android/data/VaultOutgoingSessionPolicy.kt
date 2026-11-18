@@ -19,4 +19,14 @@ internal object VaultOutgoingSessionPolicy {
         require(ttlMs >= 0L) { "TTL must not be negative." }
         return lastModified <= 0L || (now >= lastModified && now - lastModified > ttlMs)
     }
+
+    fun shouldDeleteInBackground(
+        session: File,
+        now: Long,
+        ttlMs: Long,
+        activeInCurrentProcess: Boolean
+    ): Boolean {
+        if (activeInCurrentProcess) return false
+        return isPendingSession(session) || isExpired(session.lastModified(), now, ttlMs)
+    }
 }

@@ -143,6 +143,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runCatching {
+            OutgoingCacheCleanupWorker.ensureScheduled(applicationContext)
+        }.onFailure {
+            android.util.Log.e("PrivateSpace", "Could not schedule outgoing-cache cleanup.", it)
+        }
         registerScreenOffReceiver()
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         window.statusBarColor = android.graphics.Color.rgb(8, 13, 24)

@@ -53,6 +53,64 @@ class VaultOutgoingSessionPolicyTest {
     }
 
     @Test
+    fun backgroundCleanupProtectsAnActivePendingSession() {
+        val root = Files.createTempDirectory("private-space-outgoing").toFile()
+        try {
+            val session = File(root, "session").apply { mkdir() }
+            File(session, VaultOutgoingSessionPolicy.PENDING_MARKER).createNewFile()
+            assertFalse(
+                VaultOutgoingSessionPolicy.shouldDeleteInBackground(
+                    session,
+                    now = System.currentTimeMillis(),
+                    ttlMs = 1L,
+                    activeInCurrentProcess = true
+                )
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun backgroundCleanupRemovesPendingSessionsFromAnEndedProcess() {
+        val root = Files.createTempDirectory("private-space-outgoing").toFile()
+        try {
+            val session = File(root, "session").apply { mkdir() }
+            File(session, VaultOutgoingSessionPolicy.PENDING_MARKER).createNewFile()
+            assertTrue(
+                VaultOutgoingSessionPolicy.shouldDeleteInBackground(
+                    session,
+                    now = System.currentTimeMillis(),
+                    ttlMs = 30L * 60L * 1_000L,
+                    activeInCurrentProcess = false
+                )
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun backgroundCleanupRemovesExpiredHandedOffSessions() {
+        val root = Files.createTempDirectory("private-space-outgoing").toFile()
+        try {
+            val session = File(root, "session").apply { mkdir() }
+            File(session, VaultOutgoingSessionPolicy.HANDED_OFF_MARKER).createNewFile()
+            assertTrue(session.setLastModified(1_000L))
+            assertTrue(
+                VaultOutgoingSessionPolicy.shouldDeleteInBackground(
+                    session,
+                    now = 1_000L + 30L * 60L * 1_000L + 1L,
+                    ttlMs = 30L * 60L * 1_000L,
+                    activeInCurrentProcess = false
+                )
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun legacyUnmarkedSessionKeepsItsExistingTtlBehavior() {
         val root = Files.createTempDirectory("private-space-outgoing").toFile()
         try {

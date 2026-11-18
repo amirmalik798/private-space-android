@@ -725,7 +725,11 @@ class VaultRepository(context: Context) {
             onProgress(VaultFileOperationProgress("Decryption complete", record.sizeBytes, record.sizeBytes, currentFileName = record.displayName))
             return PreparedVaultFile(destination, record.mimeType)
         } catch (failure: Throwable) {
-            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            try {
+                runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            } finally {
+                VaultOutgoingSessionRegistry.markInactive(session)
+            }
             throw failure
         }
     }
@@ -752,7 +756,14 @@ class VaultRepository(context: Context) {
             }
             sessions[session.canonicalPath] = session
         }
-        sessions.values.forEach(::deleteTemporaryEntry)
+        sessions.values.forEach { session ->
+            try {
+                deleteTemporaryEntry(session)
+            } finally {
+                // If deletion fails, let the process-independent janitor retry it.
+                VaultOutgoingSessionRegistry.markInactive(session)
+            }
+        }
     }
 
     /** Mark prepared plaintext as handed off, retaining it only for the existing TTL. */
@@ -777,6 +788,7 @@ class VaultRepository(context: Context) {
                 "The prepared outgoing session is no longer pending."
             }
             Os.rename(pending.absolutePath, handedOff.absolutePath)
+            VaultOutgoingSessionRegistry.markInactive(session)
             syncDirectory(session)
         }
     }
@@ -1136,7 +1148,11 @@ class VaultRepository(context: Context) {
                 PreparedVaultFile(stagedFile, record.mimeType)
             }
         } catch (failure: Throwable) {
-            runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            try {
+                runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
+            } finally {
+                VaultOutgoingSessionRegistry.markInactive(session)
+            }
             throw failure
         }
     }
@@ -2669,6 +2685,7 @@ class VaultRepository(context: Context) {
 
     private fun createOutgoingSession(): File {
         val session = createPrivateDirectory(outgoing, UUID.randomUUID().toString())
+        VaultOutgoingSessionRegistry.markActive(session)
         try {
             // Created before plaintext is written; startup removes sessions that
             // never reached an external app hand-off.
@@ -2676,6 +2693,7 @@ class VaultRepository(context: Context) {
             syncDirectory(session)
             return session
         } catch (failure: Throwable) {
+            VaultOutgoingSessionRegistry.markInactive(session)
             runCatching { deleteTemporaryEntry(session) }.onFailure(failure::addSuppressed)
             throw failure
         }
