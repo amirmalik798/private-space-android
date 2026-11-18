@@ -442,6 +442,36 @@ class VaultRepository(context: Context) {
         return topic
     }
 
+    /** Sets a topic cover to a photo already encrypted inside that topic. */
+    @Synchronized
+    fun setTopicThumbnail(topicId: String, fileId: String) {
+        val index = loadIndex()
+        val topic = index.topics.firstOrNull { it.id == topicId }
+            ?: throw IllegalArgumentException("The selected topic is no longer available.")
+        val photo = index.files.firstOrNull { it.id == fileId && it.topicId == topicId }
+            ?: throw IllegalArgumentException("Choose a photo saved in this topic.")
+        require(VaultTopicThumbnailPolicy.isPhoto(photo)) {
+            "Only photos can be used as topic thumbnails."
+        }
+        if (topic.thumbnailFileId == fileId) return
+        val now = System.currentTimeMillis()
+        saveIndex(index.copy(topics = index.topics.map {
+            if (it.id == topicId) it.copy(updatedAt = now, thumbnailFileId = fileId) else it
+        }))
+    }
+
+    /** Removes only the topic-cover reference; the encrypted photo itself is kept. */
+    @Synchronized
+    fun clearTopicThumbnail(topicId: String) {
+        val index = loadIndex()
+        val topic = index.topics.firstOrNull { it.id == topicId } ?: return
+        if (topic.thumbnailFileId == null) return
+        val now = System.currentTimeMillis()
+        saveIndex(index.copy(topics = index.topics.map {
+            if (it.id == topicId) it.copy(updatedAt = now, thumbnailFileId = null) else it
+        }))
+    }
+
     @Synchronized
     fun addFile(topicId: String, uri: Uri): VaultFile =
         addFileWithProgress(topicId, uri, null, onProgress = { _, _ -> })
