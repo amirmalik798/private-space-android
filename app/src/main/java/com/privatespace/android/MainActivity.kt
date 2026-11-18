@@ -1431,6 +1431,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     fileOperationCancelling = true
                 }
         scope.launch {
+            val preparedForCleanup = AtomicReference<PreparedVaultFile?>(null)
             var prepared: PreparedVaultFile? = null
             var handedOff = false
             var operationFailure: String? = null
@@ -1439,7 +1440,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     repository.prepareDecryptedFile(file.id) { progress ->
                         if (cancelRequested.get()) throw CancellationException("Opening cancelled.")
                         publishFileOperationProgress(operationToken, progress)
-                    }
+                    }.also { preparedForCleanup.set(it) }
                 }
                 if (cancelRequested.get()) throw CancellationException("Opening cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
@@ -1517,7 +1518,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     "The file could not be opened by another app."
                 )
             } finally {
-                val staged = prepared
+                val staged = preparedForCleanup.getAndSet(null) ?: prepared
                 if (!handedOff && staged != null) {
                     val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
                         runCatching {
@@ -1592,6 +1593,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
 
         scope.launch {
+            val preparedForCleanup = AtomicReference<PreparedVaultFile?>(null)
             var prepared: PreparedVaultFile? = null
             var handedOff = false
             var operationFailure: String? = null
@@ -1605,7 +1607,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             operationToken,
                             progress.copy(phase = "Preparing share")
                         )
-                    }
+                    }.also { preparedForCleanup.set(it) }
                 }
                 if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
@@ -1644,7 +1646,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     "The file could not be prepared for sharing."
                 )
             } finally {
-                val staged = prepared
+                val staged = preparedForCleanup.getAndSet(null) ?: prepared
                 if (!handedOff && staged != null) {
                     val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
                         runCatching {
@@ -1686,6 +1688,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
 
         scope.launch {
+            val preparedFilesForCleanup = AtomicReference<List<PreparedVaultFile>?>(null)
             var preparedFiles: List<PreparedVaultFile> = emptyList()
             var handedOff = false
             var operationFailure: String? = null
@@ -1696,7 +1699,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             throw CancellationException("Sharing cancelled.")
                         }
                         publishFileOperationProgress(operationToken, progress)
-                    }
+                    }.also { preparedFilesForCleanup.set(it) }
                 }
                 if (cancelRequested.get()) throw CancellationException("Sharing cancelled.")
                 if (!VaultSessionPolicy.mayReleasePlaintext(
@@ -1739,10 +1742,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     "The topic could not be prepared for sharing."
                 )
             } finally {
-                if (!handedOff && preparedFiles.isNotEmpty()) {
+                val stagedFiles = preparedFilesForCleanup.getAndSet(null) ?: preparedFiles
+                if (!handedOff && stagedFiles.isNotEmpty()) {
                     val cleanupFailure = withContext(NonCancellable + Dispatchers.IO) {
                         runCatching {
-                            repository.discardPreparedOutgoing(preparedFiles)
+                            repository.discardPreparedOutgoing(stagedFiles)
                         }.exceptionOrNull()
                     }
                     if (cleanupFailure != null) {
