@@ -613,7 +613,12 @@ class VaultRepository(context: Context) {
             ?: error("The file's original topic is unavailable.")
         val now = System.currentTimeMillis()
         val updatedTopics = index.topics.map {
-            if (it.id == record.topicId) it.copy(updatedAt = now) else it
+            if (it.id == record.topicId) {
+                it.copy(
+                    updatedAt = now,
+                    thumbnailFileId = it.thumbnailFileId.takeUnless { thumbnailId -> thumbnailId == id }
+                )
+            } else it
         }
         saveIndex(index.copy(
             topics = updatedTopics,
@@ -678,8 +683,13 @@ class VaultRepository(context: Context) {
             "Reconnect the encrypted recovery folder before permanently deleting this file so its recovery copy can be removed too."
         }
         val tombstone = stageEncryptedForDeletion(id)
+        val updatedTrash = index.trash.filterNot { it.file.id == id }.map { entry ->
+            if (entry.originalTopic.thumbnailFileId == id) {
+                entry.copy(originalTopic = entry.originalTopic.copy(thumbnailFileId = null))
+            } else entry
+        }
         try {
-            saveIndex(index.copy(trash = index.trash.filterNot { it.file.id == id }))
+            saveIndex(index.copy(trash = updatedTrash))
         } catch (failure: Throwable) {
             rollbackDeletion(id, tombstone, failure)
             throw failure
@@ -1765,6 +1775,24 @@ class VaultRepository(context: Context) {
         }
     }
 
+    private fun readTopic(item: JSONObject): VaultTopic {
+        val id = item.getString("id")
+        UUID.fromString(id)
+        val thumbnailValue = item.opt("thumbnailFileId")
+        val thumbnailFileId = if (thumbnailValue == null || thumbnailValue == JSONObject.NULL) {
+            null
+        } else {
+            thumbnailValue.toString().also { UUID.fromString(it) }
+        }
+        return VaultTopic(
+            id = id,
+            name = VaultInputValidation.topicName(item.getString("name")),
+            createdAt = item.getLong("created"),
+            updatedAt = item.getLong("updated"),
+            thumbnailFileId = thumbnailFileId
+        )
+    }
+
     @Synchronized
     private fun loadIndex(): VaultIndex {
         ensureInitialized()
@@ -1790,12 +1818,7 @@ class VaultRepository(context: Context) {
                     val item = topicArray.getJSONObject(index)
                     val id = item.getString("id")
                     UUID.fromString(id)
-                    VaultTopic(
-                        id = id,
-                        name = VaultInputValidation.topicName(item.getString("name")),
-                        createdAt = item.getLong("created"),
-                        updatedAt = item.getLong("updated")
-                    )
+                    readTopic(item)
                 }
                 require(topics.map { it.id }.distinct().size == topics.size) {
                     "Vault index contains duplicate topic identifiers."
@@ -1827,8 +1850,8 @@ class VaultRepository(context: Context) {
                     readFile(fileArray.getJSONObject(index), requireActiveTopic = true)
                 }
 
-                // Legacy v2 indexes may predate Trash. Current v3 indexes
-                // must contain the array; a missing field is malformed metadata
+                // Legacy v2 indexes may predate Trash. Version 3 and later
+                // indexes must contain the array; a missing field is malformed metadata
                 // and must not be mistaken for an empty Recycle Bin.
                 val trashArray = if (VaultIndexSchema.requiresTrashArray(schemaVersion)) {
                     json.getJSONArray("trash")
@@ -1843,12 +1866,7 @@ class VaultRepository(context: Context) {
                     val topicItem = item.getJSONObject("topic")
                     val topicId = topicItem.getString("id")
                     UUID.fromString(topicId)
-                    val originalTopic = VaultTopic(
-                        id = topicId,
-                        name = VaultInputValidation.topicName(topicItem.getString("name")),
-                        createdAt = topicItem.getLong("created"),
-                        updatedAt = topicItem.getLong("updated")
-                    )
+                    val originalTopic = readTopic(topicItem)
                     require(file.topicId == originalTopic.id) {
                         "Vault Trash entry does not match its original topic."
                     }
@@ -1859,7 +1877,9 @@ class VaultRepository(context: Context) {
                 require(allFileIds.distinct().size == allFileIds.size) {
                     "Vault index contains duplicate active or trashed file identifiers."
                 }
-                return VaultIndex(topics, files, trash, schemaVersion)
+                val index = VaultIndex(topics, files, trash, schemaVersion)
+                VaultTopicThumbnailPolicy.validate(index.topics, index.files, index.trash)
+                return index
             } finally {
                 clear.fill(0)
             }
@@ -1958,14 +1978,16 @@ class VaultRepository(context: Context) {
         require(allFileIds.distinct().size == allFileIds.size) {
             "Cannot save duplicate active or trashed file identifiers."
         }
+        VaultTopicThumbnailPolicy.validate(index.topics, index.files, index.trash)
     }
 
     private fun serializeIndex(index: VaultIndex, restoreTransactionId: String? = null): ByteArray {
-        fun topicObject(topic: VaultTopic) = JSONObject()
+        fun topicObject(topic: VaultTopic): JSONObject = JSONObject()
             .put("id", topic.id)
             .put("name", topic.name)
             .put("created", topic.createdAt)
             .put("updated", topic.updatedAt)
+            .apply { topic.thumbnailFileId?.let { put("thumbnailFileId", it) } }
         fun fileObject(file: VaultFile) = JSONObject()
             .put("id", file.id)
             .put("topic", file.topicId)
@@ -2513,12 +2535,7 @@ class VaultRepository(context: Context) {
             val item = topicArray.getJSONObject(index)
             val id = item.getString("id")
             UUID.fromString(id)
-            VaultTopic(
-                id = id,
-                name = VaultInputValidation.topicName(item.getString("name")),
-                createdAt = item.getLong("created"),
-                updatedAt = item.getLong("updated")
-            )
+            readTopic(item)
         }
         require(topics.map { it.id }.distinct().size == topics.size) {
             "Vault index contains duplicate topic identifiers."
@@ -2562,12 +2579,7 @@ class VaultRepository(context: Context) {
             val topicItem = item.getJSONObject("topic")
             val topicId = topicItem.getString("id")
             UUID.fromString(topicId)
-            val originalTopic = VaultTopic(
-                id = topicId,
-                name = VaultInputValidation.topicName(topicItem.getString("name")),
-                createdAt = topicItem.getLong("created"),
-                updatedAt = topicItem.getLong("updated")
-            )
+            val originalTopic = readTopic(topicItem)
             require(file.topicId == originalTopic.id) {
                 "Vault Trash entry does not match its original topic."
             }
@@ -2578,7 +2590,9 @@ class VaultRepository(context: Context) {
         require(allFileIds.distinct().size == allFileIds.size) {
             "Vault index contains duplicate active or trashed file identifiers."
         }
-        return VaultIndex(topics, files, trash, schemaVersion)
+        val index = VaultIndex(topics, files, trash, schemaVersion)
+        VaultTopicThumbnailPolicy.validate(index.topics, index.files, index.trash)
+        return index
     }
     /**
      * One-time migration of the old plaintext SharedPreferences index.
