@@ -316,6 +316,9 @@ class VaultRepository(context: Context) {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
+                    store.cachePayloadDocuments(
+                        (index.files + index.trash.map { it.file }).map { it.id }.toSet()
+                    )
                     val hasLocalIndex = metadata.baseFile.isFile ||
                         File(metadata.baseFile.path + ".bak").isFile
 
@@ -402,6 +405,9 @@ class VaultRepository(context: Context) {
                 val snapshot = store.readLatestIndex(METADATA_AAD.toByteArray(Charsets.UTF_8))
                 try {
                     val index = parseIndexBytes(snapshot.clearBytes)
+                    store.cachePayloadDocuments(
+                        (index.files + index.trash.map { it.file }).map { it.id }.toSet()
+                    )
                     restoreWorkingVault(index, store, onProgress)
                     // Keep unreferenced encrypted payloads; an older authenticated
                     // index must never cause newer recoverable data to be deleted.

@@ -29,6 +29,12 @@ internal class PersistentVaultStore private constructor(
     private var keyGeneration: Long,
     /** Snapshot of index documents only; payload documents are intentionally excluded. */
     private val indexDocuments: MutableList<Pair<Long, DocumentFile>>,
+    /** Cached SAF handles for active and trashed payload IDs. */
+    private val payloadDocuments: MutableMap<String, DocumentFile>,
+    /** One-time open snapshot, released when the authenticated index selects payload IDs. */
+    private var pendingFolderSnapshot: List<DocumentFile>?,
+    /** Whether the recovery-ready marker existed in the directory snapshot. */
+    private var readyMarkerExists: Boolean,
     /** Highest index filename allocated or observed, including failed partial writes. */
     private var nextIndexGeneration: Long
 ) {
@@ -79,6 +85,27 @@ internal class PersistentVaultStore private constructor(
         }
     }
 
+    /**
+     * Retains provider handles only for payloads authenticated by the recovery
+     * index. Orphan payloads are deliberately excluded from normal read/delete
+     * paths; the one-time directory snapshot is released after this lookup.
+     */
+    @Synchronized
+    fun cachePayloadDocuments(referencedIds: Set<String>) {
+        val snapshot = pendingFolderSnapshot ?: return
+        if (referencedIds.isEmpty()) {
+            pendingFolderSnapshot = null
+            return
+        }
+        snapshot.forEach { document ->
+            val id = document.name?.let(::parsePayloadId) ?: return@forEach
+            if (id in referencedIds && id !in payloadDocuments) {
+                payloadDocuments[id] = document
+            }
+        }
+        pendingFolderSnapshot = null
+    }
+
     @Synchronized
     fun writePayload(
         id: String,
@@ -91,9 +118,10 @@ internal class PersistentVaultStore private constructor(
         requireValidId(id)
         require(expectedPlainBytes >= 0L) { "Invalid recovery payload size." }
         val name = payloadName(id)
-        check(findChild(name) == null) { "A recovery copy for this file already exists." }
+        check(id !in payloadDocuments) { "A recovery copy for this file already exists." }
         val target = directory.createFile(BINARY_MIME, name)
             ?: error("Could not create an encrypted recovery file. Check device storage.")
+        payloadDocuments[id] = target
         try {
             val output = resolver.openOutputStream(target.uri, "w")
                 ?: error("Could not open the encrypted recovery file for writing.")
@@ -133,11 +161,13 @@ internal class PersistentVaultStore private constructor(
                 }
             )
         } catch (failure: Throwable) {
-            runCatching {
+            val cleanup = runCatching {
                 if (!target.delete() && target.exists()) {
                     throw IOException("Could not remove an incomplete encrypted recovery payload.")
                 }
-            }.onFailure(failure::addSuppressed)
+            }
+            cleanup.onFailure(failure::addSuppressed)
+            if (cleanup.isSuccess) payloadDocuments.remove(id, target)
             throw failure
         }
     }
@@ -151,7 +181,7 @@ internal class PersistentVaultStore private constructor(
     ) {
         checkCancelled()
         requireValidId(id)
-        val document = findChild(payloadName(id))
+        val document = payloadDocuments[id]
             ?: throw IOException("An encrypted recovery file is missing.")
         val input = resolver.openInputStream(document.uri)
             ?: throw IOException("Could not read an encrypted recovery file.")
@@ -426,25 +456,36 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun deletePayload(id: String) {
         requireValidId(id)
-        findChild(payloadName(id))?.let { document ->
-            check(document.delete()) { "Could not remove the encrypted recovery copy." }
+        val document = payloadDocuments[id] ?: return
+        check(document.delete() || !document.exists()) {
+            "Could not remove the encrypted recovery copy."
         }
+        payloadDocuments.remove(id, document)
     }
 
     @Synchronized
     fun removeUnreferencedPayloads(referencedIds: Set<String>) {
-        directory.listFiles().forEach { document ->
-            val name = document.name ?: return@forEach
-            val id = parsePayloadId(name) ?: return@forEach
-            if (id !in referencedIds) runCatching { document.delete() }
+        // The cache is populated from the authenticated vault's directory
+        // snapshot at unlock and updated as payloads are added/deleted. Avoid a
+        // second provider-wide enumeration when cleaning this known set.
+        payloadDocuments.toMap().forEach { (id, document) ->
+            if (id !in referencedIds) {
+                val removed = runCatching {
+                    document.delete() || !document.exists()
+                }.getOrDefault(false)
+                if (removed) payloadDocuments.remove(id, document)
+            }
         }
     }
 
     @Synchronized
     fun markReady() {
-        if (findChild(READY_MARKER) != null) return
+        if (readyMarkerExists) return
         val marker = directory.createFile("text/plain", READY_MARKER)
             ?: error("Could not finalize encrypted recovery storage.")
+        // Reserve the marker once created, matching the previous behavior if a
+        // provider fails partway through writing its contents.
+        readyMarkerExists = true
         val output = resolver.openOutputStream(marker.uri, "w")
             ?: error("Could not finalize encrypted recovery storage.")
         output.use { it.write(READY_CONTENT.toByteArray(Charsets.US_ASCII)); it.flush() }
@@ -576,6 +617,9 @@ internal class PersistentVaultStore private constructor(
                     indexGeneration = 0L,
                     keyGeneration = 2L,
                     indexDocuments = mutableListOf(),
+                    payloadDocuments = mutableMapOf(),
+                    pendingFolderSnapshot = null,
+                    readyMarkerExists = false,
                     nextIndexGeneration = 0L
                 )
             } catch (failure: Throwable) {
@@ -600,20 +644,29 @@ internal class PersistentVaultStore private constructor(
             // and generation recovery instead of enumerating every payload file
             // separately for each check.
             val folderContents = folder.listFiles()
-            val existingIndexDocuments = folderContents.mapNotNull { document ->
-                document.name?.let(::parseIndexGeneration)?.let { it to document }
+            val existingIndexDocuments = mutableListOf<Pair<Long, DocumentFile>>()
+            val candidates = mutableListOf<Pair<Long, DocumentFile>>()
+            val existingPayloadDocuments = linkedMapOf<String, DocumentFile>()
+            var readyMarkerExists = false
+
+            // DocumentFile.findFile() searches by calling listFiles(). Read each
+            // child name once and build the small in-memory lookup tables from this
+            // one directory snapshot, rather than re-enumerating the whole backup
+            // folder for each individual payload operation.
+            folderContents.forEach { document ->
+                val name = document.name ?: return@forEach
+                parseIndexGeneration(name)?.let { existingIndexDocuments += it to document }
+                parseKeyGeneration(name)?.let { candidates += it to document }
+                parsePayloadId(name)?.let { id ->
+                    if (id !in existingPayloadDocuments) existingPayloadDocuments[id] = document
+                }
+                if (name == READY_MARKER) readyMarkerExists = true
             }
+            candidates.sortByDescending { it.first }
             val hasCommittedIndex = existingIndexDocuments.isNotEmpty()
-            check(folder.isDirectory && (folder.findFile(READY_MARKER)?.exists() == true || hasCommittedIndex)) {
+            check(folder.isDirectory && (readyMarkerExists || hasCommittedIndex)) {
                 "The selected folder does not contain a completed or recoverable Private Space vault."
             }
-
-            val candidates = folderContents
-                .mapNotNull { document ->
-                    val name = document.name ?: return@mapNotNull null
-                    parseKeyGeneration(name)?.let { it to document }
-                }
-                .sortedByDescending { it.first }
             if (candidates.isEmpty()) throw IOException("The recovery-key envelope is missing.")
 
             var key: ByteArray? = null
@@ -653,7 +706,10 @@ internal class PersistentVaultStore private constructor(
                 // readLatestIndex() sets this to the highest authenticated generation.
                 indexGeneration = 0L,
                 keyGeneration = keyGeneration,
-                indexDocuments = existingIndexDocuments.toMutableList(),
+                indexDocuments = existingIndexDocuments,
+                payloadDocuments = existingPayloadDocuments,
+                pendingFolderSnapshot = folderContents.toList(),
+                readyMarkerExists = readyMarkerExists,
                 nextIndexGeneration = highestExistingGeneration
             )
             } finally {
@@ -664,9 +720,18 @@ internal class PersistentVaultStore private constructor(
         fun isRecoveryVault(context: Context, treeUri: Uri): Boolean {
             val tree = DocumentFile.fromTreeUri(context.applicationContext, treeUri) ?: return false
             val folder = tree.findFile(FOLDER_NAME) ?: return false
-            return folder.isDirectory &&
-                folder.findFile(READY_MARKER)?.exists() == true &&
-                folder.listFiles().any { it.name?.let(::parseKeyGeneration) != null }
+            if (!folder.isDirectory) return false
+            var ready = false
+            var hasKeyEnvelope = false
+            folder.listFiles().forEach { document ->
+                when (document.name) {
+                    READY_MARKER -> ready = true
+                    else -> if (document.name?.let(::parseKeyGeneration) != null) {
+                        hasKeyEnvelope = true
+                    }
+                }
+            }
+            ready && hasKeyEnvelope
         }
 
         private fun deleteDocumentTree(document: DocumentFile) {
