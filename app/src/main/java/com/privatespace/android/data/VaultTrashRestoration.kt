@@ -42,4 +42,35 @@ object VaultTrashRestoration {
             thumbnailFileId = entry.originalTopic.thumbnailFileId.takeIf { restoresThumbnail }
         )
     }
+
+    /**
+     * When a thumbnail photo is restored into a same-name replacement topic,
+     * its file is assigned the replacement topic ID. Other Trash snapshots
+     * must stop referring to that photo under the old topic ID.
+     */
+    fun reconcileRemainingEntries(
+        remainingEntries: List<VaultTrashEntry>,
+        restoredEntry: VaultTrashEntry,
+        destinationTopic: VaultTopic
+    ): List<VaultTrashEntry> {
+        val originalTopic = restoredEntry.originalTopic
+        val restoredPhotoIsThumbnail =
+            originalTopic.thumbnailFileId == restoredEntry.file.id &&
+                VaultTopicThumbnailPolicy.isPhoto(restoredEntry.file)
+        if (!restoredPhotoIsThumbnail || destinationTopic.id == originalTopic.id) {
+            return remainingEntries
+        }
+        return remainingEntries.map { entry ->
+            if (
+                entry.originalTopic.id == originalTopic.id &&
+                entry.originalTopic.thumbnailFileId == restoredEntry.file.id
+            ) {
+                entry.copy(
+                    originalTopic = entry.originalTopic.copy(thumbnailFileId = null)
+                )
+            } else {
+                entry
+            }
+        }
+    }
 }

@@ -90,6 +90,53 @@ class VaultTrashRestorationTest {
     }
 
     @Test
+    fun restoresThumbnailIntoReplacementTopicAndClearsStaleTrashReferences() {
+        val image = VaultFile(
+            id = "cover-photo",
+            topicId = originalTopic.id,
+            displayName = "cover.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 512L,
+            addedAt = 150L
+        )
+        val topicWithCover = originalTopic.copy(thumbnailFileId = image.id)
+        val restoredEntry = VaultTrashEntry(image, 300L, topicWithCover)
+        val remainingEntry = entry.copy(originalTopic = topicWithCover)
+        val replacementTopic = originalTopic.copy(id = "topic-recreated", thumbnailFileId = image.id)
+
+        val reconciled = VaultTrashRestoration.reconcileRemainingEntries(
+            remainingEntries = listOf(remainingEntry),
+            restoredEntry = restoredEntry,
+            destinationTopic = replacementTopic
+        )
+
+        assertNull(reconciled.single().originalTopic.thumbnailFileId)
+    }
+
+    @Test
+    fun retainsTrashThumbnailReferenceWhenPhotoReturnsToOriginalTopicIdentity() {
+        val image = VaultFile(
+            id = "cover-photo",
+            topicId = originalTopic.id,
+            displayName = "cover.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 512L,
+            addedAt = 150L
+        )
+        val topicWithCover = originalTopic.copy(thumbnailFileId = image.id)
+        val restoredEntry = VaultTrashEntry(image, 300L, topicWithCover)
+        val remainingEntry = entry.copy(originalTopic = topicWithCover)
+
+        val reconciled = VaultTrashRestoration.reconcileRemainingEntries(
+            remainingEntries = listOf(remainingEntry),
+            restoredEntry = restoredEntry,
+            destinationTopic = topicWithCover
+        )
+
+        assertEquals(image.id, reconciled.single().originalTopic.thumbnailFileId)
+    }
+
+    @Test
     fun restoringThumbnailPhotoCanAttachItToAnExistingTopicWithoutCover() {
         val image = VaultFile(
             id = "cover-photo",

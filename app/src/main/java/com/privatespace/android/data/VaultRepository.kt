@@ -663,10 +663,16 @@ class VaultRepository(context: Context) {
         } else {
             index.topics + destinationTopic
         }
+        val remainingTrash = index.trash.filterNot { it.file.id == id }
+        val reconciledTrash = VaultTrashRestoration.reconcileRemainingEntries(
+            remainingEntries = remainingTrash,
+            restoredEntry = entry,
+            destinationTopic = destinationTopic
+        )
         saveIndex(index.copy(
             topics = topics,
             files = index.files + entry.file.copy(topicId = destinationTopic.id),
-            trash = index.trash.filterNot { it.file.id == id }
+            trash = reconciledTrash
         ))
     }
 
