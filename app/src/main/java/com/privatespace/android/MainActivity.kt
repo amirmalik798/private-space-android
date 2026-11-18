@@ -4192,7 +4192,7 @@ private fun VaultFileOperationProgressDialog(
             "A temporary decrypted copy is prepared for the viewer you choose. The vault copy remains encrypted, but another app may retain its copy."
         title.startsWith("Preparing selected file", ignoreCase = true) ||
             title.startsWith("Preparing ", ignoreCase = true) ->
-            "Files are copied into this topic and encrypted before they are saved. The original files are not moved or modified."
+            "Files are copied into this topic and encrypted before they are saved. Originals are not moved or modified. Cancel stops remaining files; an item already being safely finalized may still finish."
         else -> null
     }
     Dialog(
@@ -4223,11 +4223,11 @@ private fun VaultFileOperationProgressDialog(
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(title, color = White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                        progress.phase,
-                        color = Cyan,
-                        fontSize = 12.sp,
-                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
-                    )
+                            progress.phase,
+                            color = Cyan,
+                            fontSize = 12.sp,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                        )
                     }
                 }
                 securityGuidance?.let { guidance ->
@@ -4267,7 +4267,7 @@ private fun VaultFileOperationProgressDialog(
                     Text(
                         "${percent}%  ·  ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}${if (title.startsWith("Exporting")) " work" else ""}",
                         color = White,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
                     )
                 } else {
@@ -4276,20 +4276,20 @@ private fun VaultFileOperationProgressDialog(
                         color = Cyan,
                         trackColor = Panel2
                     )
-                    Text("Preparing operation…", color = Muted, fontSize = 11.sp)
+                    Text("Preparing operation…", color = Muted, fontSize = 12.sp)
                 }
                 if (progress.totalFiles > 1) {
                     Text(
                         "Files: ${progress.completedFiles} / ${progress.totalFiles}",
                         color = Muted,
-                        fontSize = 11.sp
+                        fontSize = 12.sp
                     )
                 }
                 if (progress.currentFileName.isNotBlank()) {
                     Text(
                         progress.currentFileName,
                         color = White,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -4307,12 +4307,12 @@ private fun VaultFileOperationProgressDialog(
                         Text(
                             "${formatBytes(progress.currentFileCompletedBytes)} / ${formatBytes(progress.currentFileTotalBytes)}",
                             color = Muted,
-                            fontSize = 10.sp
+                            fontSize = 12.sp
                         )
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onCancel) { Text("Cancel", color = Red, fontWeight = FontWeight.SemiBold) }
+                    TextButton(onClick = onCancel) { Text("Cancel operation", color = Red, fontWeight = FontWeight.SemiBold) }
                 }
             }
         }
