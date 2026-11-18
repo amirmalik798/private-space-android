@@ -53,6 +53,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
@@ -4965,6 +4966,20 @@ private fun TrashDialog(
     onRestore: (VaultTrashEntry) -> Unit,
     onDeletePermanently: (VaultTrashEntry) -> Unit
 ) {
+    var query by remember { mutableStateOf("") }
+    val filteredEntries = remember(entries, query) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) {
+            entries
+        } else {
+            entries.filter { entry ->
+                entry.file.displayName.contains(normalizedQuery, ignoreCase = true) ||
+                    entry.originalTopic.name.contains(normalizedQuery, ignoreCase = true) ||
+                    entry.file.mimeType.contains(normalizedQuery, ignoreCase = true)
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = { if (!busy) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -5014,6 +5029,59 @@ private fun TrashDialog(
                         Text("Updating Recycle Bin…", color = Muted, fontSize = 11.sp)
                     }
                 }
+                if (entries.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Panel2,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Line.copy(alpha = 0.8f))
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = null,
+                                tint = Cyan,
+                                modifier = Modifier.padding(top = 1.dp).size(18.dp)
+                            )
+                            Text(
+                                "Deleted files remain encrypted and keep using vault storage until permanently removed. Delete forever removes only the vault copy; original files and copies shared or exported outside Private Space are unaffected.",
+                                color = White,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it.take(100) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy,
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        placeholder = { Text("Search by file name, topic or type", color = Muted) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
+                        trailingIcon = {
+                            if (query.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { query = "" },
+                                    enabled = !busy
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear Recycle Bin search", tint = Muted)
+                                }
+                            }
+                        }
+                    )
+                    Text(
+                        if (query.isBlank()) "Showing all " + entries.size + " deleted files"
+                        else filteredEntries.size.toString() + " of " + entries.size + " deleted files match",
+                        color = Muted,
+                        fontSize = 11.sp
+                    )
+                }
                 if (entries.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Column(
@@ -5025,13 +5093,32 @@ private fun TrashDialog(
                             Text("Files you delete will appear here.", color = Muted, fontSize = 12.sp)
                         }
                     }
+                } else if (filteredEntries.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.SearchOff, contentDescription = null, tint = Muted, modifier = Modifier.size(38.dp))
+                            Text("No matching deleted files", color = White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text(
+                                "Try a different file name, topic name or file type.",
+                                color = Muted,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            TextButton(onClick = { query = "" }, enabled = !busy) {
+                                Text("Clear search")
+                            }
+                        }
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         contentPadding = PaddingValues(vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
-                        items(entries, key = { it.file.id }) { entry ->
+                        items(filteredEntries, key = { it.file.id }) { entry ->
                             TrashFileRow(
                                 entry = entry,
                                 repository = repository,
