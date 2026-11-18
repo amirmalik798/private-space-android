@@ -2247,7 +2247,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 color = Blue.copy(alpha = 0.24f),
                                 border = BorderStroke(1.dp, Cyan.copy(alpha = 0.18f))
                             ) {
-                                IconButton(onClick = { lockVault() }, modifier = Modifier.fillMaxSize(), enabled = !busy) {
+                                IconButton(onClick = { lockVault() }, modifier = Modifier.fillMaxSize()) {
                                     Icon(Icons.Default.Lock, contentDescription = "Lock vault", tint = Cyan)
                                 }
                             }
@@ -2257,15 +2257,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
             },
             floatingActionButton = {
-                ExtendedFloatingActionButton(
-                    onClick = { showCreateTopic = true },
-                    enabled = !busy,
-                    containerColor = Blue,
-                    contentColor = White,
-                    shape = RoundedCornerShape(16.dp),
-                    icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-                    text = { Text("New topic", fontWeight = FontWeight.SemiBold) }
-                )
+                if (topics.isNotEmpty()) {
+                    ExtendedFloatingActionButton(
+                        onClick = { showCreateTopic = true },
+                        enabled = !busy,
+                        containerColor = Blue,
+                        contentColor = White,
+                        shape = RoundedCornerShape(16.dp),
+                        icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
+                        text = { Text("New topic", fontWeight = FontWeight.SemiBold) }
+                    )
+                }
             }
         ) { padding ->
             LazyColumn(
@@ -3734,16 +3736,6 @@ private fun TopicScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 0.8.sp,
                                 maxLines = 1
-                            )
-                        }
-                        IconButton(
-                            onClick = onAdd,
-                            enabled = !busy
-                        ) {
-                            Icon(
-                                Icons.Default.AddPhotoAlternate,
-                                contentDescription = "Add files to ${topic.name}",
-                                tint = if (busy) Muted else Cyan
                             )
                         }
                         Box {
