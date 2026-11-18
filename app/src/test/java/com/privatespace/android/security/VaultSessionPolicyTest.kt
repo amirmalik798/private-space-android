@@ -83,4 +83,28 @@ class VaultSessionPolicyTest {
         )
     }
 
+    @Test
+    fun recoverySetupPromptIsNotRepeatedAfterUserDefersIt() {
+        assertFalse(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = true,
+                restoringExistingRecovery = false,
+                recoveryStorageAlreadyActive = false,
+                promptDismissed = true
+            )
+        )
+    }
+
+    @Test
+    fun recoverySetupPromptDoesNotReplaceReconnectionForASavedFolder() {
+        assertFalse(
+            VaultSessionPolicy.shouldOfferRecoverySetup(
+                hasPendingRecoveryPassword = true,
+                restoringExistingRecovery = false,
+                recoveryStorageAlreadyActive = false,
+                hasSavedRecoveryLocation = true
+            )
+        )
+    }
+
 }

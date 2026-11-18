@@ -258,7 +258,7 @@ private val privateSpaceHelpArticles = listOf(
     HelpArticle(
         id = "recovery",
         title = "Set up or restore an encrypted recovery copy",
-        body = "Recovery is optional. From the recovery prompt, choose a folder on this device to create an encrypted copy. Keep both that folder and the password used to protect it. Without a recovery copy, uninstalling the app or clearing its data can permanently remove the on-device vault. Private Space has no password reset or cloud recovery.",
+        body = "Recovery is optional. Choose a folder on this device when the recovery prompt appears, or use the Recovery card on the dashboard to set it up later. Private Space asks you to confirm your current vault password before protecting the recovery key. Keep the selected folder and the password used to protect it. Without a recovery copy, uninstalling the app or clearing its data can permanently remove the on-device vault. Recovery is device-local, not cloud sync.",
         keywords = "backup reinstall restore internal storage sd card forgotten password"
     ),
     HelpArticle(
@@ -313,6 +313,7 @@ private val privateSpaceHelpArticles = listOf(
 
 private const val FILE_PICKER_PREFERENCES = "private_space_ui"
 private const val FILE_PICKER_PREFERENCE = "preferred_import_file_picker_component"
+private const val RECOVERY_SETUP_PROMPT_DISMISSED = "recovery_setup_prompt_dismissed"
 private const val SAMSUNG_GALLERY_PACKAGE = "com.sec.android.gallery3d"
 private const val SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.samsung.android.video"
 private const val LEGACY_SAMSUNG_VIDEO_PLAYER_PACKAGE = "com.sec.android.app.videoplayer"
@@ -456,6 +457,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     var pendingRecoveryPassword by remember { mutableStateOf<CharArray?>(null) }
     var showRecoverySetup by remember { mutableStateOf(false) }
     var recoverySetupError by remember { mutableStateOf("") }
+    var showRecoveryPasswordPrompt by remember { mutableStateOf(false) }
+    var recoveryPasswordError by remember { mutableStateOf("") }
+    val recoveryPromptPreferences = remember(context) {
+        context.getSharedPreferences(FILE_PICKER_PREFERENCES, Context.MODE_PRIVATE)
+    }
     var lockUntil by remember { mutableLongStateOf(PasswordManager.lockedUntil(context)) }
     var clockNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -565,6 +571,8 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         choosingExistingRecovery = false
         showRecoverySetup = false
         recoverySetupError = ""
+        showRecoveryPasswordPrompt = false
+        recoveryPasswordError = ""
         unlocked = false
         password = ""
         confirmation = ""
@@ -1113,6 +1121,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 pendingRecoveryPassword = null
                                 showRecoverySetup = false
                                 recoverySetupError = ""
+                                recoveryPromptPreferences.edit()
+                                    .putBoolean(RECOVERY_SETUP_PROMPT_DISMISSED, true)
+                                    .apply()
                                 toast("Encrypted recovery storage is ready. Your vault can now be restored after reinstalling Private Space.")
                             }.onFailure {
                                 recoverySetupError = it.message ?: "Could not prepare encrypted recovery storage."
@@ -1852,6 +1863,70 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
+    fun confirmRecoverySetupPassword(passwordInput: String) {
+        if (busy || !unlocked) return
+        recoveryPasswordError = ""
+        val secret = passwordInput.toCharArray()
+        val authenticationGeneration = activity?.foregroundGeneration
+        val operationCancellation = AtomicBoolean(false)
+        activeLifecycleCancellation.set(operationCancellation)
+        busy = true
+
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (PasswordManager.lockedUntil(context) > System.currentTimeMillis()) {
+                            error("Too many attempts. Wait for the lockout to end.")
+                        }
+                        val valid = PasswordManager.verify(context, secret.copyOf())
+                        if (!valid) {
+                            PasswordManager.recordFailure(context)
+                            error("Current password is incorrect.")
+                        }
+                        PasswordManager.clearFailures(context)
+                    }
+                }
+                if (operationCancellation.get()) return@launch
+
+                result.fold(
+                    onSuccess = {
+                        if (!VaultSessionPolicy.mayCompleteUnlock(
+                                authenticationGeneration,
+                                activity?.foregroundGeneration,
+                                activity?.isResumedForVault == true
+                            )
+                        ) {
+                            recoveryPasswordError = "Private Space was interrupted. Unlock it again before setting up recovery."
+                            return@fold
+                        }
+                        pendingRecoveryPassword?.fill('\u0000')
+                        pendingRecoveryPassword = secret.copyOf()
+                        lockUntil = 0L
+                        recoveryPasswordError = ""
+                        recoverySetupError = ""
+                        showRecoveryPasswordPrompt = false
+                        showRecoverySetup = true
+                    },
+                    onFailure = {
+                        lockUntil = PasswordManager.lockedUntil(context)
+                        recoveryPasswordError = it.message ?: "Could not verify your vault password."
+                    }
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } finally {
+                secret.fill('\u0000')
+                activeLifecycleCancellation.compareAndSet(operationCancellation, null)
+                busy = false
+            }
+        }
+    }
+
+    val recoveryConnected = repository.hasActivePersistentStorage()
+    val hasSavedRecoveryLocation = repository.persistentStorageUri() != null
+    val recoveryNeedsReconnect = hasSavedRecoveryLocation && !recoveryConnected
+
     val filteredTopics = remember(topics, topicQuery) {
         val query = topicQuery.trim()
         if (query.isEmpty()) topics else topics.filter { it.name.contains(query, ignoreCase = true) }
@@ -2005,7 +2080,12 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 val shouldOfferRecoverySetup = VaultSessionPolicy.shouldOfferRecoverySetup(
                                     hasPendingRecoveryPassword = recoveryPassword != null,
                                     restoringExistingRecovery = restoreUri != null,
-                                    recoveryStorageAlreadyActive = repository.hasActivePersistentStorage()
+                                    recoveryStorageAlreadyActive = repository.hasActivePersistentStorage(),
+                                    promptDismissed = recoveryPromptPreferences.getBoolean(
+                                        RECOVERY_SETUP_PROMPT_DISMISSED,
+                                        false
+                                    ),
+                                    hasSavedRecoveryLocation = repository.persistentStorageUri() != null
                                 )
                                 if (shouldOfferRecoverySetup) {
                                     pendingRecoveryPassword = recoveryPassword
@@ -2345,7 +2425,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Green, modifier = Modifier.size(13.dp))
-                                Text("Encrypted", color = Green, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                Text("On-device encryption", color = Green, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
@@ -2384,6 +2464,25 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                             }
                         }
                     }
+                }
+                item {
+                    RecoveryStatusCard(
+                        connected = recoveryConnected,
+                        needsReconnect = recoveryNeedsReconnect,
+                        busy = busy,
+                        onSetUp = {
+                            recoveryPasswordError = ""
+                            showRecoveryPasswordPrompt = true
+                        },
+                        onReconnect = {
+                            lockVault()
+                            choosingExistingRecovery = true
+                            runCatching { recoveryFolderLauncher.launch(null) }.onFailure {
+                                choosingExistingRecovery = false
+                                authError = "Could not open the device folder picker."
+                            }
+                        }
+                    )
                 }
                 if (topics.isNotEmpty()) {
                     item {
@@ -2565,6 +2664,22 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         )
     }
 
+    if (showRecoveryPasswordPrompt) {
+        RecoveryPasswordDialog(
+            busy = busy,
+            error = recoveryPasswordError,
+            lockUntil = lockUntil,
+            now = clockNow,
+            onDismiss = {
+                if (!busy) {
+                    showRecoveryPasswordPrompt = false
+                    recoveryPasswordError = ""
+                }
+            },
+            onSubmit = ::confirmRecoverySetupPassword
+        )
+    }
+
     if (showRecoverySetup) {
         AlertDialog(
             onDismissRequest = {},
@@ -2574,7 +2689,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Your vault is already secured on this device. Choose a folder to create an encrypted recovery copy. Without a recovery copy, uninstalling Private Space or clearing its app data can permanently remove your files.",
+                        "Your vault is encrypted on this device. Choose a folder to create a separate encrypted recovery copy. Without one, uninstalling Private Space or clearing its app data can permanently remove your files. You can set this up later from the Recovery card on your dashboard.",
                         color = Muted
                     )
                     if (recoverySetupError.isNotBlank()) {
@@ -2616,14 +2731,17 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 TextButton(
                     enabled = !busy,
                     onClick = {
+                        recoveryPromptPreferences.edit()
+                            .putBoolean(RECOVERY_SETUP_PROMPT_DISMISSED, true)
+                            .apply()
                         pendingRecoveryPassword?.fill('\u0000')
                         pendingRecoveryPassword = null
                         showRecoverySetup = false
                         recoverySetupError = ""
-                        toast("Recovery setup skipped. Your vault remains on this device only.")
+                        toast("Recovery setup deferred. You can start it later from the dashboard.")
                     }
                 ) {
-                    Text("Skip recovery", color = Muted)
+                    Text("Not now", color = Muted)
                 }
             },
             shape = RoundedCornerShape(24.dp),
@@ -2728,7 +2846,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         ConfirmDialog(
             title = "Move file to Trash?",
             message = "“${file.displayName}” will be moved to the Recycle Bin. You can restore it later or permanently delete it there. The original file outside Private Space is not affected.",
-            confirmLabel = "Move to Trash",
+            confirmLabel = "Move to Recycle Bin",
             isIrreversible = false,
             onCancel = { fileToDelete = null },
             onConfirm = {
@@ -3086,7 +3204,11 @@ private fun AuthScreen(
                         }
                     }
                     if (error.isNotBlank()) {
-                        Surface(color = Red.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
+                        Surface(
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
+                            color = Red.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
                             Row(
                                 Modifier.fillMaxWidth().padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -3098,7 +3220,11 @@ private fun AuthScreen(
                         }
                     }
                     if (locked) {
-                        Surface(color = Gold.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp)) {
+                        Surface(
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                            color = Gold.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
                             Row(
                                 Modifier.fillMaxWidth().padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -3397,6 +3523,194 @@ private fun OverviewMetric(
             }
         }
     }
+}
+
+@Composable
+private fun RecoveryStatusCard(
+    connected: Boolean,
+    needsReconnect: Boolean,
+    busy: Boolean,
+    onSetUp: () -> Unit,
+    onReconnect: () -> Unit
+) {
+    val accent = if (connected) Green else Gold
+    val title = when {
+        connected -> "Encrypted recovery copy connected"
+        needsReconnect -> "Recovery folder needs attention"
+        else -> "No recovery copy configured"
+    }
+    val description = when {
+        connected ->
+            "A separate encrypted copy is connected to your selected device-storage folder. Keep that folder available and remember the password used to protect it. Recovery is not cloud sync."
+        needsReconnect ->
+            "Private Space could not reconnect to the saved folder. Your on-device vault is still available, but do not rely on the recovery copy until you reconnect it."
+        else ->
+            "Your vault is encrypted on this device, but no reinstall recovery copy is set up. Uninstalling the app or clearing its data can permanently remove these files."
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.28f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    modifier = Modifier.size(38.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = accent.copy(alpha = 0.12f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (connected) Icons.Default.VerifiedUser else Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        title,
+                        color = White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                    Text(
+                        description,
+                        color = Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                }
+            }
+            if (!connected) {
+                Button(
+                    onClick = if (needsReconnect) onReconnect else onSetUp,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        if (needsReconnect) Icons.Default.FolderOpen else Icons.Default.Shield,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (needsReconnect) "Reconnect recovery folder" else "Set up encrypted recovery")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryPasswordDialog(
+    busy: Boolean,
+    error: String,
+    lockUntil: Long,
+    now: Long,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    val locked = lockUntil > now
+    val secondsRemaining = ((lockUntil - now).coerceAtLeast(0L) + 999L) / 1_000L
+
+    LaunchedEffect(busy) {
+        if (busy) passwordVisible = false
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        icon = { Icon(Icons.Default.Shield, contentDescription = null, tint = Cyan) },
+        title = { Text("Confirm your vault password", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Confirm the password you use to unlock Private Space. It will protect the recovery key; the password itself is not written into the recovery folder.",
+                    color = Muted,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it.take(PasswordManager.MAX_PASSWORD_LENGTH) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy && !locked,
+                    label = { Text("Current vault password") },
+                    singleLine = true,
+                    isError = error.isNotBlank(),
+                    shape = RoundedCornerShape(13.dp),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }, enabled = !busy && !locked) {
+                            Icon(
+                                if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                )
+                if (error.isNotBlank()) {
+                    Text(
+                        error,
+                        color = Red,
+                        fontSize = 12.sp,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }
+                    )
+                }
+                if (locked) {
+                    Text(
+                        "Too many attempts. Try again in $secondsRemaining seconds.",
+                        color = Gold,
+                        fontSize = 12.sp,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy && !locked && password.isNotEmpty(),
+                onClick = {
+                    val submitted = password
+                    password = ""
+                    onSubmit(submitted)
+                },
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = Color.White)
+                    Spacer(Modifier.width(7.dp))
+                    Text("Verifying…")
+                } else {
+                    Icon(Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Continue")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+        },
+        shape = RoundedCornerShape(24.dp),
+        containerColor = Panel
+    )
 }
 
 @Composable

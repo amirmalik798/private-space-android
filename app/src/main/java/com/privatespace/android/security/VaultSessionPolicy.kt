@@ -32,9 +32,13 @@ internal object VaultSessionPolicy {
     fun shouldOfferRecoverySetup(
         hasPendingRecoveryPassword: Boolean,
         restoringExistingRecovery: Boolean,
-        recoveryStorageAlreadyActive: Boolean
+        recoveryStorageAlreadyActive: Boolean,
+        promptDismissed: Boolean = false,
+        hasSavedRecoveryLocation: Boolean = false
     ): Boolean =
         hasPendingRecoveryPassword &&
             !restoringExistingRecovery &&
-            !recoveryStorageAlreadyActive
+            !recoveryStorageAlreadyActive &&
+            !promptDismissed &&
+            !hasSavedRecoveryLocation
 }
