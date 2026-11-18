@@ -1853,7 +1853,14 @@ class VaultRepository(context: Context) {
                     stream.fd.sync()
                     metadata.finishWrite(stream)
                 } catch (failure: Throwable) {
-                    metadata.failWrite(stream)
+                    // Preserve the original encryption/fsync failure. AtomicFile
+                    // rollback is best-effort, but a rollback exception must not
+                    // replace the failure that caused the transaction to abort.
+                    try {
+                        metadata.failWrite(stream)
+                    } catch (rollbackFailure: Throwable) {
+                        failure.addSuppressed(rollbackFailure)
+                    }
                     throw failure
                 }
             } catch (localFailure: Throwable) {
@@ -2402,10 +2409,17 @@ class VaultRepository(context: Context) {
                 }
             }
 
+            // The journal remains the commit/rollback authority until the
+            // selected payload state is durably on disk. Syncing backup removal
+            // or rollback renames before unlinking the journal prevents power loss
+            // from leaving a committed restore with an orphaned .restore.bak but
+            // no journal (which older recovery logic would incorrectly roll back).
+            syncDirectory(root)
             journalRecords.forEach { record ->
                 val temporary = File(root, "${record.id}.restore.tmp")
                 if (temporary.exists()) deleteTemporaryEntry(temporary)
             }
+            syncDirectory(root)
             check(journal.delete()) { "Could not finalize the interrupted restore journal." }
             syncDirectory(root)
         } else {
