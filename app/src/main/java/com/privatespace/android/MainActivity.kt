@@ -1621,7 +1621,11 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         // Opening uses an external viewer and therefore releases a decrypted
         // copy outside the vault sandbox. Require the same deliberate consent
         // used by Share and Export before creating or granting that copy.
-        requestFileReleaseConfirmation(file, VaultReleaseAction.OPEN)
+        pendingReleaseConfirmation = PendingVaultRelease(
+            action = VaultReleaseAction.OPEN,
+            displayName = file.displayName,
+            fileIds = listOf(file.id)
+        )
     }
 
     fun openVaultFileAfterConfirmation(file: VaultFile) {
