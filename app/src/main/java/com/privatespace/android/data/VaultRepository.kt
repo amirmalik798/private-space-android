@@ -1387,7 +1387,7 @@ class VaultRepository(context: Context) {
                 ?: error("Android could not open the export destination.")
             output.use { target ->
                 FileInputStream(temporary!!).use { input ->
-                    copyWithProgress(input, target) { completed ->
+                    VaultExportCopy.copy(input, target, record.sizeBytes) { completed ->
                         onProgress(
                             VaultFileOperationProgress(
                                 "Writing export",
@@ -1451,7 +1451,7 @@ class VaultRepository(context: Context) {
                 ?: error("Android could not open the export destination.")
             output.use { target ->
                 FileInputStream(temporary!!).use { input ->
-                    copyWithProgress(input, target) { completed ->
+                    VaultExportCopy.copy(input, target, record.sizeBytes) { completed ->
                         onProgress(completed, "Writing export")
                     }
                 }
@@ -1554,27 +1554,6 @@ class VaultRepository(context: Context) {
             )
         }
         return completedWorkBytes to completedFiles
-    }
-
-    private fun copyWithProgress(
-        input: FileInputStream,
-        output: OutputStream,
-        onProgress: (Long) -> Unit
-    ) {
-        val buffer = ByteArray(64 * 1024)
-        var copied = 0L
-        try {
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                output.write(buffer, 0, count)
-                copied = Math.addExact(copied, count.toLong())
-                onProgress(copied)
-            }
-            output.flush()
-        } finally {
-            buffer.fill(0)
-        }
     }
 
     /**
