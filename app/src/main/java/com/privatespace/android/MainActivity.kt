@@ -207,6 +207,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        onVaultShouldLock = null
+        isResumedForVault = false
         val receiver = screenOffReceiver
         screenOffReceiver = null
         if (receiver != null) {
@@ -579,12 +581,13 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     fun discardViewerFile(prepared: PreparedVaultFile?) {
         if (prepared == null) return
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repository.discardMediaForViewing(prepared) }
-            }
-            result.onFailure {
-                toast("Temporary media could not be removed from the private cache.")
+        // Outlive rememberCoroutineScope so Activity disposal cannot cancel deletion.
+        VaultLockDispatcher.execute {
+            val cleanup = runCatching { repository.discardMediaForViewing(prepared) }
+            cleanup.onFailure {
+                mainHandler.post {
+                    if (unlocked) toast("Temporary media could not be removed from the private cache. Lock the vault and try again.")
+                }
             }
         }
     }
@@ -604,13 +607,15 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         val lockGeneration = vaultLockGeneration.incrementAndGet()
         vaultLockPending = true
         VaultLockDispatcher.execute {
+            var cleanupFailure: Throwable? = null
             try {
                 repository.lockPersistentStorage()
             } finally {
+                runCatching { repository.cleanupExpiredOutgoing() }
+                    .onFailure { cleanupFailure = it }
                 mainHandler.post {
-                    if (vaultLockGeneration.get() == lockGeneration) {
-                        vaultLockPending = false
-                    }
+                    if (vaultLockGeneration.get() == lockGeneration) vaultLockPending = false
+                    if (cleanupFailure != null) toast("Private Space could not remove an expired temporary copy. Keep the app open and retry.")
                 }
             }
         }
@@ -682,6 +687,14 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             activeBatchImportControl?.stop()
             importControls.values.forEach { it.stop() }
             activeImportJobs.values.forEach { it.cancel() }
+            discardViewerFile(activeMediaFile)
+            VaultLockDispatcher.execute {
+                try {
+                    repository.lockPersistentStorage()
+                } finally {
+                    runCatching { repository.cleanupExpiredOutgoing() }
+                }
+            }
             activity?.onVaultShouldLock = null
         }
     }
@@ -3147,6 +3160,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                         refreshVault()
                         toast("File permanently deleted.")
                     }.onFailure {
+                        refreshVault()
                         toast(it.message ?: "Could not permanently delete this file.")
                     }
                 }

@@ -33,6 +33,8 @@ internal class PersistentVaultStore private constructor(
     private val payloadDocuments: MutableMap<String, DocumentFile>,
     /** Child names and handles from the single open-time directory query. */
     private var pendingFolderSnapshot: List<Pair<String, DocumentFile>>?,
+    /** Explicit payload deletions that the document provider has not completed. */
+    private val pendingPayloadDeletionIds: MutableSet<String>,
     /** Whether the recovery-ready marker existed in the directory snapshot. */
     private var readyMarkerExists: Boolean,
     /** Highest index filename allocated or observed, including failed partial writes. */
@@ -93,15 +95,25 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun cachePayloadDocuments(referencedIds: Set<String>) {
         val snapshot = pendingFolderSnapshot ?: return
-        if (referencedIds.isEmpty()) {
-            pendingFolderSnapshot = null
-            return
+        val documentsByName = snapshot.toMap()
+        snapshot.forEach { (name, marker) ->
+            val id = parsePayloadDeletionId(name) ?: return@forEach
+            if (id !in referencedIds) {
+                val payload = documentsByName[payloadName(id)]
+                if (payload != null && !payload.delete() && payload.exists()) {
+                    throw IOException("Could not finish removing an obsolete encrypted recovery payload.")
+                }
+                if (!marker.delete() && marker.exists()) {
+                    throw IOException("Could not remove a completed recovery-payload cleanup marker.")
+                }
+            } else {
+                // Authenticated metadata still references this payload; never delete it.
+                runCatching { marker.delete() }
+            }
         }
         snapshot.forEach { (name, document) ->
             val id = parsePayloadId(name) ?: return@forEach
-            if (id in referencedIds && id !in payloadDocuments) {
-                payloadDocuments[id] = document
-            }
+            if (id in referencedIds && id !in payloadDocuments) payloadDocuments[id] = document
         }
         pendingFolderSnapshot = null
     }
@@ -166,7 +178,12 @@ internal class PersistentVaultStore private constructor(
                     throw IOException("Could not remove an incomplete encrypted recovery payload.")
                 }
             }
-            cleanup.onFailure(failure::addSuppressed)
+            cleanup.onFailure { cleanupFailure ->
+                failure.addSuppressed(cleanupFailure)
+                runCatching { createPayloadDeletionMarker(id) }
+                    .onSuccess { pendingPayloadDeletionIds += id }
+                    .onFailure(failure::addSuppressed)
+            }
             if (cleanup.isSuccess) payloadDocuments.remove(id, target)
             throw failure
         }
@@ -456,11 +473,24 @@ internal class PersistentVaultStore private constructor(
     @Synchronized
     fun deletePayload(id: String) {
         requireValidId(id)
-        val document = payloadDocuments[id] ?: return
+        val document = payloadDocuments[id] ?: findChild(payloadName(id))
+        if (document == null) {
+            pendingPayloadDeletionIds.remove(id)
+            return
+        }
+        createPayloadDeletionMarker(id)
+        pendingPayloadDeletionIds += id
         check(document.delete() || !document.exists()) {
-            "Could not remove the encrypted recovery copy."
+            "Could not remove the encrypted recovery copy. Private Space will retry cleanup."
         }
         payloadDocuments.remove(id, document)
+        pendingPayloadDeletionIds.remove(id)
+        runCatching { findChild(payloadDeletionMarkerName(id))?.delete() }
+    }
+
+    @Synchronized
+    fun retryPendingPayloadDeletions() {
+        pendingPayloadDeletionIds.toList().forEach(::deletePayload)
     }
 
     @Synchronized
@@ -501,6 +531,10 @@ internal class PersistentVaultStore private constructor(
     fun clearKey() {
         dataKey.fill(0)
         dataKey = ByteArray(0)
+        payloadDocuments.clear()
+        indexDocuments.clear()
+        pendingFolderSnapshot = null
+        pendingPayloadDeletionIds.clear()
     }
 
     @Synchronized
@@ -510,6 +544,18 @@ internal class PersistentVaultStore private constructor(
     private fun requireKey(): ByteArray {
         check(dataKey.size == DATA_KEY_BYTES) { "The recovery vault is locked." }
         return dataKey
+    }
+
+    private fun createPayloadDeletionMarker(id: String): DocumentFile {
+        requireValidId(id)
+        val name = payloadDeletionMarkerName(id)
+        val marker = findChild(name) ?: directory.createFile("text/plain", name)
+            ?: throw IOException("Could not record pending recovery-payload cleanup.")
+        if (marker.name != name) {
+            runCatching { marker.delete() }
+            throw IOException("The storage provider could not create an exact recovery cleanup marker.")
+        }
+        return marker
     }
 
     private fun findChild(name: String): DocumentFile? =
@@ -548,6 +594,7 @@ internal class PersistentVaultStore private constructor(
         private const val INDEX_SUFFIX = ".psv"
         private const val KEY_PREFIX = "vault-key-"
         private const val KEY_SUFFIX = ".wrap"
+        private const val PAYLOAD_DELETE_SUFFIX = ".psv.delete"
 
         fun create(context: Context, treeUri: Uri, password: CharArray): PersistentVaultStore {
             try {
@@ -620,6 +667,7 @@ internal class PersistentVaultStore private constructor(
                     indexDocuments = mutableListOf(),
                     payloadDocuments = mutableMapOf(),
                     pendingFolderSnapshot = null,
+                    pendingPayloadDeletionIds = mutableSetOf(),
                     readyMarkerExists = false,
                     nextIndexGeneration = 0L
                 )
@@ -708,6 +756,7 @@ internal class PersistentVaultStore private constructor(
                 indexDocuments = existingIndexDocuments,
                 payloadDocuments = mutableMapOf(),
                 pendingFolderSnapshot = pendingFolderSnapshot,
+                pendingPayloadDeletionIds = mutableSetOf(),
                 readyMarkerExists = readyMarkerExists,
                 nextIndexGeneration = highestExistingGeneration
             )
@@ -871,6 +920,15 @@ internal class PersistentVaultStore private constructor(
         private fun parsePayloadId(name: String): String? {
             if (!name.endsWith(".psv")) return null
             val id = name.removeSuffix(".psv")
+            return runCatching { UUID.fromString(id).toString() }.getOrNull()
+                ?.takeIf { it == id }
+        }
+
+        private fun payloadDeletionMarkerName(id: String) = "$id$PAYLOAD_DELETE_SUFFIX"
+
+        private fun parsePayloadDeletionId(name: String): String? {
+            if (!name.endsWith(PAYLOAD_DELETE_SUFFIX)) return null
+            val id = name.removeSuffix(PAYLOAD_DELETE_SUFFIX)
             return runCatching { UUID.fromString(id).toString() }.getOrNull()
                 ?.takeIf { it == id }
         }

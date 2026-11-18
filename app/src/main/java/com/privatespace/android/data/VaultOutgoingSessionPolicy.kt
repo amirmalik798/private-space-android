@@ -14,4 +14,9 @@ internal object VaultOutgoingSessionPolicy {
 
     /** Pending sessions were never handed off; legacy unmarked sessions keep their old TTL. */
     fun shouldDeleteAtStartup(session: File): Boolean = isPendingSession(session)
+
+    fun isExpired(lastModified: Long, now: Long, ttlMs: Long): Boolean {
+        require(ttlMs >= 0L) { "TTL must not be negative." }
+        return lastModified <= 0L || (now >= lastModified && now - lastModified > ttlMs)
+    }
 }

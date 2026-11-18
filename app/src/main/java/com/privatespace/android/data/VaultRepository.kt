@@ -544,6 +544,7 @@ class VaultRepository(context: Context) {
         val temporary = File(root, "$id.psv.tmp")
         val target = encryptedFile(id)
         var finalized = false
+        var recoveryStoreUsed: PersistentVaultStore? = null
 
         try {
             val source = resolver.openInputStream(uri)
@@ -591,6 +592,7 @@ class VaultRepository(context: Context) {
                     "The selected topic was removed before this file could be added."
                 }
                 persistentStore?.let { store ->
+                    recoveryStoreUsed = store
                     persistLocalEncryptedPayload(store, id, target, byteCount)
                 }
                 val now = System.currentTimeMillis()
@@ -608,6 +610,9 @@ class VaultRepository(context: Context) {
         } catch (failure: Throwable) {
             runCatching { deleteTemporaryEntry(temporary) }.onFailure(failure::addSuppressed)
             if (finalized) {
+                recoveryStoreUsed?.let { store ->
+                    runCatching { store.deletePayload(id) }.onFailure(failure::addSuppressed)
+                }
                 runCatching { deleteTemporaryEntry(target) }.onFailure(failure::addSuppressed)
             }
             runCatching { syncDirectory(root) }.onFailure(failure::addSuppressed)
@@ -694,9 +699,9 @@ class VaultRepository(context: Context) {
             rollbackDeletion(id, tombstone, failure)
             throw failure
         }
-        // The durable index no longer references this ID. A failed delete
-        // leaves only unreferenced ciphertext, never plaintext.
-        runCatching { persistentStore?.deletePayload(id) }
+        // The durable index no longer references this ID. Record and retry
+        // recovery-store deletion instead of silently retaining an orphan.
+        persistentStore?.deletePayload(id)
         tombstone?.let(::deleteStagedPayload)
     }
 
@@ -1537,6 +1542,7 @@ class VaultRepository(context: Context) {
     @Synchronized
     fun cleanupExpiredOutgoing(now: Long = System.currentTimeMillis()) {
         deleteExpiredChildren(outgoing, now, OUTGOING_TTL_MS)
+        persistentStore?.retryPendingPayloadDeletions()
     }
 
     private fun createExactDirectory(parent: DocumentFile, folderName: String): DocumentFile {
@@ -2751,9 +2757,9 @@ class VaultRepository(context: Context) {
     }
 
     private fun deleteStagedPayload(file: File) {
-        runCatching {
-            if (file.exists() && file.delete()) syncDirectory(root)
-        }
+        if (!file.exists()) return
+        deleteTemporaryEntry(file)
+        syncDirectory(root)
     }
 
     /**
@@ -2790,11 +2796,11 @@ class VaultRepository(context: Context) {
 
     private fun removeAbandonedTemporaryFiles() {
         // Repository initialization runs before the UI can start a new import.
-        // Every .psv.tmp file here was left by an interrupted prior process;
-        // these incomplete encrypted records cannot be resumed and only waste space.
+        // Every .psv.tmp file was left by an interrupted prior process and cannot be resumed.
+        // Do not silently expose a vault when known residual data cannot be deleted.
         root.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".psv.tmp") }
-            ?.forEach { temporary -> runCatching { deleteTemporaryEntry(temporary) } }
+            ?.forEach(::deleteTemporaryEntry)
     }
 
     private fun deleteExpiredChildren(directory: File, now: Long, ttlMs: Long) {
@@ -2803,12 +2809,16 @@ class VaultRepository(context: Context) {
                 return@forEach
             }
             val modified = child.lastModified()
-            val ageIsUnknown = modified <= 0L
-            val expired = modified > 0L && now >= modified && now - modified > ttlMs
-            if (ageIsUnknown || expired) {
-                // Cache deletion failure is contained to this entry. Keep it in
-                // app-private storage and retry later instead of locking the vault.
-                runCatching { deleteTemporaryEntry(child) }
+            if (VaultOutgoingSessionPolicy.isExpired(modified, now, ttlMs)) {
+                try {
+                    deleteTemporaryEntry(child)
+                } catch (failure: Exception) {
+                    throw IOException(
+                        "Private Space could not remove an expired decrypted temporary copy. " +
+                            "Keep the app open and retry cleanup before sharing or opening more files.",
+                        failure
+                    )
+                }
             }
         }
     }
