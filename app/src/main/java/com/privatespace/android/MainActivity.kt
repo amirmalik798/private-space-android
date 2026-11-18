@@ -3595,11 +3595,17 @@ private fun TopicScreen(
     var topicMenuExpanded by remember(topic.id) { mutableStateOf(false) }
     var showTopicDetails by remember(topic.id) { mutableStateOf(false) }
     var sortMenuExpanded by remember(topic.id) { mutableStateOf(false) }
+    var fileQuery by remember(topic.id) { mutableStateOf("") }
     val selectedFiles = remember(files, selectedFileIds) {
         files.filter { it.id in selectedFileIds }
     }
-    val filteredFiles = remember(files, selectedFilter) {
-        files.filter(selectedFilter::matches)
+    val filteredFiles = remember(files, selectedFilter, fileQuery) {
+        val query = fileQuery.trim()
+        files.filter(selectedFilter::matches).filter { file ->
+            query.isEmpty() ||
+                file.displayName.contains(query, ignoreCase = true) ||
+                file.mimeType.contains(query, ignoreCase = true)
+        }
     }
     val visibleFileIds = remember(filteredFiles) {
         filteredFiles.mapTo(mutableSetOf()) { it.id }
@@ -3661,8 +3667,18 @@ private fun TopicScreen(
                                 maxLines = 1
                             )
                         }
+                        IconButton(
+                            onClick = onAdd,
+                            enabled = !busy
+                        ) {
+                            Icon(
+                                Icons.Default.AddPhotoAlternate,
+                                contentDescription = "Add files to ${topic.name}",
+                                tint = if (busy) Muted else Cyan
+                            )
+                        }
                         Box {
-                            IconButton(onClick = { topicMenuExpanded = true }) {
+                            IconButton(onClick = { topicMenuExpanded = true }, enabled = !busy) {
                                 Icon(Icons.Default.MoreVert, contentDescription = "Topic actions", tint = Muted)
                             }
                             DropdownMenu(
@@ -3671,19 +3687,13 @@ private fun TopicScreen(
                                 containerColor = Panel
                             ) {
                                 DropdownMenuItem(
-                                    enabled = !busy,
-                                    text = { Text("Add file(s)") },
-                                    leadingIcon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = Cyan) },
-                                    onClick = { topicMenuExpanded = false; onAdd() }
-                                )
-                                DropdownMenuItem(
                                     enabled = files.isNotEmpty() && !busy,
                                     text = { Text("Share topic") },
                                     leadingIcon = { Icon(Icons.Default.FolderShared, contentDescription = null, tint = Color(0xFF80C8FF)) },
                                     onClick = { topicMenuExpanded = false; onShareTopic() }
                                 )
                                 DropdownMenuItem(
-                                    enabled = !busy,
+                                    enabled = files.isNotEmpty() && !busy,
                                     text = { Text("Export topic") },
                                     leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null, tint = Color(0xFFFFC078)) },
                                     onClick = { topicMenuExpanded = false; onExportTopic() }
@@ -3706,6 +3716,19 @@ private fun TopicScreen(
                     HorizontalDivider(color = Line.copy(alpha = 0.65f), thickness = 0.7.dp)
                 }
             }
+        },
+        floatingActionButton = {
+            if (!selectionMode) {
+                ExtendedFloatingActionButton(
+                    onClick = onAdd,
+                    enabled = !busy,
+                    containerColor = Blue,
+                    contentColor = White,
+                    shape = RoundedCornerShape(16.dp),
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("Add files", fontWeight = FontWeight.SemiBold) }
+                )
+            }
         }
     ) { padding ->
         Column(
@@ -3722,13 +3745,13 @@ private fun TopicScreen(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Your files", color = White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     Text(
-                        if (selectionMode) "${selectedFiles.size} selected" else "Stored securely in this topic",
+                        if (selectionMode) "${selectedFiles.size} selected" else "${files.size} ${if (files.size == 1) "file" else "files"} · ${formatBytes(storageBytes)} encrypted",
                         color = Muted,
                         fontSize = 11.sp
                     )
                 }
                 TextButton(
-                    enabled = !busy,
+                    enabled = !busy && files.isNotEmpty(),
                     onClick = {
                         selectionMode = !selectionMode
                         selectedFileIds = emptySet()
@@ -3742,6 +3765,26 @@ private fun TopicScreen(
                     Spacer(Modifier.width(5.dp))
                     Text(if (selectionMode) "Cancel" else "Select")
                 }
+            }
+
+            if (files.isNotEmpty()) {
+                OutlinedTextField(
+                    value = fileQuery,
+                    onValueChange = { fileQuery = it.take(120) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text("Search files by name or type", color = Muted) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Muted) },
+                    trailingIcon = {
+                        if (fileQuery.isNotEmpty()) {
+                            IconButton(onClick = { fileQuery = "" }, enabled = !busy) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear file search", tint = Muted)
+                            }
+                        }
+                    }
+                )
             }
 
             Row(
@@ -3799,11 +3842,16 @@ private fun TopicScreen(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Text(
+                    "${filteredFiles.size} shown",
+                    color = Muted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f)
+                )
                 Box {
-                    TextButton(onClick = { sortMenuExpanded = true }) {
+                    TextButton(onClick = { sortMenuExpanded = true }, enabled = filteredFiles.isNotEmpty()) {
                         Icon(Icons.Default.Sort, contentDescription = null, tint = Cyan, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(if (newestFirst) "Newest first" else "Oldest first", color = Cyan, fontSize = 12.sp)
@@ -3898,14 +3946,15 @@ private fun TopicScreen(
             }
 
             HorizontalDivider(color = Line.copy(alpha = 0.8f))
-            if ((files.isEmpty() || filteredFiles.isEmpty()) && imports.isEmpty()) {
+            if (imports.isEmpty() && filteredFiles.isEmpty()) {
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp)
                     ) {
                         Surface(
                             modifier = Modifier.size(70.dp),
@@ -3913,27 +3962,59 @@ private fun TopicScreen(
                             shape = RoundedCornerShape(22.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.FolderOpen, contentDescription = null, tint = Cyan, modifier = Modifier.size(34.dp))
+                                Icon(
+                                    if (fileQuery.isNotBlank()) Icons.Default.SearchOff else Icons.Default.FolderOpen,
+                                    contentDescription = null,
+                                    tint = Cyan,
+                                    modifier = Modifier.size(34.dp)
+                                )
                             }
                         }
                         Text(
-                            if (files.isEmpty()) "Nothing here yet" else "No ${selectedFilter.title.lowercase()}",
+                            when {
+                                files.isEmpty() -> "Nothing here yet"
+                                fileQuery.isNotBlank() -> "No matching files"
+                                else -> "No ${selectedFilter.title.lowercase()}"
+                            },
                             color = White,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        )
-                        Text(
-                            if (files.isEmpty()) "Add documents, photos or videos to this topic." else "This topic has no files in the selected filter.",
-                            color = Muted,
-                            fontSize = 12.sp,
+                            fontSize = 18.sp,
                             textAlign = TextAlign.Center
                         )
+                        Text(
+                            when {
+                                files.isEmpty() -> "Add documents, photos or videos to this topic. Your originals stay where they are."
+                                fileQuery.isNotBlank() -> "Try another file name or MIME type, or clear the search."
+                                else -> "This topic has no files in the selected filter. Choose All to see every file."
+                            },
+                            color = Muted,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 17.sp
+                        )
+                        if (fileQuery.isNotBlank()) {
+                            TextButton(onClick = { fileQuery = "" }) {
+                                Icon(Icons.Default.Backspace, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Clear search")
+                            }
+                        } else if (files.isEmpty()) {
+                            FilledTonalButton(onClick = onAdd, enabled = !busy) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Add files")
+                            }
+                        } else if (selectedFilter != VaultFormatSupport.TopicFilter.ALL) {
+                            TextButton(onClick = { selectedFilter = VaultFormatSupport.TopicFilter.ALL }) {
+                                Text("Show all files")
+                            }
+                        }
                     }
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(top = 2.dp, bottom = 18.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 92.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
                     items(
