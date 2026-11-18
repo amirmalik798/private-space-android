@@ -583,14 +583,41 @@ internal class PersistentVaultStore private constructor(
         }
     }
 
+    /**
+     * Durably records deletion intent before the owning index is changed.
+     * The marker remains inert while the authenticated index still references
+     * this payload; open() removes it in that case after an aborted transaction.
+     */
+    @Synchronized
+    fun preparePayloadDeletion(id: String) {
+        requireValidId(id)
+        createPayloadDeletionMarker(id)
+    }
+
+    /** Removes a prepared marker if the owning index transaction did not commit. */
+    @Synchronized
+    fun cancelPreparedPayloadDeletion(id: String) {
+        requireValidId(id)
+        VaultPayloadDeletionMarker.fileNames(id).forEach { markerName ->
+            val marker = findChild(markerName) ?: return@forEach
+            check(marker.delete() || !marker.exists()) {
+                "Could not cancel the pending recovery-payload deletion."
+            }
+        }
+    }
+
     @Synchronized
     fun deletePayload(id: String) {
         requireValidId(id)
         val document = payloadDocuments[id] ?: findChild(payloadName(id))
         if (document == null) {
             pendingPayloadDeletionIds.remove(id)
+            VaultPayloadDeletionMarker.fileNames(id).forEach { markerName ->
+                runCatching { findChild(markerName)?.delete() }
+            }
             return
         }
+        // Idempotently create/retain the marker for older call sites too.
         createPayloadDeletionMarker(id)
         pendingPayloadDeletionIds += id
         check(document.delete() || !document.exists()) {

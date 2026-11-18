@@ -688,14 +688,24 @@ class VaultRepository(context: Context) {
                 entry.copy(originalTopic = entry.originalTopic.copy(thumbnailFileId = null))
             } else entry
         }
+        var recoveryDeletionPrepared = false
         try {
+            // Create a durable recovery-side intent before removing the Trash
+            // entry from either authenticated index. If the provider cannot
+            // create the marker, the operation aborts and the item stays in Trash.
+            recoveryStore?.preparePayloadDeletion(id)
+            recoveryDeletionPrepared = recoveryStore != null
             saveIndex(index.copy(trash = updatedTrash))
         } catch (failure: Throwable) {
+            if (recoveryDeletionPrepared) {
+                runCatching { recoveryStore?.cancelPreparedPayloadDeletion(id) }
+                    .onFailure(failure::addSuppressed)
+            }
             rollbackDeletion(id, tombstone, failure)
             throw failure
         }
-        // The durable index no longer references this ID. Record and retry
-        // recovery-store deletion instead of silently retaining an orphan.
+        // The durable indexes no longer reference this ID. Delete the encrypted
+        // recovery payload; if the provider fails, the marker remains for retry.
         recoveryStore?.deletePayload(id)
         tombstone?.let(::deleteStagedPayload)
     }
