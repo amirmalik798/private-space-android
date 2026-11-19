@@ -33,6 +33,13 @@ data class PreparedVaultFile(
     val mimeType: String
 )
 
+/** Opaque, read-only handoff for one authenticated encrypted-video playback session. */
+data class PreparedVaultPlayback(
+    val uri: Uri,
+    val mimeType: String,
+    val sessionToken: String
+)
+
 private data class VaultIndex(
     val topics: List<VaultTopic> = emptyList(),
     val files: List<VaultFile> = emptyList(),
@@ -851,6 +858,65 @@ class VaultRepository(context: Context) {
      * FileProvider-exposed outgoing directory. It must be discarded on close.
      */
     @Synchronized
+    /**
+     * Opens a current chunked-AES-GCM video as an authenticated random-access
+     * session. Returns null for legacy containers so callers can use the
+     * established full-decrypt compatibility path.
+     */
+    @Synchronized
+    fun prepareStreamingVideoPlayback(id: String): PreparedVaultPlayback? {
+        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            "Streaming playback requires Android 8.0 or later."
+        }
+        val record = findFile(id)
+        require(
+            VaultFormatSupport.kindForFile(record.displayName, record.mimeType) ==
+                VaultFormatSupport.FileKind.VIDEO
+        ) { "Only videos can use streaming playback." }
+
+        val encrypted = RandomAccessFile(encryptedFile(record.id), "r")
+        val reader = try {
+            VaultCrypto.openChunkedRandomAccessReader(
+                encrypted,
+                record.sizeBytes,
+                fileAad(record.id)
+            )
+        } catch (failure: Throwable) {
+            runCatching { encrypted.close() }
+            throw failure
+        } ?: run {
+            encrypted.close()
+            return null
+        }
+
+        val mimeType = VaultFormatSupport.mimeTypeForName(record.displayName) ?: record.mimeType
+        val session = VaultPlaybackSession(
+            displayName = VaultInputValidation.displayName(record.displayName),
+            mimeType = mimeType,
+            sizeBytes = record.sizeBytes,
+            reader = reader,
+            read = { position, target, offset, length ->
+                reader.readAt(position, target, offset, length)
+            }
+        )
+        val token = try {
+            VaultPlaybackSessionRegistry.register(session)
+        } catch (failure: Throwable) {
+            session.close()
+            throw failure
+        }
+        return PreparedVaultPlayback(
+            uri = Uri.parse("content://${VaultPlaybackProvider.AUTHORITY}/$token"),
+            mimeType = mimeType,
+            sessionToken = token
+        )
+    }
+
+    /** Revoke a session and wipe the random-access reader's cached plaintext. */
+    fun endStreamingVideoPlayback(prepared: PreparedVaultPlayback) {
+        VaultPlaybackSessionRegistry.revoke(prepared.sessionToken)
+    }
+
     fun prepareMediaForViewing(
         id: String,
         onProgress: (VaultFileOperationProgress) -> Unit = {}
