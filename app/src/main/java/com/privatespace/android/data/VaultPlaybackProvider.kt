@@ -8,6 +8,8 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.os.StorageManager
 import android.os.ProxyFileDescriptorCallback
@@ -16,8 +18,6 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import java.io.FileNotFoundException
 import java.io.IOException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 /**
  * Read-only random-access bridge for external media players.
@@ -28,10 +28,11 @@ import java.util.concurrent.Executors
  * permission. Proxy descriptors are available on API 26+.
  */
 class VaultPlaybackProvider : ContentProvider() {
-    private val ioExecutor: ExecutorService by lazy {
-        Executors.newFixedThreadPool(2) { runnable ->
-            Thread(runnable, "VaultPlaybackRead").apply { isDaemon = true }
-        }
+    private val callbackThread: HandlerThread by lazy {
+        HandlerThread("VaultPlaybackProvider").apply { start() }
+    }
+    private val callbackHandler: Handler by lazy {
+        Handler(callbackThread.looper)
     }
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -108,7 +109,7 @@ class VaultPlaybackProvider : ContentProvider() {
         return storage.openProxyFileDescriptor(
             ParcelFileDescriptor.MODE_READ_ONLY,
             callback,
-            ioExecutor
+            callbackHandler
         )
     }
 
@@ -127,7 +128,7 @@ class VaultPlaybackProvider : ContentProvider() {
 
     override fun shutdown() {
         VaultPlaybackSessionRegistry.revokeAll()
-        ioExecutor.shutdownNow()
+        if (callbackThread.isAlive) callbackThread.quitSafely()
         super.shutdown()
     }
 
