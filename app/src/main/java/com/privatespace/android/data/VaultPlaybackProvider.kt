@@ -2,6 +2,8 @@ package com.privatespace.android.data
 
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
@@ -129,8 +131,15 @@ class VaultPlaybackProvider : ContentProvider() {
         super.shutdown()
     }
 
-    private fun sessionFor(uri: Uri): VaultPlaybackSession? =
-        tokenFor(uri)?.let(VaultPlaybackSessionRegistry::acquire)
+    private fun sessionFor(uri: Uri): VaultPlaybackSession? {
+        val callerContext = context ?: return null
+        if (callerContext.checkCallingUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return null
+        return tokenFor(uri)?.let(VaultPlaybackSessionRegistry::acquire)
+    }
 
     private fun tokenFor(uri: Uri): String? {
         if (uri.scheme != "content" ||
