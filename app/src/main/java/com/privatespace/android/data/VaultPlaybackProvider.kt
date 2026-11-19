@@ -8,6 +8,9 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Build
+import android.os.Binder
+import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
@@ -35,8 +38,11 @@ class VaultPlaybackProvider : ContentProvider() {
 
     override fun onCreate(): Boolean = true
 
-    override fun getType(uri: Uri): String? =
-        sessionFor(uri)?.mimeType
+    override fun getType(uri: Uri): String? {
+        val session = sessionFor(uri)
+        Log.d(TAG, "getType authorized=${session != null} mime=${session?.mimeType}")
+        return session?.mimeType
+    }
 
     override fun query(
         uri: Uri,
@@ -48,9 +54,12 @@ class VaultPlaybackProvider : ContentProvider() {
         val session = sessionFor(uri) ?: throw FileNotFoundException("Playback session expired.")
         val requested = projection?.toList()
             ?: listOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
-        val columns = requested.filter {
-            it == OpenableColumns.DISPLAY_NAME || it == OpenableColumns.SIZE
-        }.ifEmpty { listOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE) }
+        // Preserve the caller's requested projection. Returning a cursor with
+        // fewer/different columns can break media apps that request additional
+        // metadata columns alongside the standard OpenableColumns.
+        val columns = requested.ifEmpty {
+            listOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+        }
         val cursor = MatrixCursor(columns.toTypedArray(), 1)
         cursor.addRow(columns.map { column ->
             when (column) {
@@ -59,6 +68,7 @@ class VaultPlaybackProvider : ContentProvider() {
                 else -> null
             }
         })
+        Log.d(TAG, "query authorized columns=${columns.joinToString()} size=${session.sizeBytes}")
         return cursor
     }
 
@@ -69,9 +79,17 @@ class VaultPlaybackProvider : ContentProvider() {
         }
         val token = tokenFor(uri) ?: throw FileNotFoundException("Invalid playback URI.")
         val session = sessionFor(uri) ?: throw FileNotFoundException("Playback session expired.")
-        val storage = context?.getSystemService(StorageManager::class.java)
+        val providerContext = context
+            ?: throw FileNotFoundException("Provider context is unavailable.")
+        val storage = providerContext.getSystemService(StorageManager::class.java)
             ?: throw FileNotFoundException("Storage manager is unavailable.")
+        val callerUid = Binder.getCallingUid()
+        val callerPackages = providerContext.packageManager.getPackagesForUid(callerUid)
+            ?.joinToString()
+            ?: "unknown"
+        Log.i(TAG, "openFile accepted callerUid=$callerUid packages=$callerPackages size=${session.sizeBytes}")
 
+        val firstReadLogged = AtomicBoolean(false)
         val callback = object : ProxyFileDescriptorCallback() {
             override fun onGetSize(): Long {
                 ensureActive(token, session)
@@ -85,8 +103,16 @@ class VaultPlaybackProvider : ContentProvider() {
                 }
                 if (offset >= session.sizeBytes) return 0
                 val requested = minOf(size.toLong(), session.sizeBytes - offset).toInt()
-                val count = session.readAt(offset, data, 0, requested)
-                return if (count < 0) 0 else count
+                return try {
+                    val count = session.readAt(offset, data, 0, requested)
+                    if (firstReadLogged.compareAndSet(false, true)) {
+                        Log.i(TAG, "firstRead offset=$offset requested=$requested returned=$count")
+                    }
+                    if (count < 0) 0 else count
+                } catch (failure: Exception) {
+                    Log.e(TAG, "read failed offset=$offset requested=$requested", failure)
+                    throw failure
+                }
             }
 
             override fun onWrite(offset: Long, size: Int, data: ByteArray): Int =
@@ -97,17 +123,23 @@ class VaultPlaybackProvider : ContentProvider() {
             }
 
             override fun onRelease() {
+                Log.d(TAG, "proxy descriptor released")
                 // The URI token owns the playback session. A single descriptor
                 // may be closed/reopened by a player while seeking; the session
                 // is explicitly revoked by the vault playback lifecycle instead.
             }
         }
 
-        return storage.openProxyFileDescriptor(
-            ParcelFileDescriptor.MODE_READ_ONLY,
-            callback,
-            callbackHandler
-        )
+        return try {
+            storage.openProxyFileDescriptor(
+                ParcelFileDescriptor.MODE_READ_ONLY,
+                callback,
+                callbackHandler
+            ).also { Log.i(TAG, "proxy descriptor opened successfully") }
+        } catch (failure: Exception) {
+            Log.e(TAG, "could not create proxy descriptor", failure)
+            throw failure
+        }
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? =
@@ -158,6 +190,7 @@ class VaultPlaybackProvider : ContentProvider() {
     }
 
     companion object {
+        private const val TAG = "VaultPlaybackProvider"
         const val AUTHORITY = "com.privatespace.android.playback"
     }
 }
