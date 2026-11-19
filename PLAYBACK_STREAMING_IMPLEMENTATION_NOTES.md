@@ -1,43 +1,31 @@
 # Encrypted external video playback — implementation status
 
-## Goal
+## Implemented on this feature branch
 
-Avoid decrypting an entire multi-gigabyte video into a temporary plaintext file before handing it to an external player. For current chunked AES-GCM records, expose authenticated random-access reads through a short-lived, read-only content URI.
+- Current chunked AES-GCM records can be opened through the existing authenticated random-access reader.
+- The repository creates a process-local playback session only for current-format video records. Legacy containers return to the established full-decrypt compatibility path.
+- `VaultPlaybackProvider` exposes an opaque, read-only content URI backed by Android proxy file descriptors.
+- The provider reports display name, MIME type and plaintext size, and services random-offset reads through the authenticated reader.
+- The provider validates temporary URI read grants; URI tokens are random and do not expose vault file IDs or filesystem paths.
+- The MainActivity video-open flow prefers streaming playback on Android 8.0+ and retains the original external-player workflow for legacy videos and unsupported Android versions.
+- Explicit vault lock revokes the URI grant and closes active playback sessions, wiping the reader's cached plaintext frame.
+- The encryption container format, import, export, share, recovery and existing legacy decryption code are unchanged.
 
-## Existing implementation discovered on main
+## Verification still required
 
-- Current records use independently authenticated 64 KiB AES-GCM frames with an authenticated terminal frame.
-- `VaultCrypto.openChunkedRandomAccessReader` returns a random-access reader for current-format records. Each requested frame is authenticated before plaintext is returned, and the terminal frame is verified when the reader opens.
-- Video thumbnail decoding already uses this reader through `MediaDataSource.readAt`.
-- The external player open flow is different: `prepareDecryptedFile` decrypts the entire video to an app-private outgoing file and `FileProvider` hands that full plaintext file to `ACTION_VIEW`.
-- Sharing/export and legacy encrypted formats must remain unchanged.
+- The first CI attempt found Kotlin integration errors. Those compile errors have been corrected on the branch; a fresh test/lint/build run is still required.
+- Test actual playback on Samsung devices and Samsung Video Player, including initial open, metadata reads, random seeks, fast-forward, close/reopen, backgrounding and locking the vault.
+- Confirm behavior with other external players and Android API levels supported by the app.
+- Add focused provider/session tests for grant enforcement, expired/revoked tokens, concurrent reads, boundary reads, tampered chunks and cleanup.
+- Confirm that a player which accepts the intent can actually consume proxy descriptors. Intent launch success alone does not prove playback compatibility.
 
-## Branch additions
+## Security notes
 
-- `VaultPlaybackSessionRegistry.kt`: process-local registry with opaque random session tokens and close/revoke support.
-- `VaultPlaybackProvider.kt`: read-only `ContentProvider` prototype backed by Android `StorageManager.openProxyFileDescriptor`, with random-offset reads, size and display-name metadata.
-- Manifest registers the provider as exported but URI-grant protected. This is required for an external media player to open it; callers must receive only a temporary read grant for a one-session URI.
-
-## Not yet integrated / not production-ready
-
-- Repository method to create and revoke a playback session has not been added.
-- MainActivity still uses full-file decryption and FileProvider. Samsung Video Player has not yet been tested against this provider.
-- Fallback to existing full-decrypt playback must remain available for legacy records, unsupported devices/players, and any player that cannot consume proxy descriptors.
-- Need explicit playback session lifetime/revocation: revoke on app lock, playback completion/cancel, session timeout, process shutdown, or other safe lifecycle boundary. External players may close/reopen descriptors during seeking, so closing one descriptor alone must not necessarily revoke the session.
-- Need enforce caller UID / package identity on every provider entry point in addition to the temporary URI grant and unguessable token.
-- Need validate proxy descriptor behavior with Samsung Video Player on real devices, including metadata queries, concurrent/random reads, seek, fast-forward, close/reopen, background, and lock.
-- Need tests for read boundaries, concurrent reads, token invalidation, permissions, cleanup, tampered chunks, terminal-frame tampering, and legacy fallback.
-- Need compile, lint, unit tests, and device verification before claiming success.
-
-## Security cautions
-
-- Never expose a raw vault file ID or filesystem path in the URI.
-- Authenticate each requested frame before returning bytes.
-- Do not return partial bytes from a failed authenticated frame.
-- Ensure callback buffers and cached plaintext are wiped by the reader/session lifecycle.
-- The external player necessarily receives plaintext video bytes and may retain/cache them; this design removes the complete plaintext staging copy but cannot prevent capture/copy by the receiving player.
-- A proxy-backed URI is not a guarantee of Samsung Video Player compatibility. The Android API capability and OEM player behavior are separate questions.
+- Each requested encrypted frame is authenticated before plaintext is returned.
+- The provider is read-only and accepts no arbitrary file ID or path.
+- A receiver app necessarily receives plaintext bytes while playing. This design avoids a complete plaintext staging copy; it cannot prevent the receiving player from caching, recording or copying data it has been granted.
+- Active sessions are revoked on explicit vault lock and process shutdown. Real-device lifecycle testing remains necessary before production release.
 
 ## Source-of-truth constraints
 
-This branch was created from `main`. Do not rewrite `VaultRepository.kt` from partial snippets: it is a large file and must be fetched/materialized completely before editing. Do not change `main`.
+This branch was created from `main`. `main` remains unchanged. Do not replace large source files using partial file excerpts; use complete Git blobs when applying edits.
