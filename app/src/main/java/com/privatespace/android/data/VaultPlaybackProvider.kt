@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.StorageManager
 import android.os.ProxyFileDescriptorCallback
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -29,6 +31,7 @@ class VaultPlaybackProvider : ContentProvider() {
             Thread(runnable, "VaultPlaybackRead").apply { isDaemon = true }
         }
     }
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     override fun onCreate(): Boolean = true
 
@@ -94,9 +97,9 @@ class VaultPlaybackProvider : ContentProvider() {
             }
 
             override fun onRelease() {
-                // A media player may close and reopen descriptors while seeking.
-                // The URI token owns the session; closing one descriptor must not
-                // prematurely invalidate other descriptors for the same session.
+                // The URI token owns the playback session. A single descriptor
+                // may be closed/reopened by a player while seeking; the session
+                // is explicitly revoked by the vault playback lifecycle instead.
             }
         }
 
@@ -132,9 +135,13 @@ class VaultPlaybackProvider : ContentProvider() {
     private fun tokenFor(uri: Uri): String? {
         if (uri.scheme != "content" ||
             uri.authority != AUTHORITY ||
-            uri.pathSegments.size != 1
+            uri.pathSegments.size != 1 ||
+            uri.query != null ||
+            uri.fragment != null
         ) return null
-        return uri.lastPathSegment?.takeIf { it.length == 36 }
+        return uri.lastPathSegment?.takeIf {
+            it.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))
+        }
     }
 
     private fun ensureActive(token: String, expected: VaultPlaybackSession) {
