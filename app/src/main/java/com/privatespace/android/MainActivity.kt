@@ -1631,7 +1631,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             } finally {
                 if (!handedOff && session != null) {
                     runCatching {
-                        revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        context.revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         withContext(NonCancellable + Dispatchers.IO) {
                             repository.endStreamingVideoPlayback(session)
                         }
