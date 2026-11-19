@@ -916,6 +916,7 @@ class VaultRepository(context: Context) {
         VaultPlaybackSessionRegistry.revoke(prepared.sessionToken)
     }
 
+    @Synchronized
     fun prepareMediaForViewing(
         id: String,
         onProgress: (VaultFileOperationProgress) -> Unit = {}
