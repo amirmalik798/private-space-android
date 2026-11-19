@@ -1456,47 +1456,47 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
             var session: PreparedVaultPlayback? = null
             var handedOff = false
             var failure: Exception? = null
+            var fallbackToLegacy = false
             try {
                 session = withContext(Dispatchers.IO) {
                     repository.prepareStreamingVideoPlayback(file.id)
                 }
                 if (session == null) {
-                    // Legacy encrypted container: use the original, compatible path.
-                    finishFileOperation(operationToken, null)
-                    busy = false
-                    openExternalVaultFile(file, preferredSamsungPackages, mimeTypeOverride)
-                    return@launch
-                }
-                if (!VaultSessionPolicy.mayReleasePlaintext(
-                        unlocked,
-                        activity?.isResumedForVault == true
-                    )
-                ) throw IllegalStateException("Private Space was locked before playback could start.")
+                    // Legacy encrypted container: use the original, compatible path
+                    // after this streaming operation releases its busy state.
+                    fallbackToLegacy = true
+                } else {
+                    if (!VaultSessionPolicy.mayReleasePlaintext(
+                            unlocked,
+                            activity?.isResumedForVault == true
+                        )
+                    ) throw IllegalStateException("Private Space was locked before playback could start.")
 
-                val uri = session.uri
-                val intent = Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(uri, mimeTypeOverride ?: session.mimeType)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                intent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
+                    val uri = session.uri
+                    val intent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, mimeTypeOverride ?: session.mimeType)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    intent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
 
-                val samsungIntents = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
-                    preferredSamsungPackages.map { Intent(intent).setPackage(it) }
-                } else emptyList()
-                val candidates = samsungIntents + intent
-                var launchFailure: Exception? = null
-                for (candidate in candidates) {
-                    try {
-                        context.startActivity(candidate)
-                        handedOff = true
-                        break
-                    } catch (candidateFailure: Exception) {
-                        launchFailure = candidateFailure
+                    val samsungIntents = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
+                        preferredSamsungPackages.map { Intent(intent).setPackage(it) }
+                    } else emptyList()
+                    val candidates = samsungIntents + intent
+                    var launchFailure: Exception? = null
+                    for (candidate in candidates) {
+                        try {
+                            context.startActivity(candidate)
+                            handedOff = true
+                            break
+                        } catch (candidateFailure: Exception) {
+                            launchFailure = candidateFailure
+                        }
                     }
-                }
-                if (!handedOff) throw launchFailure
-                    ?: IllegalStateException("No compatible video player is installed.")
+                    if (!handedOff) throw launchFailure
+                        ?: IllegalStateException("No compatible video player is installed.")
 
-                activeStreamingPlaybackSessions[session.sessionToken] = session
+                    activeStreamingPlaybackSessions[session.sessionToken] = session
+                }
             } catch (caught: Exception) {
                 failure = caught
             } finally {
@@ -1515,6 +1515,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                     failure?.toOperationFailureMessage("Could not start secure video playback.")
                 )
                 busy = false
+            }
+            if (fallbackToLegacy) {
+                openExternalVaultFile(file, preferredSamsungPackages, mimeTypeOverride)
             }
         }
     }
