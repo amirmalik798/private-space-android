@@ -32,7 +32,6 @@ class VaultPlaybackProvider : ContentProvider() {
     private val callbackHandler: Handler by lazy {
         Handler(callbackThread.looper)
     }
-    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     override fun onCreate(): Boolean = true
 

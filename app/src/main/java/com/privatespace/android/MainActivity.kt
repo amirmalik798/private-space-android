@@ -535,7 +535,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     fun lockVault() {
         activeStreamingPlaybackSessions.values.toList().forEach { session ->
             runCatching {
-                context.revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                context.context.revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 repository.endStreamingVideoPlayback(session)
             }
             activeStreamingPlaybackSessions.remove(session.sessionToken)
