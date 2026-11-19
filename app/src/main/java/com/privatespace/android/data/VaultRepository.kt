@@ -857,7 +857,6 @@ class VaultRepository(context: Context) {
      * Decrypts a photo or video into the private staging cache rather than the
      * FileProvider-exposed outgoing directory. It must be discarded on close.
      */
-    @Synchronized
     /**
      * Opens a current chunked-AES-GCM video as an authenticated random-access
      * session. Returns null for legacy containers so callers can use the

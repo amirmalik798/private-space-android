@@ -134,9 +134,6 @@ private class SamsungPreferredOpenDocumentTree : ActivityResultContracts.OpenDoc
 }
 
 class MainActivity : ComponentActivity() {
-    private val activeStreamingPlaybackSessions =
-        java.util.concurrent.ConcurrentHashMap<String, PreparedVaultPlayback>()
-
     var onVaultShouldLock: (() -> Unit)? = null
     var isResumedForVault: Boolean = false
         private set
@@ -403,6 +400,9 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
 
     // Tracks long authentication/recovery work which must unwind on lock or Activity teardown.
     val activeLifecycleCancellation = remember { AtomicReference<AtomicBoolean?>(null) }
+    val activeStreamingPlaybackSessions = remember {
+        java.util.concurrent.ConcurrentHashMap<String, PreparedVaultPlayback>()
+    }
 
     var unlocked by remember { mutableStateOf(false) }
     var setup by remember { mutableStateOf(!PasswordManager.configured(context)) }
@@ -535,7 +535,7 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
     fun lockVault() {
         activeStreamingPlaybackSessions.values.toList().forEach { session ->
             runCatching {
-                revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                context.revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 repository.endStreamingVideoPlayback(session)
             }
             activeStreamingPlaybackSessions.remove(session.sessionToken)
@@ -1433,95 +1433,6 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
         }
     }
 
-    /**
-     * Prefer random-access encrypted playback for current video containers.
-     * Legacy files and unsupported player/device paths retain the established
-     * full-decrypt workflow.
-     */
-    private fun openStreamingVideoFile(
-        file: VaultFile,
-        preferredSamsungPackages: List<String>,
-        mimeTypeOverride: String?
-    ) {
-        if (!unlocked || busy) return
-        busy = true
-        val operationToken = beginFileOperation("Preparing video playback")
-        fileOperationProgress = VaultFileOperationProgress(
-            "Preparing secure playback", 0L, file.sizeBytes,
-            currentFileName = file.displayName,
-            currentFileCompletedBytes = 0L,
-            currentFileTotalBytes = file.sizeBytes
-        )
-        scope.launch {
-            var session: PreparedVaultPlayback? = null
-            var handedOff = false
-            var failure: Exception? = null
-            var fallbackToLegacy = false
-            try {
-                session = withContext(Dispatchers.IO) {
-                    repository.prepareStreamingVideoPlayback(file.id)
-                }
-                if (session == null) {
-                    // Legacy encrypted container: use the original, compatible path
-                    // after this streaming operation releases its busy state.
-                    fallbackToLegacy = true
-                } else {
-                    if (!VaultSessionPolicy.mayReleasePlaintext(
-                            unlocked,
-                            activity?.isResumedForVault == true
-                        )
-                    ) throw IllegalStateException("Private Space was locked before playback could start.")
-
-                    val uri = session.uri
-                    val intent = Intent(Intent.ACTION_VIEW)
-                        .setDataAndType(uri, mimeTypeOverride ?: session.mimeType)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    intent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
-
-                    val samsungIntents = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
-                        preferredSamsungPackages.map { Intent(intent).setPackage(it) }
-                    } else emptyList()
-                    val candidates = samsungIntents + intent
-                    var launchFailure: Exception? = null
-                    for (candidate in candidates) {
-                        try {
-                            context.startActivity(candidate)
-                            handedOff = true
-                            break
-                        } catch (candidateFailure: Exception) {
-                            launchFailure = candidateFailure
-                        }
-                    }
-                    if (!handedOff) throw launchFailure
-                        ?: IllegalStateException("No compatible video player is installed.")
-
-                    activeStreamingPlaybackSessions[session.sessionToken] = session
-                }
-            } catch (caught: Exception) {
-                failure = caught
-            } finally {
-                if (!handedOff && session != null) {
-                    runCatching {
-                        revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        withContext(NonCancellable + Dispatchers.IO) {
-                            repository.endStreamingVideoPlayback(session)
-                        }
-                    }.onFailure { cleanup ->
-                        failure?.addSuppressed(cleanup)
-                    }
-                }
-                finishFileOperation(
-                    operationToken,
-                    failure?.toOperationFailureMessage("Could not start secure video playback.")
-                )
-                busy = false
-            }
-            if (fallbackToLegacy) {
-                openExternalVaultFile(file, preferredSamsungPackages, mimeTypeOverride)
-            }
-        }
-    }
-
     fun openExternalVaultFile(
         file: VaultFile,
         preferredSamsungPackages: List<String> = emptyList(),
@@ -1647,6 +1558,95 @@ private fun PrivateSpaceContent(repository: VaultRepository) {
                 }
                 finishFileOperation(operationToken, operationFailure)
                 busy = false
+            }
+        }
+    }
+
+    /**
+     * Prefer random-access encrypted playback for current video containers.
+     * Legacy files and unsupported player/device paths retain the established
+     * full-decrypt workflow.
+     */
+    fun openStreamingVideoFile(
+        file: VaultFile,
+        preferredSamsungPackages: List<String>,
+        mimeTypeOverride: String?
+    ) {
+        if (!unlocked || busy) return
+        busy = true
+        val operationToken = beginFileOperation("Preparing video playback")
+        fileOperationProgress = VaultFileOperationProgress(
+            "Preparing secure playback", 0L, file.sizeBytes,
+            currentFileName = file.displayName,
+            currentFileCompletedBytes = 0L,
+            currentFileTotalBytes = file.sizeBytes
+        )
+        scope.launch {
+            var session: PreparedVaultPlayback? = null
+            var handedOff = false
+            var failure: Exception? = null
+            var fallbackToLegacy = false
+            try {
+                session = withContext(Dispatchers.IO) {
+                    repository.prepareStreamingVideoPlayback(file.id)
+                }
+                if (session == null) {
+                    // Legacy encrypted container: use the original, compatible path
+                    // after this streaming operation releases its busy state.
+                    fallbackToLegacy = true
+                } else {
+                    if (!VaultSessionPolicy.mayReleasePlaintext(
+                            unlocked,
+                            activity?.isResumedForVault == true
+                        )
+                    ) throw IllegalStateException("Private Space was locked before playback could start.")
+
+                    val uri = session.uri
+                    val intent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, mimeTypeOverride ?: session.mimeType)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    intent.clipData = ClipData.newUri(context.contentResolver, file.displayName, uri)
+
+                    val samsungIntents = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
+                        preferredSamsungPackages.map { Intent(intent).setPackage(it) }
+                    } else emptyList()
+                    val candidates = samsungIntents + intent
+                    var launchFailure: Exception? = null
+                    for (candidate in candidates) {
+                        try {
+                            context.startActivity(candidate)
+                            handedOff = true
+                            break
+                        } catch (candidateFailure: Exception) {
+                            launchFailure = candidateFailure
+                        }
+                    }
+                    if (!handedOff) throw launchFailure
+                        ?: IllegalStateException("No compatible video player is installed.")
+
+                    activeStreamingPlaybackSessions[session.sessionToken] = session
+                }
+            } catch (caught: Exception) {
+                failure = caught
+            } finally {
+                if (!handedOff && session != null) {
+                    runCatching {
+                        revokeUriPermission(session.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            repository.endStreamingVideoPlayback(session)
+                        }
+                    }.onFailure { cleanup ->
+                        failure?.addSuppressed(cleanup)
+                    }
+                }
+                finishFileOperation(
+                    operationToken,
+                    failure?.toOperationFailureMessage("Could not start secure video playback.")
+                )
+                busy = false
+            }
+            if (fallbackToLegacy) {
+                openExternalVaultFile(file, preferredSamsungPackages, mimeTypeOverride)
             }
         }
     }

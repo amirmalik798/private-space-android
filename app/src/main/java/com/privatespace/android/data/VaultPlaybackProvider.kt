@@ -11,10 +11,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
-import android.os.StorageManager
+import android.os.storage.StorageManager
 import android.os.ProxyFileDescriptorCallback
-import android.os.Handler
-import android.os.Looper
 import android.provider.OpenableColumns
 import java.io.FileNotFoundException
 import java.io.IOException
